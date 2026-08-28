@@ -1,0 +1,505 @@
+{
+  "source": "prototype/mock-graph.js",
+  "note": "ticket-00 视觉原型 mock 转正夹具；states/compile 契约见 header 注释",
+  "compiled": {
+    "nodes": [
+      {
+        "id": "src/index.ts",
+        "label": "index",
+        "dir": "root",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 0,
+        "deg": 3
+      },
+      {
+        "id": "src/server.ts",
+        "label": "server",
+        "dir": "root",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 1,
+        "deg": 4
+      },
+      {
+        "id": "src/router.ts",
+        "label": "router",
+        "dir": "root",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 1,
+        "deg": 4
+      },
+      {
+        "id": "src/config.ts",
+        "label": "config",
+        "dir": "root",
+        "state": "pass",
+        "outDeg": 0,
+        "inDeg": 3,
+        "deg": 3
+      },
+      {
+        "id": "src/types.ts",
+        "label": "types",
+        "dir": "root",
+        "state": "none",
+        "outDeg": 0,
+        "inDeg": 7,
+        "deg": 7
+      },
+      {
+        "id": "src/handlers/graph-handler.ts",
+        "label": "graph-handler",
+        "dir": "handlers",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/handlers/modules-handler.ts",
+        "label": "modules-handler",
+        "dir": "handlers",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/handlers/coverage-handler.ts",
+        "label": "coverage-handler",
+        "dir": "handlers",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/services/graph-service.ts",
+        "label": "graph-service",
+        "dir": "services",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 1,
+        "deg": 4
+      },
+      {
+        "id": "src/services/module-service.ts",
+        "label": "module-service",
+        "dir": "services",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 1,
+        "deg": 4
+      },
+      {
+        "id": "src/services/coverage-service.ts",
+        "label": "coverage-service",
+        "dir": "services",
+        "state": "fail",
+        "outDeg": 3,
+        "inDeg": 1,
+        "deg": 4
+      },
+      {
+        "id": "src/analyzer/dependency-analyzer.ts",
+        "label": "dep-analyzer",
+        "dir": "analyzer",
+        "state": "pass",
+        "outDeg": 4,
+        "inDeg": 1,
+        "deg": 5
+      },
+      {
+        "id": "src/analyzer/imports-pass.ts",
+        "label": "imports-pass",
+        "dir": "analyzer",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/analyzer/exports-pass.ts",
+        "label": "exports-pass",
+        "dir": "analyzer",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/analyzer/types-pass.ts",
+        "label": "types-pass",
+        "dir": "analyzer",
+        "state": "fail",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/parser/ts-parser.ts",
+        "label": "ts-parser",
+        "dir": "parser",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 3,
+        "deg": 4
+      },
+      {
+        "id": "src/parser/ast-visitor.ts",
+        "label": "ast-visitor",
+        "dir": "parser",
+        "state": "none",
+        "outDeg": 2,
+        "inDeg": 1,
+        "deg": 3
+      },
+      {
+        "id": "src/store/graph-store.ts",
+        "label": "graph-store",
+        "dir": "store",
+        "state": "pass",
+        "outDeg": 3,
+        "inDeg": 7,
+        "deg": 10
+      },
+      {
+        "id": "src/core/indexer.ts",
+        "label": "indexer",
+        "dir": "core",
+        "state": "pass",
+        "outDeg": 2,
+        "inDeg": 1,
+        "deg": 3
+      },
+      {
+        "id": "src/core/snapshot.ts",
+        "label": "snapshot",
+        "dir": "core",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/core/delta-engine.ts",
+        "label": "delta-engine",
+        "dir": "core",
+        "state": "fail",
+        "outDeg": 2,
+        "inDeg": 1,
+        "deg": 3
+      },
+      {
+        "id": "src/watcher/file-watcher.ts",
+        "label": "file-watcher",
+        "dir": "watcher",
+        "state": "skip",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/mcp/tool-registry.ts",
+        "label": "tool-registry",
+        "dir": "mcp",
+        "state": "pass",
+        "outDeg": 2,
+        "inDeg": 1,
+        "deg": 3
+      },
+      {
+        "id": "src/mcp/tools/query-graph.ts",
+        "label": "query-graph",
+        "dir": "mcp",
+        "state": "pass",
+        "outDeg": 1,
+        "inDeg": 1,
+        "deg": 2
+      },
+      {
+        "id": "src/mcp/tools/find-path.ts",
+        "label": "find-path",
+        "dir": "mcp",
+        "state": "skip",
+        "outDeg": 2,
+        "inDeg": 1,
+        "deg": 3
+      },
+      {
+        "id": "src/utils/hash.ts",
+        "label": "hash",
+        "dir": "utils",
+        "state": "pass",
+        "outDeg": 0,
+        "inDeg": 2,
+        "deg": 2
+      },
+      {
+        "id": "src/utils/path.ts",
+        "label": "path",
+        "dir": "utils",
+        "state": "pass",
+        "outDeg": 0,
+        "inDeg": 3,
+        "deg": 3
+      },
+      {
+        "id": "src/utils/logger.ts",
+        "label": "logger",
+        "dir": "utils",
+        "state": "none",
+        "outDeg": 0,
+        "inDeg": 0,
+        "deg": 0
+      },
+      {
+        "id": "src/utils/assert.ts",
+        "label": "assert",
+        "dir": "utils",
+        "state": "pass",
+        "outDeg": 0,
+        "inDeg": 0,
+        "deg": 0
+      },
+      {
+        "id": "src/utils/debounce.ts",
+        "label": "debounce",
+        "dir": "utils",
+        "state": "skip",
+        "outDeg": 0,
+        "inDeg": 0,
+        "deg": 0
+      }
+    ],
+    "links": [
+      {
+        "id": "src/index.ts=>src/server.ts",
+        "from": "src/index.ts",
+        "to": "src/server.ts"
+      },
+      {
+        "id": "src/index.ts=>src/config.ts",
+        "from": "src/index.ts",
+        "to": "src/config.ts"
+      },
+      {
+        "id": "src/index.ts=>src/mcp/tool-registry.ts",
+        "from": "src/index.ts",
+        "to": "src/mcp/tool-registry.ts"
+      },
+      {
+        "id": "src/server.ts=>src/router.ts",
+        "from": "src/server.ts",
+        "to": "src/router.ts"
+      },
+      {
+        "id": "src/server.ts=>src/config.ts",
+        "from": "src/server.ts",
+        "to": "src/config.ts"
+      },
+      {
+        "id": "src/server.ts=>src/watcher/file-watcher.ts",
+        "from": "src/server.ts",
+        "to": "src/watcher/file-watcher.ts"
+      },
+      {
+        "id": "src/router.ts=>src/handlers/graph-handler.ts",
+        "from": "src/router.ts",
+        "to": "src/handlers/graph-handler.ts"
+      },
+      {
+        "id": "src/router.ts=>src/handlers/modules-handler.ts",
+        "from": "src/router.ts",
+        "to": "src/handlers/modules-handler.ts"
+      },
+      {
+        "id": "src/router.ts=>src/handlers/coverage-handler.ts",
+        "from": "src/router.ts",
+        "to": "src/handlers/coverage-handler.ts"
+      },
+      {
+        "id": "src/handlers/graph-handler.ts=>src/services/graph-service.ts",
+        "from": "src/handlers/graph-handler.ts",
+        "to": "src/services/graph-service.ts"
+      },
+      {
+        "id": "src/handlers/modules-handler.ts=>src/services/module-service.ts",
+        "from": "src/handlers/modules-handler.ts",
+        "to": "src/services/module-service.ts"
+      },
+      {
+        "id": "src/handlers/coverage-handler.ts=>src/services/coverage-service.ts",
+        "from": "src/handlers/coverage-handler.ts",
+        "to": "src/services/coverage-service.ts"
+      },
+      {
+        "id": "src/services/graph-service.ts=>src/analyzer/dependency-analyzer.ts",
+        "from": "src/services/graph-service.ts",
+        "to": "src/analyzer/dependency-analyzer.ts"
+      },
+      {
+        "id": "src/services/graph-service.ts=>src/store/graph-store.ts",
+        "from": "src/services/graph-service.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/services/graph-service.ts=>src/types.ts",
+        "from": "src/services/graph-service.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/analyzer/dependency-analyzer.ts=>src/analyzer/imports-pass.ts",
+        "from": "src/analyzer/dependency-analyzer.ts",
+        "to": "src/analyzer/imports-pass.ts"
+      },
+      {
+        "id": "src/analyzer/dependency-analyzer.ts=>src/analyzer/exports-pass.ts",
+        "from": "src/analyzer/dependency-analyzer.ts",
+        "to": "src/analyzer/exports-pass.ts"
+      },
+      {
+        "id": "src/analyzer/dependency-analyzer.ts=>src/analyzer/types-pass.ts",
+        "from": "src/analyzer/dependency-analyzer.ts",
+        "to": "src/analyzer/types-pass.ts"
+      },
+      {
+        "id": "src/analyzer/dependency-analyzer.ts=>src/types.ts",
+        "from": "src/analyzer/dependency-analyzer.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/analyzer/imports-pass.ts=>src/parser/ts-parser.ts",
+        "from": "src/analyzer/imports-pass.ts",
+        "to": "src/parser/ts-parser.ts"
+      },
+      {
+        "id": "src/analyzer/exports-pass.ts=>src/parser/ts-parser.ts",
+        "from": "src/analyzer/exports-pass.ts",
+        "to": "src/parser/ts-parser.ts"
+      },
+      {
+        "id": "src/analyzer/types-pass.ts=>src/parser/ts-parser.ts",
+        "from": "src/analyzer/types-pass.ts",
+        "to": "src/parser/ts-parser.ts"
+      },
+      {
+        "id": "src/parser/ts-parser.ts=>src/parser/ast-visitor.ts",
+        "from": "src/parser/ts-parser.ts",
+        "to": "src/parser/ast-visitor.ts"
+      },
+      {
+        "id": "src/parser/ast-visitor.ts=>src/types.ts",
+        "from": "src/parser/ast-visitor.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/parser/ast-visitor.ts=>src/utils/path.ts",
+        "from": "src/parser/ast-visitor.ts",
+        "to": "src/utils/path.ts"
+      },
+      {
+        "id": "src/services/module-service.ts=>src/store/graph-store.ts",
+        "from": "src/services/module-service.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/services/module-service.ts=>src/types.ts",
+        "from": "src/services/module-service.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/services/module-service.ts=>src/utils/path.ts",
+        "from": "src/services/module-service.ts",
+        "to": "src/utils/path.ts"
+      },
+      {
+        "id": "src/services/coverage-service.ts=>src/store/graph-store.ts",
+        "from": "src/services/coverage-service.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/services/coverage-service.ts=>src/config.ts",
+        "from": "src/services/coverage-service.ts",
+        "to": "src/config.ts"
+      },
+      {
+        "id": "src/services/coverage-service.ts=>src/utils/hash.ts",
+        "from": "src/services/coverage-service.ts",
+        "to": "src/utils/hash.ts"
+      },
+      {
+        "id": "src/watcher/file-watcher.ts=>src/core/delta-engine.ts",
+        "from": "src/watcher/file-watcher.ts",
+        "to": "src/core/delta-engine.ts"
+      },
+      {
+        "id": "src/core/delta-engine.ts=>src/core/snapshot.ts",
+        "from": "src/core/delta-engine.ts",
+        "to": "src/core/snapshot.ts"
+      },
+      {
+        "id": "src/core/delta-engine.ts=>src/types.ts",
+        "from": "src/core/delta-engine.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/core/snapshot.ts=>src/store/graph-store.ts",
+        "from": "src/core/snapshot.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/store/graph-store.ts=>src/core/indexer.ts",
+        "from": "src/store/graph-store.ts",
+        "to": "src/core/indexer.ts"
+      },
+      {
+        "id": "src/core/indexer.ts=>src/store/graph-store.ts",
+        "from": "src/core/indexer.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/core/indexer.ts=>src/types.ts",
+        "from": "src/core/indexer.ts",
+        "to": "src/types.ts"
+      },
+      {
+        "id": "src/mcp/tool-registry.ts=>src/mcp/tools/query-graph.ts",
+        "from": "src/mcp/tool-registry.ts",
+        "to": "src/mcp/tools/query-graph.ts"
+      },
+      {
+        "id": "src/mcp/tool-registry.ts=>src/mcp/tools/find-path.ts",
+        "from": "src/mcp/tool-registry.ts",
+        "to": "src/mcp/tools/find-path.ts"
+      },
+      {
+        "id": "src/mcp/tools/query-graph.ts=>src/store/graph-store.ts",
+        "from": "src/mcp/tools/query-graph.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/mcp/tools/find-path.ts=>src/store/graph-store.ts",
+        "from": "src/mcp/tools/find-path.ts",
+        "to": "src/store/graph-store.ts"
+      },
+      {
+        "id": "src/mcp/tools/find-path.ts=>src/utils/path.ts",
+        "from": "src/mcp/tools/find-path.ts",
+        "to": "src/utils/path.ts"
+      },
+      {
+        "id": "src/store/graph-store.ts=>src/utils/hash.ts",
+        "from": "src/store/graph-store.ts",
+        "to": "src/utils/hash.ts"
+      },
+      {
+        "id": "src/store/graph-store.ts=>src/types.ts",
+        "from": "src/store/graph-store.ts",
+        "to": "src/types.ts"
+      }
+    ]
+  }
+}

@@ -1,0 +1,323 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f141b;
+  --card: #161b22;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --accent: #2563eb;
+  /* Legend echo of theme.ts canvas colors (edge neutral / cycle vermillion). */
+  --edge-line: #94a3b8;
+  --cycle-line: #d55e00;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* Ambient wash over the flat dark base (gpt-taste §7): one cold radial,
+     still dark, no gradient text / aurora slop. */
+  background:
+    radial-gradient(1100px 520px at 72% -12%, rgba(37, 99, 235, .07), transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.section {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+
+h1 {
+  margin: 8px 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.goal { color: var(--text); margin: 4px 0 14px; }
+.note { color: var(--muted); font-size: 12.5px; margin: 12px 0 0; }
+
+code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #79c0ff;
+  font-size: 12px;
+}
+
+/* ---- 段 2 · 视图控制 ---- */
+.control-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.control-bar button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color .15s cubic-bezier(.16, 1, .3, 1), color .15s, transform .06s;
+}
+.control-bar button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+.control-bar button:active:not(:disabled) { transform: scale(.97); }
+.control-bar button:disabled { opacity: .45; cursor: not-allowed; }
+.control-bar button.active {
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.control-bar input[type="search"] {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  width: 200px;
+}
+.control-bar input[type="search"]:focus { outline: none; border-color: var(--accent); }
+.control-bar input[type="search"]::placeholder { color: var(--muted); }
+
+/* ---- 段 3 · 图渲染 ---- */
+#graph-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  margin-bottom: 8px;
+}
+
+/* Ticket 04: light notice when a debounced rescan failed (last good frame kept) */
+#scan-notice {
+  border: 1px solid #9e6a03;
+  background: rgba(158, 106, 3, .12);
+  color: #e3b341;
+  border-radius: 8px;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+}
+#scan-notice[hidden] { display: none; }
+
+.graph-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+/* Canvas height = 103vh × 2/3 ≈ 69vh (user: page was oversized, cut a third);
+   section width trimmed so the widened side column sits left of the edge. */
+#graph-section { max-width: 1150px; }
+
+#cy {
+  flex: 1;
+  height: 69vh;
+  min-height: 422px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 250px × 4/3 ≈ 334px: room for the source view to show code whole. */
+.side-column {
+  width: 334px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  transition: border-color .2s cubic-bezier(.16, 1, .3, 1), transform .2s;
+}
+/* Hover physics (gpt-taste §5), tuned down for a tool surface. */
+.card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.card-title {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+.legend-line {
+  width: 26px;
+  height: 0;
+  border-top: 2px dashed var(--cycle-line);
+  flex: none;
+}
+.legend-line.solid { border-top: 2px solid var(--edge-line); }
+
+.detail-path {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+  color: #79c0ff;
+  margin-bottom: 8px;
+}
+
+/* ---- ticket 09: source view ---- */
+.code-view-host:empty::after {
+  content: '加载源码…';
+  display: block;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.code-pre {
+  margin: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 20px;
+  font-family: ui-monospace, Consolas, 'Cascadia Mono', monospace;
+  tab-size: 2;
+}
+.code-error-note {
+  padding: 8px 10px;
+  color: #f85149;
+  font-size: 12px;
+}
+.code-error-marker {
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 20px;
+  background: #f85149;
+  cursor: pointer;
+}
+
+.detail-meta { margin-bottom: 4px; }
+
+.detail-badge {
+  display: inline-block;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 11.5px;
+  margin-right: 8px;
+}
+
+.detail-degrees { color: var(--muted); }
+
+.detail-error {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  align-items: baseline;
+}
+.detail-error-loc {
+  color: #f85149;
+  font-family: ui-monospace, Consolas, monospace;
+  flex: none;
+  min-width: 74px;
+}
+
+.detail-block { margin-top: 10px; }
+.detail-block-title { color: var(--muted); font-size: 11.5px; margin-bottom: 4px; }
+
+.detail-link {
+  display: inline-block;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 1px 8px;
+  margin: 0 4px 4px 0;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, transform .06s;
+}
+.detail-link:hover { border-color: var(--accent); color: #fff; }
+.detail-link:active { transform: scale(.97); }
+
+.detail-none { color: var(--muted); }
+.detail-hint { color: var(--muted); margin: 0; }
+
+.detail-note {
+  white-space: pre-wrap;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+}
+
+/* hover tooltip: the node's relative path */
+#tooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .08s linear;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: ui-monospace, Consolas, monospace;
+  padding: 2px 8px;
+  max-width: 60vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Motivated entrance motion: shell panels rise once on load (state transition).
+   Collapses to static under prefers-reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .control-bar,
+  .side-column .card {
+    animation: rise .4s cubic-bezier(.16, 1, .3, 1) both;
+  }
+  .side-column .card:nth-child(2) { animation-delay: .07s; }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+@media (max-width: 860px) {
+  .graph-row { flex-direction: column; }
+  .side-column { width: auto; flex-direction: row; }
+  .side-column .card { flex: 1; }
+}

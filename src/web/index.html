@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Module Graph</title>
+</head>
+<body>
+  <section id="plan-section" class="section">
+    <h1>Module Graph</h1>
+    <p class="goal">
+      实时看到代码模块间依赖关系图，点球看测试状态 / 错误 / 源码，AI 亦可经 MCP 查询。
+    </p>
+    <p class="note">
+      本页面继承票 00 视觉终稿，只做「看见」。监视目录：<code id="server-info">…</code>
+    </p>
+  </section>
+
+  <!-- 视图控制：搜索 / 只看未测 / 目录折叠 -->
+  <section id="controls-section" class="section">
+    <div class="control-bar">
+      <input type="search" id="search-box" placeholder="搜索：路径 / 文件名" aria-label="搜索模块" />
+      <button type="button" id="btn-untested-only" title="只显示未测模块（灰球）">只看未测</button>
+      <button type="button" id="btn-collapse" title="同目录文件 ≥ 3 个时折叠为一个目录球；点目录球展开该目录">目录折叠</button>
+      <button type="button" id="btn-reset">重置视图</button>
+    </div>
+  </section>
+
+  <!-- 图渲染：画布 + 右列图例 / 详情；布局固定力导向（fcose） -->
+  <section id="graph-section" class="section">
+    <div id="graph-status">加载中…</div>
+    <div id="scan-notice" hidden></div>
+    <div class="graph-row">
+      <div id="cy" aria-label="模块依赖图画布"></div>
+      <aside class="side-column">
+        <div class="card" id="legend-card">
+          <div class="card-title">状态图例</div>
+          <div id="legend-list"></div>
+        </div>
+        <div class="card" id="detail-card-wrap">
+          <div class="card-title">节点详情</div>
+          <div id="detail-card"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="tooltip" aria-hidden="true"></div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

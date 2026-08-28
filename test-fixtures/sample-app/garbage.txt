@@ -1,0 +1,3 @@
+this file is deliberately not source code
+it has a .txt extension so the analyzer must skip it entirely
+no node, no edge

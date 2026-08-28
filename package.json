@@ -1,0 +1,38 @@
+{
+  "name": "module-graph-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Real-time module dependency graph dashboard with MCP integration",
+  "bin": {
+    "module-graph": "./dist/server/index.js"
+  },
+  "scripts": {
+    "build": "tsc && vite build",
+    "dev": "tsc --watch & vite build --watch",
+    "typecheck:web": "tsc -p src/web",
+    "start": "node dist/server/index.js --root .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
+    "@types/node": "^26.4.0",
+    "@types/ws": "^8.18.1",
+    "cytoscape": "^3.34.2",
+    "cytoscape-fcose": "^2.2.0",
+    "eslint": "^10.9.1",
+    "happy-dom": "^20.11.12",
+    "highlight.js": "^11.12.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}
