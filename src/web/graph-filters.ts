@@ -1,4 +1,4 @@
-import type { Edge, ModuleNode } from '../shared/types.js';
+import type { Edge, ModuleNode, TestState } from '../shared/types.js';
 import { shortLabel, THEME } from './theme.js';
 import { TEST_STATES } from './test-states.js';
 
@@ -122,11 +122,16 @@ export interface ViewState {
   collapseEnabled: boolean;
   /** Directories the user manually expanded (tap on a dir ball). */
   expandedDirs: ReadonlySet<string>;
+  /**
+   * Theme.html legend filter: states toggled off in the legend disappear from
+   * the render list (empty set = everything visible).
+   */
+  hiddenStates: ReadonlySet<TestState>;
 }
 
 /**
- * The view pipeline: 只看未测 filter → search → directory collapse. Later
- * stages see earlier stages' survivors, so a search match inside a
+ * The view pipeline: 图例状态过滤 → 只看未测 → 搜索 → directory collapse.
+ * Later stages see earlier stages' survivors, so a search match inside a
  * collapsible directory reveals the file itself.
  *
  * Pure data-in/data-out (no DOM, no cytoscape); the one repo constant it
@@ -139,6 +144,11 @@ export function applyViewState(
 ): { nodes: ModuleNode[]; edges: Edge[] } {
   let keptNodes: ModuleNode[] = [...nodes];
   let keptEdges: Edge[] = [...edges];
+
+  if (view.hiddenStates.size > 0) {
+    keptNodes = keptNodes.filter((n) => !view.hiddenStates.has(n.testState));
+    keptEdges = edgesWithin(keptEdges, new Set(keptNodes.map((n) => n.id)));
+  }
 
   if (view.untestedOnly) {
     keptNodes = keptNodes.filter(isUntested);

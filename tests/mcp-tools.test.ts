@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTools, type GraphSnapshotSource } from '../src/server/mcp.js';
-import type { ModuleNode } from '../src/shared/types.js';
+import type { AiReview, ModuleNode } from '../src/shared/types.js';
 
 /**
  * The MCP tool seam tested directly: buildTools over a fake graph source and
@@ -24,11 +24,13 @@ const FIXTURE_SNAPSHOT = {
   ]
 };
 
-function fakeGraph(): GraphSnapshotSource & { notes: Map<string, string | undefined> } {
+function fakeGraph(): GraphSnapshotSource & { notes: Map<string, string | undefined>; reviews: Map<string, AiReview | undefined> } {
   // Mirror the engine's aliasing contract: snapshot() hands out the SAME
-  // node objects setNote() mutates, so post-mutation reads see the note.
+  // node objects setNote()/setReview() mutate, so post-mutation reads see
+  // the change.
   const nodesById = new Map(FIXTURE_NODES.map((n) => [n.id, { ...n }]));
   const notes = new Map<string, string | undefined>();
+  const reviews = new Map<string, AiReview | undefined>();
   return {
     snapshot: () => ({
       rootPath: '/proj',
@@ -43,7 +45,15 @@ function fakeGraph(): GraphSnapshotSource & { notes: Map<string, string | undefi
       notes.set(id, note);
       return true;
     },
-    notes
+    setReview: (id, review) => {
+      const node = nodesById.get(id);
+      if (node === undefined) return false;
+      node.aiReview = review;
+      reviews.set(id, review);
+      return true;
+    },
+    notes,
+    reviews
   };
 }
 
@@ -68,9 +78,11 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the four tools with their input schemas', () => {
+  it('exposes the six tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
+      'begin_review',
+      'end_review',
       'get_module_details',
       'get_module_graph',
       'list_untested',
@@ -78,6 +90,8 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     ]);
     expect(tools.get_module_details!.inputSchema.required).toEqual(['path']);
     expect(tools.report_note!.inputSchema.required).toEqual(['path', 'text']);
+    expect(tools.begin_review!.inputSchema.required).toEqual(['path']);
+    expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.list_untested!.inputSchema.properties).toEqual({});
   });
 
@@ -170,5 +184,112 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('path is required');
     }
+  });
+});
+
+describe('begin_review / end_review — the AI check channel (Ticket 12)', () => {
+  function buildReview() {
+    const built = build();
+    const nodeEvents = (): ModuleNode[] =>
+      built.broadcasts
+        .filter((e) => e.type === 'node_update')
+        .map((e) => (e as { node: ModuleNode }).node);
+    return { ...built, nodeEvents };
+  }
+
+  it('begin_review marks the node checking and broadcasts one node_update', () => {
+    const { tools, graph, nodeEvents } = buildReview();
+    const body = payload(tools.begin_review.execute({ path: 'core/app.ts' }));
+    expect(body).toMatchObject({ ok: true, id: 'core/app.ts' });
+    expect(body.aiReview).toEqual({ status: 'checking', verdicts: [] });
+    expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
+
+    const events = nodeEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.id).toBe('core/app.ts');
+    expect(events[0]!.aiReview).toEqual({ status: 'checking', verdicts: [] });
+  });
+
+  it('end_review stores verdicts + reviewedAt + summary and broadcasts', () => {
+    const { tools, graph, nodeEvents } = buildReview();
+    const verdicts = [
+      { line: 3, verdict: 'confident' },
+      { line: 7, verdict: 'unsure', message: '边界条件待确认' },
+      { line: 11, verdict: 'error', message: '与注释语义相反' }
+    ];
+    const body = payload(
+      tools.end_review.execute({ path: 'core/app.ts', verdicts, summary: '两个问题需要跟进' })
+    );
+    expect(body).toMatchObject({ ok: true, id: 'core/app.ts', verdictCount: 3 });
+
+    const stored = graph.reviews.get('core/app.ts');
+    expect(stored!.status).toBe('done');
+    expect(stored!.verdicts).toEqual(verdicts);
+    expect(stored!.summary).toBe('两个问题需要跟进');
+    expect(typeof stored!.reviewedAt).toBe('number');
+
+    const events = nodeEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.aiReview!.status).toBe('done');
+  });
+
+  it('end_review on an unknown path errors with suggestions and never broadcasts', () => {
+    const { broadcasts, tools } = buildReview();
+    const result = tools.end_review.execute({
+      path: 'app.tsx',
+      verdicts: [{ line: 1, verdict: 'error' }]
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('module not found');
+    expect(result.content[0].text).toContain('did you mean: core/app.ts');
+    expect(broadcasts).toHaveLength(0);
+  });
+
+  it('sanitizes verdicts: bad entries dropped, last-per-line wins, 500 cap, message truncation', () => {
+    const { tools, graph } = buildReview();
+    const verdicts: unknown[] = [
+      'garbage', // non-object → dropped
+      { line: 0, verdict: 'error' }, // line < 1 → dropped
+      { line: 2.5, verdict: 'error' }, // non-integer → dropped
+      { line: 4, verdict: 'catastrophic' }, // unknown verdict → dropped
+      { line: 5, verdict: 'unsure' },
+      { line: 5, verdict: 'error', message: '  ' }, // blank message dropped; last-wins
+      { line: 6, verdict: 'confident', message: 'x'.repeat(400) } // message truncated
+    ];
+    for (let i = 0; i < 600; i++) verdicts.push({ line: 100 + i, verdict: 'confident' });
+
+    const body = payload(tools.end_review.execute({ path: 'index.ts', verdicts }));
+    expect(body.verdictCount).toBe(500);
+
+    const stored = graph.reviews.get('index.ts')!;
+    expect(stored.status).toBe('done');
+    expect(stored.verdicts[0]).toEqual({ line: 5, verdict: 'error' }); // last-wins, no message
+    const line6 = stored.verdicts.find((v) => v.line === 6)!;
+    expect(line6.message!.length).toBe(200);
+    // Capped entries are the FIRST 500 by line after sorting:
+    // 5, 6, then 100..699 → the 500th is line 597.
+    expect(stored.verdicts[stored.verdicts.length - 1]!.line).toBe(597);
+  });
+
+  it('rejects non-array verdicts and non-string paths on both tools', () => {
+    const { tools, broadcasts } = buildReview();
+    const badVerdicts = tools.end_review.execute({ path: 'index.ts', verdicts: 'nope' });
+    expect(badVerdicts.isError).toBe(true);
+    expect(badVerdicts.content[0].text).toContain('verdicts is required');
+
+    for (const bad of [undefined, '', '   ', 42]) {
+      expect(tools.begin_review.execute({ path: bad }).isError).toBe(true);
+      expect(tools.end_review.execute({ path: bad, verdicts: [] }).isError).toBe(true);
+    }
+    expect(broadcasts).toHaveLength(0);
+  });
+
+  it('caps the summary at 500 chars and tolerates an empty verdict list', () => {
+    const { tools, graph } = buildReview();
+    const body = payload(
+      tools.end_review.execute({ path: 'utils/logger.ts', verdicts: [], summary: 's'.repeat(600) })
+    );
+    expect(body.verdictCount).toBe(0);
+    expect(graph.reviews.get('utils/logger.ts')!.summary!.length).toBe(500);
   });
 });

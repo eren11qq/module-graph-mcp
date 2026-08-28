@@ -22,9 +22,15 @@ function formatRunAt(ts: number | undefined): string {
 }
 
 /**
- * Right-column detail card (verdict #5 + tickets 08/09): path, state badge,
- * last run time, type errors, coverage, clickable in/out lists, and the
- * highlighted source view with error-line markers.
+ * Right-column detail card (ticket 08/09 + theme.html 定稿 + ticket 12):
+ * name/path, state badge, degrees, note, the AI-review status area (checking
+ * pulse label / done + summary + verdict tallies), type errors, coverage,
+ * clickable in/out lists, and the line-rendered source view.
+ *
+ * The whole card is the vertical scroll container (styles.css); the source
+ * block itself is no longer height-capped — long lines fold, nothing needs
+ * horizontal scrolling, and trailing `// ? 待确认` markers stay attached to
+ * their row.
  */
 export function createDetailPanel(container: HTMLElement, loadSource: SourceLoader): DetailPanel {
   // One source-view instance lives across panel rebuilds; the element is
@@ -72,8 +78,63 @@ export function createDetailPanel(container: HTMLElement, loadSource: SourceLoad
     return wrap;
   }
 
+  /** Ticket 12: AI review status area between the meta row and the code. */
+  function aiReviewArea(node: ModuleNode): HTMLElement | null {
+    const review = node.aiReview;
+    if (review === undefined) return null;
+    const root = document.createElement('div');
+    root.className = `ai-status ai-${review.status}`;
+    if (review.status === 'checking') {
+      const tag = document.createElement('span');
+      tag.className = 'checking-tag';
+      tag.textContent = 'AI 检查中';
+      root.append(tag);
+      return root;
+    }
+    const label = document.createElement('span');
+    label.className = 'ai-done-label';
+    label.textContent = 'AI 检查完成';
+    root.append(label);
+
+    const tally = { confident: 0, unsure: 0, error: 0 };
+    for (const v of review.verdicts) tally[v.verdict]++;
+    const counts = document.createElement('span');
+    counts.className = 'ai-tally';
+    counts.innerHTML = '';
+    const parts: Array<[string, string]> = [
+      ['ai-t-pass', `✓ ${tally.confident}`],
+      ['ai-t-unsure', `? ${tally.unsure}`],
+      ['ai-t-error', `✗ ${tally.error}`]
+    ];
+    for (const [cls, text] of parts) {
+      const t = document.createElement('span');
+      t.className = cls;
+      t.textContent = text;
+      counts.append(t);
+    }
+    root.append(counts);
+
+    if (review.summary !== undefined && review.summary.length > 0) {
+      const summary = document.createElement('div');
+      summary.className = 'ai-summary';
+      summary.textContent = review.summary;
+      root.append(summary);
+    }
+    if (review.reviewedAt !== undefined) {
+      const at = document.createElement('div');
+      at.className = 'ai-reviewed-at';
+      at.textContent = `检查时间 ${formatRunAt(review.reviewedAt)}`;
+      root.append(at);
+    }
+    return root;
+  }
+
   function show(node: ModuleNode, ctx: DetailContext): void {
     container.replaceChildren();
+
+    const name = document.createElement('div');
+    name.className = 'detail-name';
+    name.textContent = shortLabel(node.path);
 
     const pathEl = document.createElement('div');
     pathEl.className = 'detail-path';
@@ -87,12 +148,20 @@ export function createDetailPanel(container: HTMLElement, loadSource: SourceLoad
     badge.style.color = stateColor(node.testState);
     badge.style.borderColor = stateColor(node.testState);
     badge.textContent = stateLabel(node.testState);
-    const runAt = document.createElement('span');
-    runAt.className = 'detail-degrees';
+    const degrees = document.createElement('span');
+    degrees.className = 'detail-degrees';
+    degrees.textContent = `度 ${ctx.incoming.length + ctx.outgoing.length} ＝ 出 ${ctx.outgoing.length} ＋ 入 ${ctx.incoming.length}`;
+    metaRow.append(badge, degrees);
+    const runAt = document.createElement('div');
+    runAt.className = 'detail-degrees detail-runat';
     runAt.textContent = `最近运行 ${formatRunAt(node.lastTestRunAt)}`;
-    metaRow.append(badge, runAt);
 
-    container.append(pathEl, metaRow);
+    container.append(name, pathEl, metaRow, runAt);
+
+    // AI review (ticket 12) right under the meta: pulse while checking,
+    // summary + tallies once done.
+    const ai = aiReviewArea(node);
+    if (ai !== null) container.append(ai);
 
     // Note (ticket 10): free-form agent note via the report_note MCP tool.
     if (node.note !== undefined && node.note.length > 0) {
@@ -140,15 +209,10 @@ export function createDetailPanel(container: HTMLElement, loadSource: SourceLoad
     inc.body.append(jumpList(ctx.incoming, ctx));
     container.append(inc.root);
 
-    // Source view (ticket 09): highlighted, error lines marked.
+    // Source view (ticket 09/12): per-line rows, verdict highlights; the
+    // whole detail card scrolls — no inner height cap, no horizontal scroll.
     const source = block(`源码 · ${node.path}`);
-    sourceHost.className = 'code-view-host';
-    sourceHost.style.position = 'relative';
-    sourceHost.style.overflow = 'auto';
-    sourceHost.style.maxHeight = '280px';
-    sourceHost.style.background = 'var(--bg)';
-    sourceHost.style.border = '1px solid var(--border)';
-    sourceHost.style.borderRadius = '8px';
+    sourceHost.className = 'code';
     source.body.append(sourceHost);
     container.append(source.root);
     // show() handles load failures itself; this catch is the last resort so

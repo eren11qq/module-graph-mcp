@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createScanner, tokenToString } from 'typescript/unstable/ast/scanner';
 import { loadGitignore, type GitignoreMatcher } from './gitignore.js';
 import { EXCLUDED_DIRECTORIES, LANGUAGE_BY_EXTENSION, SOURCE_EXTENSIONS, type SourceExtension } from './path-conventions.js';
-import type { Edge, GraphDelta, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, AiReview } from '../shared/types.js';
 
 /**
  * Ticket 05: incremental dependency-graph engine — the single graph engine.
@@ -516,6 +516,20 @@ export class IncrementalGraph {
     const node = this.nodes.get(id);
     if (node === undefined) return false;
     node.note = note;
+    return true;
+  }
+
+  /**
+   * Ticket 12: attach/clear the AI review state on one node. Same aliasing
+   * contract as setNote: the cached snapshot shares NODE objects, so the
+   * mutation is visible to existing readers immediately. In-memory only —
+   * fullScan/applyEvents rebuild nodes without a review and the agent
+   * re-reports (begin_review/end_review) as needed.
+   */
+  setReview(id: string, review: AiReview | undefined): boolean {
+    const node = this.nodes.get(id);
+    if (node === undefined) return false;
+    node.aiReview = review;
     return true;
   }
 

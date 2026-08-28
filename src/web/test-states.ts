@@ -1,25 +1,26 @@
 import type { TestState } from '../shared/types.js';
+import { stateColor } from './theme.js';
 
 /**
- * Single source of truth for the four-color test-state vocabulary: palette
- * color, dashboard label, legend order and aggregation severity live in one
- * table. Adding a state is one entry here (plus the TestState union in
- * shared/types.ts) — not edits scattered across theme, filters and view.
+ * Single source of truth for the four-color test-state vocabulary: dashboard
+ * label, legend order and aggregation severity live in one table. The COLORS
+ * are theme-scoped (dark 暗色仪器盘 / light 亮色工作台) and live in theme.ts's
+ * CY_PALETTES; this module re-exports them against the active theme. Adding a
+ * state is one entry here (plus the TestState union in shared/types.ts and
+ * both palette entries in theme.ts).
  */
 
-export const TEST_STATES: Record<TestState, { color: string; label: string; severity: number }> = {
-  passing: { color: '#009E73', label: '通过', severity: 0 },
-  failing: { color: '#D55E00', label: '失败', severity: 3 },
-  'has-tests-unrun': { color: '#56B4E9', label: '有测试未跑', severity: 1 },
-  untested: { color: '#ADB5BD', label: '未测', severity: 2 }
+export const TEST_STATES: Record<TestState, { label: string; severity: number }> = {
+  passing: { label: '通过', severity: 0 },
+  failing: { label: '失败', severity: 3 },
+  'has-tests-unrun': { label: '有测试未跑', severity: 1 },
+  untested: { label: '未测', severity: 2 }
 };
 
 /** Legend and stylesheet enumeration order (verdict #2 display order). */
 export const STATE_ORDER: readonly TestState[] = ['passing', 'failing', 'has-tests-unrun', 'untested'];
 
-export function stateColor(state: TestState): string {
-  return TEST_STATES[state].color;
-}
+export { stateColor };
 
 export function stateLabel(state: TestState): string {
   return TEST_STATES[state].label;

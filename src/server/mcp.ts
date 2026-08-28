@@ -1,6 +1,6 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
-import type { GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import type { AiReview, AiReviewEntry, AiVerdict, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
 
 /**
  * Minimal MCP (Model Context Protocol) server over stdio.
@@ -46,6 +46,8 @@ interface ToolResult {
 export interface GraphSnapshotSource {
   snapshot(): GraphSnapshot;
   setNote(id: string, note: string | undefined): boolean;
+  /** Ticket 12: store/clear the AI review state of one node. */
+  setReview(id: string, review: AiReview | undefined): boolean;
 }
 
 function textToolResult(value: unknown): ToolResult {
@@ -110,6 +112,41 @@ function notFoundResult(nodes: readonly ModuleNode[], rawPath: unknown): ToolRes
   if (suggestions.length > 0) lines.push(`did you mean: ${suggestions.join(', ')}?`);
   else lines.push('call get_module_graph to list all module ids first.');
   return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
+}
+
+// ---------------------------------------------------------------------------
+// Ticket 12: AI review tooling. The agent is the executor — begin_review
+// marks a module "checking" (edge pulse on the dashboard), end_review stores
+// the per-line three-color verdicts. Caps keep a runaway agent from flooding
+// the wire or the DOM.
+// ---------------------------------------------------------------------------
+
+const AI_VERDICTS: readonly AiVerdict[] = ['confident', 'unsure', 'error'];
+const MAX_VERDICT_ENTRIES = 500;
+const MAX_VERDICT_MESSAGE = 200;
+const MAX_REVIEW_SUMMARY = 500;
+
+/**
+ * Validate and normalise raw verdict entries: non-objects, bad lines and
+ * unknown verdicts are dropped silently (a partial review beats none);
+ * messages are truncated; per line the LAST entry wins; output is sorted by
+ * line and capped at MAX_VERDICT_ENTRIES.
+ */
+function normalizeVerdicts(raw: unknown): AiReviewEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const byLine = new Map<number, AiReviewEntry>();
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const e = item as { line?: unknown; verdict?: unknown; message?: unknown };
+    if (typeof e.line !== 'number' || !Number.isInteger(e.line) || e.line < 1) continue;
+    if (typeof e.verdict !== 'string' || !AI_VERDICTS.includes(e.verdict as AiVerdict)) continue;
+    const entry: AiReviewEntry = { line: e.line, verdict: e.verdict as AiVerdict };
+    if (typeof e.message === 'string' && e.message.trim().length > 0) {
+      entry.message = e.message.trim().slice(0, MAX_VERDICT_MESSAGE);
+    }
+    byLine.set(entry.line, entry);
+  }
+  return [...byLine.values()].sort((a, b) => a.line - b.line).slice(0, MAX_VERDICT_ENTRIES);
 }
 
 /**
@@ -191,6 +228,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           typeErrors: node.typeErrors,
           lastTestRunAt: node.lastTestRunAt ?? null,
           note: node.note ?? null,
+          aiReview: node.aiReview ?? null,
           outgoingDependencies: outgoing,
           incomingDependents: incoming,
           source:
@@ -264,6 +302,100 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           id: node.id,
           note: node.note ?? null,
           cleared: node.note === undefined
+        });
+      }
+    },
+
+    begin_review: {
+      description:
+        'Mark a module as "AI reviewing". The dashboard ball gets an animated edge pulse and its detail panel shows a checking state until end_review lands for the same path. Call this right before you start reviewing/editing a file, and always pair it with end_review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Module id: POSIX path relative to the watched root, e.g. "src/index.ts"'
+          }
+        },
+        required: ['path'],
+        additionalProperties: false
+      },
+      execute(args) {
+        const snap = graph.snapshot();
+        const found = resolveRequestedNode(args, snap);
+        if ('failure' in found) return found.failure;
+        const node = found.node;
+
+        graph.setReview(node.id, { status: 'checking', verdicts: [] });
+        deps.broadcast?.({ type: 'node_update', node });
+        return textToolResult({
+          ok: true,
+          id: node.id,
+          aiReview: node.aiReview ?? null
+        });
+      }
+    },
+
+    end_review: {
+      description:
+        'Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max 500 entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts are in-memory; a rescan clears them and you re-report.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Module id: POSIX path relative to the watched root, e.g. "src/index.ts"'
+          },
+          verdicts: {
+            type: 'array',
+            description:
+              'Per-line verdicts: { line: 1-based number, verdict: "confident"|"unsure"|"error", message?: string (max 200 chars) }',
+            items: {
+              type: 'object',
+              properties: {
+                line: { type: 'number' },
+                verdict: { type: 'string', enum: [...AI_VERDICTS] },
+                message: { type: 'string' }
+              },
+              required: ['line', 'verdict'],
+              additionalProperties: false
+            }
+          },
+          summary: {
+            type: 'string',
+            description: 'Optional one-line overall conclusion (max 500 chars).'
+          }
+        },
+        required: ['path', 'verdicts'],
+        additionalProperties: false
+      },
+      execute(args) {
+        const snap = graph.snapshot();
+        const found = resolveRequestedNode(args, snap);
+        if ('failure' in found) return found.failure;
+        const node = found.node;
+
+        if (!Array.isArray(args.verdicts)) {
+          return {
+            content: [{ type: 'text', text: 'verdicts is required and must be an array (possibly empty).' }],
+            isError: true
+          };
+        }
+        const verdicts = normalizeVerdicts(args.verdicts);
+        const summary =
+          typeof args.summary === 'string' && args.summary.trim().length > 0
+            ? args.summary.trim().slice(0, MAX_REVIEW_SUMMARY)
+            : undefined;
+
+        const review: AiReview = { status: 'done', verdicts, reviewedAt: Date.now() };
+        if (summary !== undefined) review.summary = summary;
+        graph.setReview(node.id, review);
+        deps.broadcast?.({ type: 'node_update', node });
+        return textToolResult({
+          ok: true,
+          id: node.id,
+          verdictCount: verdicts.length,
+          aiReview: node.aiReview ?? null
         });
       }
     }

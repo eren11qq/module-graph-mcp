@@ -5,46 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Module Graph</title>
 </head>
-<body>
-  <section id="plan-section" class="section">
-    <h1>Module Graph</h1>
-    <p class="goal">
-      实时看到代码模块间依赖关系图，点球看测试状态 / 错误 / 源码，AI 亦可经 MCP 查询。
-    </p>
-    <p class="note">
-      本页面继承票 00 视觉终稿，只做「看见」。监视目录：<code id="server-info">…</code>
-    </p>
-  </section>
+<body data-theme="dark">
+  <!-- 全屏仪器盘壳层（theme.html 定稿）：stage 打底，顶栏 / 左右坞 / 状态栏悬浮 -->
+  <div id="stage">
+    <div id="cy" aria-label="模块依赖图画布"></div>
+  </div>
 
-  <!-- 视图控制：搜索 / 只看未测 / 目录折叠 -->
-  <section id="controls-section" class="section">
-    <div class="control-bar">
+  <header id="topbar" class="overlay">
+    <div class="brand"><span class="logo"></span>模块图谱<span class="sub">MODULE GRAPH</span></div>
+    <div class="tools">
       <input type="search" id="search-box" placeholder="搜索：路径 / 文件名" aria-label="搜索模块" />
-      <button type="button" id="btn-untested-only" title="只显示未测模块（灰球）">只看未测</button>
-      <button type="button" id="btn-collapse" title="同目录文件 ≥ 3 个时折叠为一个目录球；点目录球展开该目录">目录折叠</button>
-      <button type="button" id="btn-reset">重置视图</button>
+      <button type="button" id="btn-untested-only" class="tool-toggle" title="只显示未测模块（灰球）">只看未测</button>
+      <button type="button" id="btn-collapse" class="tool-toggle" title="同目录文件 ≥ 3 个时折叠为一个目录球；点目录球展开该目录">目录折叠</button>
+      <button type="button" id="btn-reset" class="tool-toggle" title="缩放/平移复位到全图">重置视图</button>
     </div>
-  </section>
+    <div class="spacer"></div>
+    <button type="button" id="btn-theme" class="tool-toggle theme-btn" title="切换暗色仪器盘 / 亮色工作台（记忆于 localStorage）">亮色工作台</button>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-txt">连接中…</span></div>
+  </header>
 
-  <!-- 图渲染：画布 + 右列图例 / 详情；布局固定力导向（fcose） -->
-  <section id="graph-section" class="section">
-    <div id="graph-status">加载中…</div>
-    <div id="scan-notice" hidden></div>
-    <div class="graph-row">
-      <div id="cy" aria-label="模块依赖图画布"></div>
-      <aside class="side-column">
-        <div class="card" id="legend-card">
-          <div class="card-title">状态图例</div>
-          <div id="legend-list"></div>
-        </div>
-        <div class="card" id="detail-card-wrap">
-          <div class="card-title">节点详情</div>
-          <div id="detail-card"></div>
-        </div>
-      </aside>
+  <aside id="dock-left" class="overlay">
+    <div class="card">
+      <h2>状态过滤</h2>
+      <div id="legend"></div>
     </div>
-  </section>
+  </aside>
 
+  <aside id="dock-right" class="overlay">
+    <div class="card" id="detail-card-wrap">
+      <h2>节点详情</h2>
+      <div id="detail-card"></div>
+    </div>
+  </aside>
+
+  <footer id="statusbar" class="overlay">
+    <div id="sb-left"></div>
+    <div class="band-wrap">
+      <div class="band" id="band"></div>
+      <div class="band-cap" id="band-cap"></div>
+    </div>
+    <div id="sb-right">
+      <span class="evt dim" id="evt"></span>
+    </div>
+  </footer>
+
+  <div id="scan-notice" hidden></div>
   <div id="tooltip" aria-hidden="true"></div>
 
   <script type="module" src="./main.ts"></script>

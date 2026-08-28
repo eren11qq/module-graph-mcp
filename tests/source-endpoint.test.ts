@@ -124,7 +124,15 @@ describe('GET /api/source security envelope (Ticket 09)', () => {
     const outside = await mkdtemp(join(tmpdir(), 'module-graph-outside-'));
     try {
       await writeFile(join(outside, 'secret.ts'), 'export const secret = 1;\n', 'utf8');
-      await symlink(join(outside, 'secret.ts'), join(root, 'src', 'leak.ts'));
+      try {
+        await symlink(join(outside, 'secret.ts'), join(root, 'src', 'leak.ts'));
+      } catch (err) {
+        // Windows without symlink privilege (no admin / developer mode)
+        // cannot even CREATE the link — the escape is structurally impossible
+        // there, so skip rather than fail on the environment.
+        if ((err as NodeJS.ErrnoException)?.code === 'EPERM') return;
+        throw err;
+      }
       const { status } = await source('src/leak.ts');
       expect(status).toBe(403);
     } finally {

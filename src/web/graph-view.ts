@@ -1,10 +1,21 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import type { Edge, GraphDelta, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
 import { applyViewState, dirBallDirOf, type ViewState } from './graph-filters.js';
 import { findBackEdges, type LayoutGraphInput } from './hierarchy-layout.js';
-import { THEME, diameterOf, shortLabel } from './theme.js';
-import { STATE_ORDER, stateColor } from './test-states.js';
+import {
+  MOTION,
+  THEME,
+  activeThemeKey,
+  cyPalette,
+  diameterOf,
+  prefersReducedMotion,
+  setTheme as setActiveTheme,
+  shortLabel,
+  type ThemeKey
+} from './theme.js';
+import { STATE_ORDER } from './test-states.js';
+import { createPhysics, type Physics } from './physics.js';
 
 cytoscape.use(fcose);
 
@@ -13,29 +24,40 @@ export interface GraphViewOptions {
   onFocusChange(node: ModuleNode | null): void;
   /** Hover tooltip element; receives the node's relative path. */
   tooltipEl: HTMLElement;
+  /** Prototype node physics (drift / spring-back / hover pop / checking pulse). */
+  physics?: boolean;
 }
 
 export interface GraphView {
   setSnapshot(snapshot: GraphSnapshot): void;
   /** Ticket 05: apply one watcher window's net delta in place (no full re-render). */
   applyDelta(delta: GraphDelta): void;
-  /** Ticket 06/07/08: single-node state patch (testState / typeErrors / …). */
+  /** Ticket 06/07/08/12: single-node state patch (testState / typeErrors / aiReview / …). */
   applyNodeUpdate(node: ModuleNode): void;
-  /** Ticket 11 view controls: 只看未测 / search / directory collapse (one surface). */
+  /** Ticket 11+theme view controls: 只看未测 / search / collapse / legend-hidden states. */
   setViewState(patch: Partial<ViewState>): void;
   /** Re-lock focus on a node and bring it into view (detail-panel jumps). */
   focusNode(id: string): void;
   /** Drop the current lock (Esc / close). */
   clearFocus(): void;
   resetView(): void;
+  /** Restyle to another theme without touching positions or data. */
+  setTheme(key: ThemeKey): void;
+  /** Cycle arcs currently rendered — the statusbar's 循环依赖 counter. */
+  cycleCount(): number;
 }
-
-
 
 /** @types/cytoscape omits `target-arrow-opacity`; cytoscape itself supports it. */
 type EdgeStylePatch = { 'target-arrow-opacity'?: number };
 
 function edgeStyle(
+  style: cytoscape.StylesheetStyle['style'] & EdgeStylePatch
+): cytoscape.StylesheetStyle['style'] {
+  return style as cytoscape.StylesheetStyle['style'];
+}
+
+/** Same cast for node rules: data() mappers + transitions outrun the typings. */
+function nodeStyle(
   style: cytoscape.StylesheetStyle['style'] & EdgeStylePatch
 ): cytoscape.StylesheetStyle['style'] {
   return style as cytoscape.StylesheetStyle['style'];
@@ -47,19 +69,30 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   const cy = cytoscape({
     container,
     wheelSensitivity: THEME.interaction.wheelSensitivity,
+    maxZoom: THEME.interaction.maxZoom,
+    minZoom: THEME.interaction.minZoom,
     boxSelectionEnabled: false,
     style: buildStylesheet()
   });
+
+  const physics: Physics | null = opts.physics ? createPhysics(cy) : null;
 
   let currentNodes = new Map<string, ModuleNode>();
   let currentEdges = new Map<string, Edge>();
   let degrees = new Map<string, { in: number; out: number }>();
   let backEdgeIds = new Set<string>();
   let lockedId: string | null = null;
-  // Ticket 11 view controls; expandedDirs only matters while collapse is on.
-  // The pipeline sees a ReadonlySet; the view owns the mutable copy.
+  let entered = false; // entrance choreography (pre → fade-in) runs once, on first load
+  // Ticket 11 + theme.html legend filter: the view owns the mutable copies;
+  // the pipeline sees ReadonlySets.
   const expandedDirs = new Set<string>();
-  let viewState: ViewState = { query: '', untestedOnly: false, collapseEnabled: false, expandedDirs };
+  let viewState: ViewState = {
+    query: '',
+    untestedOnly: false,
+    collapseEnabled: false,
+    expandedDirs,
+    hiddenStates: new Set<TestState>()
+  };
 
   // -------------------------------------------------------------------------
   // Data
@@ -85,6 +118,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   function nodeElement(n: ModuleNode): cytoscape.ElementDefinition {
     const deg = degrees.get(n.id) ?? { in: 0, out: 0 };
+    const classes: string[] = [];
+    // Ticket 12: a node the agent is reviewing carries the checking class —
+    // the stylesheet draws the bright edge, physics.ts pulses the overlay.
+    if (n.aiReview?.status === 'checking') classes.push('checking');
     return {
       data: {
         id: n.id,
@@ -92,14 +129,20 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         path: n.path,
         state: n.testState,
         diameter: diameterOf(deg.in + deg.out),
-        typeErrorCount: n.typeErrors.length
-      }
+        typeErrorCount: n.typeErrors.length,
+        oo: 0
+      },
+      classes: classes.join(' ')
     };
   }
 
   function edgeElement(e: Edge, cycle: boolean): cytoscape.ElementDefinition {
+    // Cycle styling rides the CLASS channel (edge.cycle): the data-field
+    // bracket selector `[cycle]` matches mere field presence, so cycle:false
+    // would light every edge up as a cycle.
     return {
-      data: { id: edgeIdOf(e), source: e.from, target: e.to, cycle }
+      data: { id: edgeIdOf(e), source: e.from, target: e.to },
+      classes: cycle ? 'cycle' : ''
     };
   }
 
@@ -123,14 +166,19 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   /** True while any ticket-11 control reshapes the rendered graph. */
   function filtersActive(): boolean {
-    return viewState.query.trim() !== '' || viewState.untestedOnly || viewState.collapseEnabled;
+    return (
+      viewState.query.trim() !== '' ||
+      viewState.untestedOnly ||
+      viewState.collapseEnabled ||
+      viewState.hiddenStates.size > 0
+    );
   }
 
   /**
-   * Full re-render of the visible graph: view pipeline (只看未测 → 搜索 →
-   * 折叠) over currentNodes/currentEdges, then layout + element swap. With
-   * every control off this renders the plain graph, so setSnapshot is just
-   * bookkeeping + renderVisible.
+   * Full re-render of the visible graph: view pipeline (图例过滤 → 只看未测 →
+   * 搜索 → 折叠) over currentNodes/currentEdges, then layout + element swap.
+   * With every control off this renders the plain graph, so setSnapshot is
+   * just bookkeeping + renderVisible.
    */
   function renderVisible(): void {
     const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
@@ -144,8 +192,14 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     };
     backEdgeIds = findBackEdges(layoutInput);
 
+    const firstRender = !entered;
+    entered = true;
     const elements: cytoscape.ElementDefinition[] = [
-      ...visible.nodes.map(nodeElement),
+      ...visible.nodes.map((n) => {
+        const def = nodeElement(n);
+        if (firstRender) def.classes = `${def.classes} pre`.trim();
+        return def;
+      }),
       ...visible.edges.map((e) => edgeElement(e, backEdgeIds.has(edgeIdOf(e))))
     ];
 
@@ -160,6 +214,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       else clearFocus();
     }
     applyLayout();
+    if (firstRender) {
+      // 入场编排: the graph body fades in after the shell (pre → transition).
+      window.setTimeout(() => {
+        cy.batch(() => cy.nodes().removeClass('pre'));
+      }, 60);
+    }
   }
 
   function applyDelta(delta: GraphDelta): void {
@@ -223,10 +283,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       for (const e of delta.addedEdges) {
         cy.add(edgeElement(e, backEdgeIds.has(edgeIdOf(e))));
       }
-      // Cycle styling and ball sizes on touched elements.
+      // Cycle styling (class channel) and ball sizes on touched elements.
       cy.edges().forEach((ed) => {
-        const want = backEdgeIds.has(ed.id());
-        if (ed.data('cycle') !== want) ed.data('cycle', want);
+        ed.toggleClass('cycle', backEdgeIds.has(ed.id()));
       });
       const touched = new Set<string>();
       for (const e of delta.addedEdges) {
@@ -256,7 +315,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   function applyNodeUpdate(node: ModuleNode): void {
     currentNodes.set(node.id, node);
     // With controls on, a state change can change what is visible (未测
-    // filter, dir-ball aggregation) — re-render instead of patching one ball.
+    // filter, dir-ball aggregation, legend-hidden states) — re-render
+    // instead of patching one ball.
     if (filtersActive()) {
       renderVisible();
       return;
@@ -266,6 +326,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       el.data('state', node.testState);
       // Ticket 07: keep the badge channel in sync (ring disappears at 0).
       el.data('typeErrorCount', node.typeErrors.length);
+      // Ticket 12: checking class drives the edge pulse; done removes it.
+      if (node.aiReview?.status === 'checking') el.addClass('checking');
+      else el.removeClass('checking');
     }
     // The detail panel re-renders via main.ts when the node is focused.
   }
@@ -286,11 +349,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       padding: THEME.canvas.padding,
       animate: false
     } as cytoscape.LayoutOptions).run();
+    physics?.rebase();
   }
 
   // -------------------------------------------------------------------------
-  // Focus: hover = one-hop neighborhood stays lit, rest dims to α 0.13;
-  // click = lock (tap again or tap background to unlock). Verdict #5.
+  // Focus: hover = one-hop neighborhood stays lit, rest dims; click = lock
+  // (tap again or tap background to unlock). Verdict #5.
   // -------------------------------------------------------------------------
 
   function applyFocus(focusId: string | null): void {
@@ -315,6 +379,15 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   cy.on('mouseover', 'node', (evt) => {
     if (lockedId === null) applyFocus(evt.target.id());
+    if (physics !== null) {
+      physics.popNode(evt.target, MOTION.hoverPopMult);
+      evt.target
+        .closedNeighborhood()
+        .nodes()
+        .forEach((n: cytoscape.NodeSingular) => {
+          if (n.id() !== evt.target.id()) physics.popNode(n, MOTION.neighborPopMult);
+        });
+    }
     opts.tooltipEl.textContent = evt.target.data('path');
     opts.tooltipEl.style.opacity = '1';
   });
@@ -325,6 +398,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   });
   cy.on('mouseout', 'node', () => {
     if (lockedId === null) applyFocus(null);
+    physics?.restorePop();
     opts.tooltipEl.style.opacity = '0';
   });
 
@@ -393,62 +467,103 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         expandedDirs.clear();
         changed = true;
       }
+      if (patch.hiddenStates !== undefined) {
+        viewState.hiddenStates = new Set(patch.hiddenStates);
+        changed = true;
+      }
       if (changed) renderVisible();
     },
     focusNode,
     clearFocus,
-    resetView
+    resetView,
+    setTheme(key: ThemeKey): void {
+      setActiveTheme(key);
+      cy.style(buildStylesheet());
+    },
+    cycleCount(): number {
+      return backEdgeIds.size;
+    }
   };
 }
 
+/**
+ * The cy stylesheet, themed: colors read from the ACTIVE palette at build
+ * time; setTheme() rebuilds it (cy.style) so a re-skin never touches
+ * positions or data. Rule order matters — later rules win.
+ */
 function buildStylesheet(): cytoscape.StylesheetStyle[] {
+  const p = cyPalette();
+  const te = THEME.typeError[activeThemeKey()];
+  const reduced = prefersReducedMotion();
+
   const stateRules: cytoscape.StylesheetStyle[] = STATE_ORDER.map((state) => ({
     selector: `node[state = "${state}"]`,
-    style: { 'background-color': stateColor(state) }
+    style: { 'background-color': p.states[state] }
   }));
 
   return [
     {
       selector: 'node',
-      style: {
+      style: nodeStyle({
         width: 'data(diameter)',
         height: 'data(diameter)',
         label: 'data(label)',
         'font-size': THEME.node.labelFontSize,
-        color: THEME.node.labelColor,
+        color: p.label,
         'text-valign': 'bottom',
-        'text-margin-y': 4,
-        'background-color': stateColor('untested'),
-        'border-width': 0,
-        'overlay-opacity': 0
-      }
+        'text-margin-y': 3,
+        'text-wrap': 'ellipsis',
+        'text-max-width': 70,
+        'background-color': p.states.untested,
+        'border-width': p.nodeBorderW,
+        'border-color': p.nodeBorderColor,
+        'overlay-color': p.accent,
+        'overlay-opacity': 'data(oo)',
+        'overlay-padding': 9,
+        'transition-property': 'opacity, border-width',
+        'transition-duration': reduced ? 0 : 180,
+        'transition-timing-function': 'ease-out'
+      } as EdgeStylePatch)
     },
     ...stateRules,
     {
       selector: 'edge',
       style: edgeStyle({
         width: THEME.edge.width,
-        'line-color': THEME.edge.color,
-        'line-opacity': THEME.edge.alpha,
+        'line-color': p.edge.color,
+        'line-opacity': p.edge.alpha,
         'curve-style': 'bezier',
         'target-arrow-shape': 'triangle',
         'arrow-scale': THEME.edge.arrowScale,
-        'target-arrow-color': THEME.edge.color,
-        'target-arrow-opacity': THEME.edge.alpha,
-        'overlay-opacity': 0
+        'target-arrow-color': p.edge.color,
+        'target-arrow-opacity': p.edge.alpha,
+        'overlay-opacity': 0,
+        'transition-property': 'opacity',
+        'transition-duration': reduced ? 0 : 140
       })
     },
     {
-      // Verdict #4: cycle edges 2.4px dashed #D55E00 (the peeled back arcs).
-      selector: 'edge[cycle]',
+      // Verdict #4: cycle edges 2.4px dashed vermillion (class channel —
+      // see edgeElement; the `[cycle]` data selector would match false).
+      selector: 'edge.cycle',
       style: edgeStyle({
-        width: THEME.edge.cycle.width,
+        width: THEME.edge.cycleWidth,
         'line-style': 'dashed',
-        'line-color': THEME.edge.cycle.color,
-        'target-arrow-color': THEME.edge.cycle.color,
-        'line-opacity': THEME.edge.cycle.alpha,
-        'target-arrow-opacity': THEME.edge.cycle.alpha
+        'line-color': p.edge.cycleColor,
+        'target-arrow-color': p.edge.cycleColor,
+        'line-opacity': p.edge.cycleAlpha,
+        'target-arrow-opacity': p.edge.cycleAlpha
       })
+    },
+    {
+      // Ticket 12: AI 检查中 — theme-accent bright edge; the breathing
+      // overlay pulse is data-driven by physics.ts (static when reduced).
+      selector: 'node.checking',
+      style: {
+        'border-width': 1.6,
+        'border-color': p.accent,
+        'border-opacity': 1
+      }
     },
     {
       // Ticket 07: type-error badge — an error ring on balls with ≥1 type
@@ -456,21 +571,30 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       // focus rule so the transient focus ring wins while a node is locked.
       selector: 'node[typeErrorCount > 0]',
       style: {
-        'border-width': THEME.typeError.borderWidth,
-        'border-color': THEME.typeError.color,
+        'border-width': te.borderWidth,
+        'border-color': te.color,
         'border-opacity': 1
       }
     },
     {
-      selector: '.dimmed',
-      style: { opacity: THEME.interaction.dimOpacity }
+      // 入场编排: nodes mount invisible and fade in once, on first load.
+      selector: 'node.pre',
+      style: { opacity: 0 }
     },
     {
-      // Verdict #4: highlight = accent-blue recolor.
+      selector: 'node.dimmed',
+      style: { opacity: p.dimNode }
+    },
+    {
+      selector: 'edge.dimmed',
+      style: { opacity: p.dimEdge }
+    },
+    {
+      // Verdict #4: highlight = accent recolor.
       selector: 'edge.focused',
       style: edgeStyle({
-        'line-color': THEME.edge.highlightColor,
-        'target-arrow-color': THEME.edge.highlightColor,
+        'line-color': p.accent,
+        'target-arrow-color': p.accent,
         'line-opacity': 1,
         'target-arrow-opacity': 1
       })
@@ -478,8 +602,8 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     {
       selector: 'node.focused',
       style: {
-        'border-width': 2,
-        'border-color': THEME.edge.highlightColor
+        'border-width': 2.4,
+        'border-color': p.accent
       }
     }
   ];

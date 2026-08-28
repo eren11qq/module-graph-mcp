@@ -1,45 +1,127 @@
+import type { TestState } from '../shared/types.js';
+
 /**
- * Visual constants layer — the landing spot for every ticket-00 verdict.
- * All reversible decisions (verdicts §回滚开关) live here; flipping a
- * constant re-skins the page without touching the render engines.
- * The test-state vocabulary (color/label/severity) lives in test-states.ts.
+ * Visual constants layer — the landing spot for every ticket-00 verdict plus
+ * the theme-tokens 定稿 (ticket 03+ theme.html prototype → production).
+ *
+ * Two themes: dark 暗色仪器盘 (default, brightened Okabe-Ito) and light 亮色
+ * 工作台 (paper neutrals, classic Okabe-Ito). The CSS side of each theme lives
+ * in styles.css under [data-theme="…"]; THIS file owns the cytoscape-side
+ * palette, the motion parameters and the shell chrome constants. All
+ * reversible decisions (verdicts §回滚开关) live here; flipping a constant
+ * re-skins the page without touching the render engines.
+ *
+ * The test-state vocabulary (label/severity) lives in test-states.ts; the
+ * state COLORS are theme-scoped and live in the palettes below.
  */
+
+export type ThemeKey = 'dark' | 'light';
+
+/**
+ * Canvas encoding palette of ONE theme: ball fills, edge/cycle colors, the
+ * accent used by the focus ring and the AI-checking edge pulse, and the dim
+ * opacities for the non-neighborhood. Everything the cy stylesheet reads.
+ */
+export interface CyPalette {
+  states: Record<TestState, string>;
+  edge: { color: string; alpha: number; cycleColor: string; cycleAlpha: number };
+  label: string;
+  nodeBorderW: number;
+  nodeBorderColor: string;
+  /** Focus ring / checking ring / pulse overlay color. */
+  accent: string;
+  dimNode: number;
+  dimEdge: number;
+}
+
+/**
+ * dark 暗色仪器盘 — Okabe-Ito brightened on a deep navy ground: same hue
+ * spacing, lifted L so the four states stay colorblind-safe on dark.
+ */
+const DARK: CyPalette = {
+  states: {
+    passing: '#00C389',
+    failing: '#FF7A45',
+    'has-tests-unrun': '#5CC0FF',
+    untested: '#5C6E8C'
+  },
+  edge: { color: '#3D5378', alpha: 0.75, cycleColor: '#FF7A45', cycleAlpha: 0.95 },
+  label: '#C9D6EC',
+  nodeBorderW: 0,
+  nodeBorderColor: 'rgba(0,0,0,0)',
+  accent: '#4CC2FF',
+  dimNode: 0.12,
+  dimEdge: 0.05
+};
+
+/** light 亮色工作台 — classic Okabe-Ito on warm paper. */
+const LIGHT: CyPalette = {
+  states: {
+    passing: '#009E73',
+    failing: '#D55E00',
+    'has-tests-unrun': '#56B4E9',
+    untested: '#ADB5BD'
+  },
+  edge: { color: '#A9A294', alpha: 0.75, cycleColor: '#C2410C', cycleAlpha: 0.95 },
+  label: '#57534E',
+  nodeBorderW: 1.4,
+  nodeBorderColor: '#FFFFFF',
+  accent: '#26221C',
+  dimNode: 0.12,
+  dimEdge: 0.05
+};
+
+export const CY_PALETTES: Record<ThemeKey, CyPalette> = { dark: DARK, light: LIGHT };
+
+let activeTheme: ThemeKey = 'dark';
+
+/** Switch the active theme (canvas side; the CSS side follows body[data-theme]). */
+export function setTheme(key: ThemeKey): void {
+  activeTheme = key;
+}
+
+export function activeThemeKey(): ThemeKey {
+  return activeTheme;
+}
+
+/** Palette of the ACTIVE theme — read once per stylesheet build / legend render. */
+export function cyPalette(): CyPalette {
+  return CY_PALETTES[activeTheme];
+}
+
+/** Theme-scoped test-state color (delegates to the active palette). */
+export function stateColor(state: TestState): string {
+  return CY_PALETTES[activeTheme].states[state];
+}
 
 export const THEME = {
   /** Verdict #4: uniform 1.5px neutral edges + triangle arrows; cycles dashed vermillion. */
   edge: {
-    color: '#94A3B8',
     width: 1.5,
-    alpha: 0.75,
     arrowScale: 1.15,
-    cycle: {
-      color: '#D55E00',
-      width: 2.4,
-      alpha: 0.95
-    },
-    highlightColor: '#2563EB'
+    cycleWidth: 2.4
   },
   /** Verdict #3: r = 7 + √deg × 3.6 (deg clamped to ≥ 1). */
   node: {
     radiusBase: 7,
     radiusSqrtFactor: 3.6,
-    labelColor: '#8B949E',
     labelFontSize: 10
   },
   interaction: {
-    /** Verdict #5: non-neighborhood dims to α 0.13 on hover. */
-    dimOpacity: 0.13,
-    wheelSensitivity: 0.22
+    wheelSensitivity: 0.22,
+    /** Zoom clamp: a filtered single-ball fit must not blow the ball up to fill the canvas. */
+    maxZoom: 2.5,
+    minZoom: 0.05
   },
   /**
    * Ticket 07: type-error badge is its own visual channel — a ring around
-   * the ball, independent of the Okabe-Ito state fill (and independent of
-   * the focus ring, which wins while a node is locked). Same red the code
-   * view and detail panel use for type errors.
+   * the ball, independent of the state fill (and of the focus ring, which
+   * wins while a node is locked). Same color the code view uses for the
+   * type-error row bar. Theme-scoped: distinct from both themes' fail fill.
    */
   typeError: {
-    color: '#f85149',
-    borderWidth: 3
+    dark: { color: '#F85149', borderWidth: 3 },
+    light: { color: '#B42318', borderWidth: 3 }
   },
   /** Verdict #1 fcose parameters (randomize:false preserves positions for tickets 04/05). */
   fcose: {
@@ -61,7 +143,56 @@ export const THEME = {
   }
 } as const;
 
-/** Node diameter from total degree: 2 × (7 + √deg × 3.6), deg clamped ≥ 1. */export function diameterOf(deg: number): number {
+/**
+ * Motion parameters (prototype theme.html §物理/动效): three physics layers —
+ * ambient drift, release spring-back, hover pop — plus the AI-checking edge
+ * pulse. Everything degrades under prefers-reduced-motion.
+ */
+export const MOTION = {
+  /** Ambient drift amplitude range (px) per axis, per node. */
+  driftAmpMin: 2,
+  driftAmpMax: 3.6,
+  /** Underdamped release spring: one-to-two wobble then settle. */
+  springK: 60,
+  springC: 6.5,
+  hoverPopMult: 1.16,
+  neighborPopMult: 1.06,
+  popDurationMs: 170,
+  /**
+   * AI checking pulse: overlay-opacity oscillation ≈1.2 Hz (prototype's
+   * sin(now/130) → 2π×130ms ≈ 817ms). Reduced motion pins a static overlay.
+   */
+  checkingPulsePeriodMs: 820,
+  checkingPulseMin: 0.1,
+  checkingPulseMax: 0.26,
+  /** Ambient drift stops above this node count (pulse/spring stay on). */
+  driftMaxNodes: 600,
+  dragVelocityFactor: 0.35,
+  dragVelocityMax: 260
+} as const;
+
+/** Shell chrome constants the TS side needs (the CSS side lives in styles.css). */
+export const CHROME = {
+  themeStorageKey: 'mg-theme',
+  defaultTheme: 'dark' as ThemeKey,
+  /** Entrance choreography replay window (body.enter). */
+  entranceTotalMs: 1400,
+  /** Statusbar event ticker dims back after this long. */
+  eventDimMs: 2600,
+  /** WS reconnect delay. */
+  wsRetryMs: 3000
+} as const;
+
+export function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/** Node diameter from total degree: 2 × (7 + √deg × 3.6), deg clamped ≥ 1. */
+export function diameterOf(deg: number): number {
   const clamped = Math.max(1, deg);
   return 2 * (THEME.node.radiusBase + Math.sqrt(clamped) * THEME.node.radiusSqrtFactor);
 }

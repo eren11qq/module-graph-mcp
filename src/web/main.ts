@@ -1,10 +1,12 @@
 import './styles.css';
-import type { GraphDelta, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import type { GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
 import { createDetailPanel } from './detail-panel.js';
 import { isGraphDelta, isGraphSnapshot, isModuleNode } from './frame-guards.js';
 import { createGraphView } from './graph-view.js';
 import type { SourceLoader } from './code-view.js';
 import { createGraphModel } from './graph-model.js';
+import { createStatusbar } from './statusbar.js';
+import { CHROME, shortLabel, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
 import { STATE_ORDER, stateColor, stateLabel } from './test-states.js';
 
 // ---------------------------------------------------------------------------
@@ -13,11 +15,14 @@ import { STATE_ORDER, stateColor, stateLabel } from './test-states.js';
 
 const cyContainer = document.getElementById('cy') as HTMLElement;
 const tooltipEl = document.getElementById('tooltip') as HTMLElement;
-const graphStatus = document.getElementById('graph-status') as HTMLElement;
 const detailContainer = document.getElementById('detail-card') as HTMLElement;
+const legendEl = document.getElementById('legend') as HTMLElement;
+const scanNotice = document.getElementById('scan-notice') as HTMLElement;
+const connEl = document.getElementById('conn') as HTMLElement;
+const connTxt = document.getElementById('conn-txt') as HTMLElement;
 
 // One browser-side graph: every frame folds here, and every consumer
-// (status line, detail-panel adjacency) reads through the model.
+// (statusbar counts, detail-panel adjacency) reads through the model.
 const model = createGraphModel();
 let focusedId: string | null = null;
 
@@ -37,14 +42,15 @@ async function loadSource(path: string): Promise<{ content: string }> {
 function showDetail(node: ModuleNode): void {
   const { incoming, outgoing } = model.neighbors(node.id);
   detailPanel.show(node, {
-    outgoing,
     incoming,
+    outgoing,
     onJump: (id) => view.focusNode(id)
   });
 }
 
 const view = createGraphView(cyContainer, {
   tooltipEl,
+  physics: true,
   onFocusChange: (node) => {
     focusedId = node?.id ?? null;
     if (node) showDetail(node);
@@ -53,41 +59,134 @@ const view = createGraphView(cyContainer, {
 });
 
 // ---------------------------------------------------------------------------
-// Legend — the state vocabulary's single display surface.
+// Statusbar: counts / coverage band / event ticker (the shell's signature row)
 // ---------------------------------------------------------------------------
 
+const statusbar = createStatusbar({
+  sbLeft: document.getElementById('sb-left') as HTMLElement,
+  band: document.getElementById('band') as HTMLElement,
+  bandCap: document.getElementById('band-cap') as HTMLElement,
+  evt: document.getElementById('evt') as HTMLElement
+});
+
+function stateCounts(): Record<TestState, number> {
+  const counts: Record<TestState, number> = {
+    passing: 0,
+    failing: 0,
+    'has-tests-unrun': 0,
+    untested: 0
+  };
+  for (const n of model.nodes()) counts[n.testState]++;
+  return counts;
+}
+
+function refreshStatus(rootPath: string): void {
+  statusbar.setCounts(model.nodes().length, model.edges().length, view.cycleCount(), rootPath);
+  statusbar.setBand(stateCounts());
+}
+
+// ---------------------------------------------------------------------------
+// Theme: dark 暗色仪器盘 (default) / light 亮色工作台; topbar toggle +
+// localStorage mg-theme. Canvas palette via graph-view.setTheme (cy.style
+// rebuild keeps positions), shell via body[data-theme] CSS tokens.
+// ---------------------------------------------------------------------------
+
+const themeBtn = document.getElementById('btn-theme') as HTMLButtonElement;
+let currentTheme: ThemeKey = CHROME.defaultTheme;
+
+function storedTheme(): ThemeKey {
+  try {
+    const v = localStorage.getItem(CHROME.themeStorageKey);
+    return v === 'light' || v === 'dark' ? v : CHROME.defaultTheme;
+  } catch {
+    return CHROME.defaultTheme;
+  }
+}
+
+function applyTheme(key: ThemeKey, persist = true): void {
+  currentTheme = key;
+  document.body.dataset.theme = key;
+  setActiveTheme(key);
+  view.setTheme(key);
+  // Legend swatches echo the active canvas palette.
+  renderLegend();
+  themeBtn.textContent = key === 'dark' ? '亮色工作台' : '暗色仪器盘';
+  themeBtn.title = key === 'dark' ? '切换到亮色工作台' : '切换到暗色仪器盘';
+  if (persist) {
+    try {
+      localStorage.setItem(CHROME.themeStorageKey, key);
+    } catch {
+      /* private mode: theme just won't survive a reload */
+    }
+  }
+}
+
+themeBtn.addEventListener('click', () => {
+  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
+});
+
+// ---------------------------------------------------------------------------
+// Legend — the state vocabulary's display surface AND a filter: click a row
+// to hide/show that state (theme.html FILTER_OFF), persisting through the
+// view pipeline as hiddenStates.
+// ---------------------------------------------------------------------------
+
+const hiddenStates = new Set<TestState>();
+
 function renderLegend(): void {
-  const list = document.getElementById('legend-list');
-  if (!list) return;
+  legendEl.replaceChildren();
   for (const state of STATE_ORDER) {
     const row = document.createElement('div');
-    row.className = 'legend-row';
+    row.className = 'legend-row' + (hiddenStates.has(state) ? ' off' : '');
+    row.dataset.state = state;
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+
     const swatch = document.createElement('span');
-    swatch.className = 'legend-swatch';
+    swatch.className = 'dot';
     swatch.style.background = stateColor(state);
     const label = document.createElement('span');
+    label.className = 'name';
     label.textContent = stateLabel(state);
-    row.append(swatch, label);
-    list.append(row);
+    const cnt = document.createElement('span');
+    cnt.className = 'cnt';
+    cnt.textContent = String(stateCounts()[state]);
+
+    const toggle = (): void => {
+      if (hiddenStates.has(state)) hiddenStates.delete(state);
+      else hiddenStates.add(state);
+      setViewState({ hiddenStates: new Set(hiddenStates) });
+      renderLegend();
+    };
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        toggle();
+      }
+    });
+    row.append(swatch, label, cnt);
+    legendEl.append(row);
   }
 
   const edgeRow = document.createElement('div');
-  edgeRow.className = 'legend-row';
+  edgeRow.className = 'legend-row edge-row';
+  edgeRow.style.marginTop = '8px';
   const line = document.createElement('span');
-  line.className = 'legend-line solid';
+  line.className = 'legend-line';
   const edgeLabel = document.createElement('span');
   edgeLabel.textContent = '依赖边（箭头 = 依赖方向）';
   edgeRow.append(line, edgeLabel);
 
   const cycleRow = document.createElement('div');
-  cycleRow.className = 'legend-row';
+  cycleRow.className = 'legend-row edge-row';
   const cycleLine = document.createElement('span');
-  cycleLine.className = 'legend-line';
+  cycleLine.className = 'legend-line dashed';
   const cycleLabel = document.createElement('span');
   cycleLabel.textContent = '循环依赖';
   cycleRow.append(cycleLine, cycleLabel);
 
-  list.append(edgeRow, cycleRow);
+  legendEl.append(edgeRow, cycleRow);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,27 +219,45 @@ function toggleBtn(btn: HTMLButtonElement, set: (on: boolean) => void): void {
   set(on);
 }
 
-btnUntestedOnly.addEventListener('click', () => toggleBtn(btnUntestedOnly, (on) => view.setViewState({ untestedOnly: on })));
-btnCollapse.addEventListener('click', () => toggleBtn(btnCollapse, (on) => view.setViewState({ collapseEnabled: on })));
-searchBox.addEventListener('input', () => view.setViewState({ query: searchBox.value }));
+/** One funnel for every view-state change: the statusbar's visible-graph
+    counters (循环依赖) must track what the pipeline just rendered. */
+function setViewState(patch: Parameters<typeof view.setViewState>[0]): void {
+  view.setViewState(patch);
+  refreshStatus(model.rootPath() ?? '…');
+}
+
+btnUntestedOnly.addEventListener('click', () => toggleBtn(btnUntestedOnly, (on) => setViewState({ untestedOnly: on })));
+btnCollapse.addEventListener('click', () => toggleBtn(btnCollapse, (on) => setViewState({ collapseEnabled: on })));
+searchBox.addEventListener('input', () => setViewState({ query: searchBox.value }));
 
 // ---------------------------------------------------------------------------
 // Data loading: REST first render, WS listener (snapshot pushes since ticket 04)
 // ---------------------------------------------------------------------------
 
-const scanNotice = document.getElementById('scan-notice') as HTMLElement;
+/** 入场编排: shell + graph fade in once, on the very first snapshot only. */
+let entrancePlayed = false;
+function playEntrance(): void {
+  if (entrancePlayed) return;
+  entrancePlayed = true;
+  document.body.classList.add('enter');
+  window.setTimeout(() => document.body.classList.remove('enter'), CHROME.entranceTotalMs);
+}
 
 function applySnapshot(snapshot: GraphSnapshot): void {
   model.foldSnapshot(snapshot);
   view.setSnapshot(snapshot);
-  graphStatus.textContent = `${model.nodes().length} 模块 / ${model.edges().length} 边 · 根 ${snapshot.rootPath}`;
+  refreshStatus(snapshot.rootPath);
   scanNotice.hidden = true;
+  statusbar.flashEvent(`快照 ${model.nodes().length} 节点 / ${model.edges().length} 边`);
+  renderLegend();
+  playEntrance();
 }
 
 function applyDelta(delta: GraphDelta): void {
   model.foldDelta(delta);
   view.applyDelta(delta);
-  graphStatus.textContent = `${model.nodes().length} 模块 / ${model.edges().length} 边 · 根 ${model.rootPath() ?? '…'}`;
+  refreshStatus(model.rootPath() ?? '…');
+  statusbar.flashEvent(`推送 +${delta.addedNodes.length}−${delta.removedNodeIds.length} 节点 · +${delta.addedEdges.length}−${delta.removedEdges.length} 边`);
   // Keep the detail panel honest when the locked node's edges changed.
   if (focusedId !== null) {
     const stillThere = model.node(focusedId);
@@ -152,24 +269,35 @@ function applyDelta(delta: GraphDelta): void {
   }
 }
 
-function setStatus(message: string): void {
-  graphStatus.textContent = message;
-}
-
-/** Ticket 08: fold one node_update patch into the model and the view. */
+/** Ticket 08/12: fold one node_update patch into the model and the view. */
 function applyNodeUpdate(node: ModuleNode): void {
   model.foldNodeUpdate(node);
   view.applyNodeUpdate(node);
+  if (node.aiReview?.status === 'checking') {
+    statusbar.flashEvent(`AI 检查 ${shortLabel(node.id)} …`);
+  } else if (node.aiReview?.status === 'done') {
+    statusbar.flashEvent(`AI 检查完成 · ${shortLabel(node.id)}`);
+  } else {
+    statusbar.flashEvent(`更新 ${shortLabel(node.id)} · ${stateLabel(node.testState)}`);
+  }
+  refreshStatus(model.rootPath() ?? '…');
   if (focusedId === node.id) {
     const fresh = model.node(node.id);
     if (fresh) showDetail(fresh);
   }
 }
 
+function setLive(connected: boolean, text: string): void {
+  connEl.classList.toggle('off', !connected);
+  connTxt.textContent = text;
+}
+
 function connectWs(): void {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${protocol}://${location.host}/ws`);
+  ws.addEventListener('open', () => setLive(true, 'LIVE · WS 已连接'));
   ws.addEventListener('message', (evt) => {
+    setLive(true, 'LIVE · WS 已连接');
     let msg: unknown;
     try {
       msg = JSON.parse(String(evt.data));
@@ -201,30 +329,20 @@ function connectWs(): void {
     }
   });
   ws.addEventListener('close', () => {
-    setTimeout(connectWs, 3000);
+    setLive(false, '离线 · 重连中…');
+    setTimeout(connectWs, CHROME.wsRetryMs);
   });
 }
 
 async function boot(): Promise<void> {
-  renderLegend();
-
-  const infoEl = document.getElementById('server-info');
-  try {
-    const res = await fetch('/api/info');
-    if (res.ok && infoEl) {
-      const info = (await res.json()) as { rootPath: string; version: string };
-      infoEl.textContent = `${info.rootPath}（v${info.version}）`;
-    }
-  } catch {
-    if (infoEl) infoEl.textContent = '（/api/info 不可用）';
-  }
+  applyTheme(storedTheme(), false);
 
   try {
     const res = await fetch('/api/graph');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     applySnapshot((await res.json()) as GraphSnapshot);
   } catch (err) {
-    setStatus(`图数据未就绪（${err instanceof Error ? err.message : String(err)}）`);
+    statusbar.flashEvent(`图数据未就绪（${err instanceof Error ? err.message : String(err)}）`);
   }
 
   connectWs();

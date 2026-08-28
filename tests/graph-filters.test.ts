@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyViewState, collapseDirectories, isUntested, searchMatches, DIR_PREFIX } from '../src/web/graph-filters.js';
-import type { Edge, ModuleNode } from '../src/shared/types.js';
+import type { Edge, ModuleNode, TestState } from '../src/shared/types.js';
 
 /**
  * Ticket 11 seam 1: collapse — pure function from (nodes, edges, collapsed
@@ -143,6 +143,7 @@ describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)',
     untestedOnly: false,
     collapseEnabled: false,
     expandedDirs: new Set<string>(),
+    hiddenStates: new Set<TestState>(),
     ...over
   });
 
@@ -197,5 +198,51 @@ describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)',
     // 只看未测 removes failing pkg/c.ts → pkg holds 2 survivors < minFiles → no fold.
     const out = applyViewState(nodes, edges, view({ untestedOnly: true, collapseEnabled: true }));
     expect(out.nodes.map((n) => n.id)).toEqual(['pkg/a.ts', 'pkg/b.ts', 'solo/d.ts']);
+  });
+});
+
+describe('hiddenStates — 图例状态过滤 (theme.html legend filter)', () => {
+  const nodes = [
+    file('main.ts', 'passing'),
+    file('pkg/a.ts', 'untested'),
+    file('pkg/c.ts', 'failing'),
+    file('solo/d.ts', 'has-tests-unrun')
+  ];
+  const edges: Edge[] = [
+    { from: 'main.ts', to: 'pkg/a.ts' },
+    { from: 'pkg/a.ts', to: 'pkg/c.ts' }
+  ];
+
+  const view = (hidden: TestState[], over: Partial<Parameters<typeof applyViewState>[2]> = {}): Parameters<typeof applyViewState>[2] => ({
+    query: '',
+    untestedOnly: false,
+    collapseEnabled: false,
+    expandedDirs: new Set<string>(),
+    hiddenStates: new Set<TestState>(hidden),
+    ...over
+  });
+
+  it('an empty hidden set keeps everything (default, backward compatible)', () => {
+    expect(applyViewState(nodes, edges, view([]))).toEqual({ nodes, edges });
+  });
+
+  it('hides balls of the hidden states and the edges that touch them', () => {
+    const out = applyViewState(nodes, edges, view(['untested']));
+    expect(out.nodes.map((n) => n.id)).toEqual(['main.ts', 'pkg/c.ts', 'solo/d.ts']);
+    expect(out.edges).toEqual([]);
+  });
+
+  it('supports hiding several states at once and combines with other stages', () => {
+    const out = applyViewState(nodes, edges, view(['untested', 'passing'], { collapseEnabled: true }));
+    expect(out.nodes.map((n) => n.id)).toEqual(['pkg/c.ts', 'solo/d.ts']);
+
+    const searched = applyViewState(nodes, edges, view(['untested'], { query: 'pkg/' }));
+    expect(searched.nodes.map((n) => n.id)).toEqual(['pkg/c.ts']);
+  });
+
+  it('hides a state entirely: only the untested fixtures remain when everything else is off-list', () => {
+    const out = applyViewState(nodes, edges, view(['passing', 'failing', 'has-tests-unrun']));
+    expect(out.nodes.map((n) => n.id)).toEqual(['pkg/a.ts']);
+    expect(out.edges).toEqual([]);
   });
 });

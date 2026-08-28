@@ -7,10 +7,20 @@ import xml from 'highlight.js/lib/languages/xml';
 import markdown from 'highlight.js/lib/languages/markdown';
 import yaml from 'highlight.js/lib/languages/yaml';
 import 'highlight.js/styles/github-dark.css';
-import type { TypeErrorEntry } from '../shared/types.js';
+import type { AiReview, AiReviewEntry, TypeErrorEntry } from '../shared/types.js';
 
 /**
- * Ticket 09: highlighted source view with error-line markers.
+ * Ticket 09/12: source view rendered line by line (prototype `.cl` row
+ * structure) so AI-review verdicts and type errors can highlight WHOLE rows.
+ *
+ * Rows wrap (`pre-wrap`) instead of scrolling horizontally — long lines fold
+ * and nothing is ever clipped. highlight.js runs per line so verdict rows can
+ * carry their own background; the accepted trade-off: continuation lines of
+ * multi-line comments / template strings degrade to plain colors (noted in
+ * theme-tokens.md).
+ *
+ * Two highlight channels coexist and never override each other: the agent's
+ * aiReview verdicts (green/amber/red row) and the real typeErrors (left bar).
  * highlight.js is registered per-language (core build) to keep the bundle
  * lean; unknown extensions fall back to escaped plaintext.
  */
@@ -39,21 +49,21 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.yaml': 'yaml'
 };
 
-const LINE_HEIGHT_PX = 20;
-
 export interface SourceLoadResult {
   content: string;
 }
 
 export type SourceLoader = (path: string) => Promise<SourceLoadResult>;
 
+export interface SourceShowNode {
+  path: string;
+  typeErrors: TypeErrorEntry[];
+  aiReview?: AiReview;
+}
+
 export interface SourceView {
-  /**
-   * Render `path`'s content; error lines get a persistent marker and stay
-   * clickable to scroll into view. Caches by path until the node's errors
-   * change.
-   */
-  show(node: { path: string; typeErrors: TypeErrorEntry[] }): Promise<void>;
+  /** Render `path`'s content; verdict/error rows highlighted. Caches by path + marks. */
+  show(node: SourceShowNode): Promise<void>;
 }
 
 function languageOf(path: string): string {
@@ -62,15 +72,32 @@ function languageOf(path: string): string {
   return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext';
 }
 
-export function createSourceView(container: HTMLElement, load: SourceLoader): SourceView {
-  let loadedPath: string | null = null;
-  let loadedErrors: string | null = null;
-  let latest: { path: string; typeErrors: TypeErrorEntry[] } | null = null;
+const VERDICT_CLASS: Record<AiReviewEntry['verdict'], string> = {
+  confident: 'v-pass',
+  unsure: 'v-unsure',
+  error: 'v-error'
+};
 
-  async function show(node: { path: string; typeErrors: TypeErrorEntry[] }): Promise<void> {
-    latest = { path: node.path, typeErrors: node.typeErrors };
+const VERDICT_DEFAULT_MARK: Record<AiReviewEntry['verdict'], string | null> = {
+  confident: null,
+  unsure: '// ? 待确认',
+  error: '// ✗ 逻辑不符'
+};
+
+export function createSourceView(container: HTMLElement, load: SourceLoader): SourceView {
+  let loadedKey: string | null = null;
+  let latestPath: string | null = null;
+
+  async function show(node: SourceShowNode): Promise<void> {
+    latestPath = node.path;
     const errorsKey = JSON.stringify(node.typeErrors.map((e) => [e.line, e.code]));
-    if (loadedPath === node.path && loadedErrors === errorsKey) return;
+    const review = node.aiReview;
+    const verdictsKey =
+      review === undefined
+        ? 'none'
+        : `${review.status}|${JSON.stringify(review.verdicts.map((v) => [v.line, v.verdict, v.message ?? '']))}`;
+    const key = `${node.path}|${errorsKey}|${verdictsKey}`;
+    if (loadedKey === key) return;
 
     container.replaceChildren();
     const loading = document.createElement('div');
@@ -88,48 +115,63 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
       note.className = 'code-error-note';
       note.textContent = `源码不可读：${err instanceof Error ? err.message : String(err)}`;
       container.append(note);
-      loadedPath = null;
-      loadedErrors = null;
+      loadedKey = null;
       return;
     }
 
     // Stale response (the panel moved on meanwhile) — drop it.
-    if (latest === null || latest.path !== node.path) return;
+    if (latestPath !== node.path) return;
+
+    const lines = content.split('\n');
+    const errorLines = new Set(node.typeErrors.filter((e) => e.line >= 1).map((e) => e.line));
+    const verdictByLine = new Map<number, AiReviewEntry>();
+    // Verdict colors only once the review is done; while checking, rows stay plain.
+    if (review?.status === 'done') {
+      for (const v of review.verdicts) verdictByLine.set(v.line, v);
+    }
 
     container.replaceChildren();
     const language = languageOf(node.path);
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    if (language === 'plaintext') {
-      // highlight.js core has no 'plaintext' registered, so hljs.highlight
-      // would throw; escape via textContent instead (ticket 09 fallback).
-      pre.className = 'code-pre hljs';
-      code.textContent = content;
-    } else {
-      pre.className = `code-pre hljs language-${language}`;
-      code.innerHTML = hljs.highlight(content, { language, ignoreIllegals: true }).value;
-    }
-    pre.append(code);
-    container.append(pre);
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1;
+      const text = lines[i] ?? '';
+      const row = document.createElement('div');
+      row.className = 'cl';
 
-    // Error-line markers: absolutely positioned in the scroll container,
-    // aligned via the fixed CSS line height.
-    const lines = content.split('\n').length;
-    container.style.setProperty('--code-lines', String(Math.max(lines, 1)));
-    for (const err of node.typeErrors) {
-      if (err.line < 1 || err.line > lines) continue;
-      const marker = document.createElement('div');
-      marker.className = 'code-error-marker';
-      marker.style.top = `${(err.line - 1) * LINE_HEIGHT_PX}px`;
-      marker.title = `L${err.line} ${err.code}: ${err.message}`;
-      marker.addEventListener('click', () => {
-        container.scrollTo({ top: Math.max(0, (err.line - 1) * LINE_HEIGHT_PX - 40), behavior: 'smooth' });
-      });
-      container.append(marker);
+      const verdict = verdictByLine.get(lineNo);
+      if (verdict !== undefined) row.classList.add(VERDICT_CLASS[verdict.verdict]);
+      if (errorLines.has(lineNo)) row.classList.add('t-err');
+
+      const ln = document.createElement('span');
+      ln.className = 'ln';
+      ln.textContent = String(lineNo);
+
+      const body = document.createElement('span');
+      body.className = 'cl-body';
+      if (language === 'plaintext') {
+        // highlight.js core has no 'plaintext' registered; escape via
+        // textContent (ticket 09 fallback).
+        body.textContent = text;
+      } else {
+        // Per-line highlighting (see module docblock for the trade-off).
+        body.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+      }
+
+      if (verdict !== undefined) {
+        const mark = verdict.message ?? VERDICT_DEFAULT_MARK[verdict.verdict];
+        if (mark !== null) {
+          const mk = document.createElement('span');
+          mk.className = `mk mk-${verdict.verdict}`;
+          mk.textContent = ` ${mark}`;
+          body.append(mk);
+        }
+      }
+
+      row.append(ln, body);
+      container.append(row);
     }
 
-    loadedPath = node.path;
-    loadedErrors = errorsKey;
+    loadedKey = key;
   }
 
   return { show };

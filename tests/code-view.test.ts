@@ -1,34 +1,55 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { createSourceView } from '../src/web/code-view.js';
+import type { AiReview, ModuleNode } from '../src/shared/types.js';
 
 /**
- * P0-3 acceptance: a `.txt` file (inside the source-reader whitelist) used to
- * crash show() — `languageOf` fell back to the unregistered 'plaintext' and
- * hljs.highlight threw "Unknown language". It must now render as escaped
- * plain text without throwing.
+ * Ticket 09/12: per-line source rendering (prototype `.cl` rows). Verdict
+ * rows carry the three-color channel, type errors their own left bar, and
+ * the two never override each other. The plaintext fallback must still
+ * escape rather than inject HTML.
  */
+
+const review = (status: AiReview['status'], verdicts: AiReview['verdicts']): AiReview => ({
+  status,
+  verdicts,
+  reviewedAt: 1
+});
+
+const node = (over: Partial<ModuleNode> = {}): ModuleNode => ({
+  id: 'a.ts',
+  path: 'a.ts',
+  language: 'ts',
+  testState: 'untested',
+  coveredBy: [],
+  typeErrors: [],
+  ...over
+});
+
 describe('source view plaintext fallback (P0-3)', () => {
   it('renders a .txt file without throwing and escapes it via textContent', async () => {
     const container = document.createElement('div');
     const view = createSourceView(container, async () => ({ content: 'a <b> & "c"' }));
 
-    await expect(view.show({ path: 'README.txt', typeErrors: [] })).resolves.toBeUndefined();
+    await expect(view.show(node({ path: 'README.txt' }))).resolves.toBeUndefined();
 
-    const code = container.querySelector('pre code');
-    expect(code).not.toBeNull();
-    expect(code?.textContent).toBe('a <b> & "c"');
-    expect(code?.innerHTML).not.toContain('<b>');
+    const rows = container.querySelectorAll('.cl');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.querySelector('.cl-body')!.textContent).toBe('a <b> & "c"');
+    // The angle bracket must be TEXT, not an injected element.
+    expect(container.querySelector('b')).toBeNull();
   });
 
-  it('still highlights registered languages (.ts) as before', async () => {
+  it('still highlights registered languages (.ts), per line', async () => {
     const container = document.createElement('div');
-    const view = createSourceView(container, async () => ({ content: 'const x: number = 1;' }));
+    const view = createSourceView(container, async () => ({ content: 'const x: number = 1;\nlet y = 2;' }));
 
-    await view.show({ path: 'a.ts', typeErrors: [] });
+    await view.show(node());
 
-    const code = container.querySelector('pre.code-pre.language-typescript code');
-    expect(code?.querySelector('span.hljs-keyword')).not.toBeNull();
+    const rows = container.querySelectorAll('.cl');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelector('span.hljs-keyword')).not.toBeNull();
+    expect(rows[1]!.querySelector('span.hljs-keyword')).not.toBeNull();
   });
 
   it('loader failure resolves with an error note instead of rejecting', async () => {
@@ -37,7 +58,71 @@ describe('source view plaintext fallback (P0-3)', () => {
       throw new Error('ENOENT');
     });
 
-    await expect(view.show({ path: 'gone.txt', typeErrors: [] })).resolves.toBeUndefined();
+    await expect(view.show(node({ path: 'gone.txt' }))).resolves.toBeUndefined();
     expect(container.querySelector('.code-error-note')?.textContent).toContain('ENOENT');
+  });
+});
+
+describe('AI verdict rows (ticket 12)', () => {
+  it('done reviews paint the three-color channel with trailing markers', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({
+      content: 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;'
+    }));
+
+    await view.show(
+      node({
+        aiReview: review('done', [
+          { line: 1, verdict: 'confident' },
+          { line: 2, verdict: 'unsure', message: '? 边界待确认' },
+          { line: 3, verdict: 'error' }
+        ])
+      })
+    );
+
+    const rows = container.querySelectorAll('.cl');
+    expect(rows).toHaveLength(4);
+
+    expect(rows[0]!.classList.contains('v-pass')).toBe(true);
+    expect(rows[0]!.querySelector('.mk')).toBeNull(); // confident rows stay clean
+
+    expect(rows[1]!.classList.contains('v-unsure')).toBe(true);
+    expect(rows[1]!.querySelector('.mk')?.textContent).toContain('? 边界待确认');
+
+    expect(rows[2]!.classList.contains('v-error')).toBe(true);
+    expect(rows[2]!.querySelector('.mk')?.textContent).toContain('✗ 逻辑不符'); // default mark
+
+    expect(rows[3]!.className).toBe('cl'); // unmarked rows stay plain
+  });
+
+  it('checking status renders plain rows (no verdict colors yet)', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({ content: 'const a = 1;\nconst b = 2;' }));
+
+    await view.show(node({ aiReview: review('checking', [{ line: 1, verdict: 'error' }]) }));
+
+    for (const row of container.querySelectorAll('.cl')) {
+      expect(row.className).toBe('cl');
+    }
+  });
+
+  it('type-error bars coexist with verdict rows (two channels, no override)', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({ content: 'const a = 1;\nconst b = 2;' }));
+
+    await view.show(
+      node({
+        typeErrors: [{ line: 1, code: 'TS2322', message: 'x' }],
+        aiReview: review('done', [{ line: 1, verdict: 'unsure', message: '检查过' }])
+      })
+    );
+
+    const row = container.querySelector('.cl')!;
+    expect(row.classList.contains('t-err')).toBe(true);
+    expect(row.classList.contains('v-unsure')).toBe(true);
+    expect(row.querySelector('.mk')?.textContent).toContain('检查过');
+
+    const other = container.querySelectorAll('.cl')[1]!;
+    expect(other.classList.contains('t-err')).toBe(false);
   });
 });

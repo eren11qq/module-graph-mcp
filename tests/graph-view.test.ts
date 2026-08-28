@@ -41,14 +41,17 @@ vi.mock('cytoscape', () => {
     empty(): boolean;
     addClass(...names: string[]): Ele;
     removeClass(...names: string[]): Ele;
+    toggleClass(name: string, force?: boolean): Ele;
     hasClass(name: string): boolean;
     closedNeighborhood(): { edges(): { addClass(): void; removeClass(): void }; addClass(): void };
   };
-  type Def = { data: Record<string, unknown> };
+  type Def = { data: Record<string, unknown>; classes?: string };
 
   function makeEle(def: Def): Ele {
     const d = { ...def.data };
-    const classes = new Set<string>();
+    const classes = new Set<string>(
+      typeof def.classes === 'string' ? def.classes.split(/\s+/).filter(Boolean) : []
+    );
     const ele: Ele = {
       id: () => String(d.id),
       data(key?: string, value?: unknown) {
@@ -59,15 +62,21 @@ vi.mock('cytoscape', () => {
       remove() {},
       nonempty: () => true,
       empty: () => false,
-      addClass: (...names: string[]) => {
-        for (const n of names) classes.add(n);
-        return ele;
-      },
-      removeClass: (...names: string[]) => {
-        for (const n of names) classes.delete(n);
-        return ele;
-      },
-      hasClass: (name: string) => classes.has(name),
+    addClass: (...names: string[]) => {
+      for (const n of names) classes.add(n);
+      return ele;
+    },
+    removeClass: (...names: string[]) => {
+      for (const n of names) classes.delete(n);
+      return ele;
+    },
+    toggleClass: (name: string, force?: boolean) => {
+      const want = force ?? !classes.has(name);
+      if (want) classes.add(name);
+      else classes.delete(name);
+      return ele;
+    },
+    hasClass: (name: string) => classes.has(name),
       closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
     };
     return ele;
@@ -81,6 +90,7 @@ vi.mock('cytoscape', () => {
     empty: () => true,
     addClass: () => EMPTY_ELE,
     removeClass: () => EMPTY_ELE,
+    toggleClass: () => EMPTY_ELE,
     hasClass: () => false,
     closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
   };
@@ -270,6 +280,56 @@ describe('type-error badge channel (P2-1, ticket 07)', () => {
         expect.objectContaining({ selector: 'node[typeErrorCount > 0]' })
       ])
     );
+  });
+});
+
+describe('AI 检查 checking 类同步 (ticket 12)', () => {
+  let onFocusChange: ReturnType<typeof vi.fn>;
+  let view: ReturnType<typeof createGraphView>;
+  let cy: FakeCy;
+
+  beforeEach(() => {
+    ({ onFocusChange, view, cy } = mountView());
+  });
+
+  const ele = (id: string): { hasClass(name: string): boolean } =>
+    (cy as unknown as { getElementById(id: string): { hasClass(name: string): boolean } }).getElementById(id);
+
+  it('applyNodeUpdate adds `checking` while the agent reviews, removes it when done', () => {
+    const a = node('a.ts');
+    view.setSnapshot(snapshotWith([a]));
+
+    view.applyNodeUpdate({ ...a, aiReview: { status: 'checking', verdicts: [] } });
+    expect(ele('a.ts').hasClass('checking')).toBe(true);
+
+    view.applyNodeUpdate({
+      ...a,
+      aiReview: { status: 'done', verdicts: [{ line: 1, verdict: 'unsure' }], reviewedAt: 1 }
+    });
+    expect(ele('a.ts').hasClass('checking')).toBe(false);
+  });
+
+  it('a snapshot carrying aiReview=checking mounts the ball already pulsing', () => {
+    const a: ModuleNode = { ...node('a.ts'), aiReview: { status: 'checking', verdicts: [] } };
+    view.setSnapshot(snapshotWith([a]));
+    expect(ele('a.ts').hasClass('checking')).toBe(true);
+  });
+
+  it('installs the checking stylesheet rule and counts rendered cycle arcs', () => {
+    expect(h.styles[0]).toEqual(
+      expect.arrayContaining([expect.objectContaining({ selector: 'node.checking' })])
+    );
+
+    view.setSnapshot(
+      snapshotWith(
+        [node('a.ts'), node('b.ts')],
+        [
+          { from: 'a.ts', to: 'b.ts' },
+          { from: 'b.ts', to: 'a.ts' }
+        ]
+      )
+    );
+    expect(view.cycleCount()).toBe(1);
   });
 });
 

@@ -6,6 +6,30 @@ export interface TypeErrorEntry {
   message: string;
 }
 
+/**
+ * Ticket 12: AI review channel. The agent is the executor — it reports
+ * begin/end via the MCP tools, the server stores the review on the node and
+ * broadcasts node_update, and the dashboard renders it. Three-color verdicts:
+ * confident (green) / unsure (amber) / error (red).
+ */
+export type AiVerdict = 'confident' | 'unsure' | 'error';
+
+export interface AiReviewEntry {
+  /** 1-based source line the verdict refers to. */
+  line: number;
+  verdict: AiVerdict;
+  /** Optional free-form explanation shown as the row's trailing marker. */
+  message?: string;
+}
+
+export interface AiReview {
+  status: 'checking' | 'done';
+  verdicts: AiReviewEntry[];
+  /** One-line overall conclusion, present once the review is done. */
+  summary?: string;
+  reviewedAt?: number;
+}
+
 export interface ModuleNode {
   /** POSIX-style path relative to the watched root */
   id: string;
@@ -17,6 +41,12 @@ export interface ModuleNode {
   lastTestRunAt?: number;
   /** Ticket 10: free-form note attached via the MCP report_note tool. */
   note?: string;
+  /**
+   * Ticket 12: AI review state reported via begin_review/end_review. Optional
+   * so older snapshots (and frame-guards) stay valid; in-memory only — a
+   * rescan rebuilds nodes without it and the agent re-reports.
+   */
+  aiReview?: AiReview;
 }
 
 export interface Edge {
