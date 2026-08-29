@@ -296,7 +296,9 @@ describe('applyRegionLayout + syncRegionPlates (fake cy)', () => {
     const web = plateById.get('plate:web');
     expect(web).toBeDefined();
     expect(web!.data['label']).toBe('WEB · 2');
-    expect(web!.data['w']).toBeGreaterThan(100);
+    // Caption hovers above the cluster's top edge (members' y0 = −10 incl.
+    // radius), never on a ball — background is gone, the name IS the region.
+    expect(web!.position.y).toBeCloseTo(-10 - THEME.layout.captionGap, 6);
     expect(plateById.get('plate:tests')!.data['label']).toBe('TESTS · 1');
     expect(plateById.has('plate:orphan')).toBe(false);
     expect(fits.length).toBe(1);

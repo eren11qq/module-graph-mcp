@@ -230,7 +230,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     get_module_details: {
       description:
-        'Return full details for ONE module: path, language, test state, coveredBy test files, type errors (line+code+message), last test run time, note, in/out edges, and the full source code text.',
+        'Return full details for ONE module: path, language, test state, coveredBy test files, type errors (line+code+message), last test run time, note, in/out edges, and the full source code text. Every read briefly lights that module ball on the dashboard, so the user can see which file you are looking at.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -247,6 +247,12 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+
+        // Code-review 2026-08-29: exploration is now visible. A pure read used
+        // to produce zero dashboard activity — the ball only ever pulsed for
+        // begin_review — so an agent browsing files looked invisible to the
+        // user. The transient `viewing` pulse needs no pairing cleanup.
+        deps.broadcast?.({ type: 'module_activity', id: node.id, path: node.path, activity: 'viewing', at: Date.now() });
 
         const outgoing = snap.edges.filter((e) => e.from === node.id).map((e) => e.to);
         const incoming = snap.edges.filter((e) => e.to === node.id).map((e) => e.from);

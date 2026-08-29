@@ -19,7 +19,7 @@
                           (coverage 四色 + tsc 红环,
                            原地改节点 → 推 node_update)
                                          │
-                               WsHub.broadcast (graph_delta / node_update / scan_error / review_timeout)
+                               WsHub.broadcast (graph_delta / node_update / scan_error / review_timeout / module_activity)
 ```
 
 **shared/types.ts 是全部模块的共同 Interface 语言**：`ModuleNode` / `Edge` / `GraphSnapshot` / `GraphDelta` / `GraphEvent`。两个 transport（WS 帧、MCP JSON-RPC）序列化的都是这份词汇。
@@ -40,11 +40,11 @@
 | `typecheck.ts` | `runTypecheck(root) → TypecheckResult`（五种状态：`ok/errors/timeout/unavailable/parse-failed`，**从不 throw**）；纯函数 `parseTscOutput` | 子进程 spawn、超时 SIGTERM→SIGKILL 宽限、诊断解析与按文件分组、tsc 探测 | 267 |
 | `gitignore` | `parseIgnoreRule(line)` / `loadGitignore(rootAbs)` | 最小 glob（`*` `**` `?`、锚定、目录限定、取反）、last-match-wins、不可读 .gitignore 降级为空规则集 | ~110 |
 | `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok{content, truncated} / denied{status 400/403/404/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、二进制嗅探；超限不再 413，按字节截断（`utf8HeadEnd` 修复到 UTF-8 序列边界，truncated 标记 + sizeBytes 保真） | 152 |
-| `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size` | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照、/api/source 截断透传 | 240 |
-| `McpStdioServer` + `buildTools` | `serve()`；9 工具：`get_dashboard_info` / `get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun, httpInfo, isBaselineDone}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、AI 评审三工具经 `ReviewLifecycle` 委派（工具体只剩参数校验 + reply 整形，回复字节级不变）、**基线闸门**（内容依赖型工具有界等基线，自述型工具即时应答带 scanning 注记） | 705 |
+| `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size`；`POST /internal/broadcast`（跨实例转发入口，事件白名单 + 仅回环） | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照、/api/source 截断透传、`isForwardableEvent` 白名单校验（snapshot/graph_delta 拒收——每实例自己监听文件树，转发 delta 会双重闪烁） | 345 |
+| `McpStdioServer` + `buildTools` | `serve()`；9 工具：`get_dashboard_info` / `get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun, httpInfo, isBaselineDone}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、AI 评审三工具经 `ReviewLifecycle` 委派（工具体只剩参数校验 + reply 整形，回复字节级不变）、**基线闸门**（内容依赖型工具有界等基线，自述型工具即时应答带 scanning 注记）；`get_module_details` 每次读取广播 `module_activity`（探索可见，2026-08-29） | 711 |
 | `ReviewLifecycle`（review-lifecycle.ts） | `begin(id, path)` / `update(id, path, rawVerdicts) → outcome` / `end(id, rawVerdicts, rawSummary)`——typed outcome，不认识 MCP 回复格式；`AI_VERDICTS` / `REVIEW_CHECKING_TIMEOUT_MS` 是它导出的接口词汇 | begin/end 配对纪律、checking 超时回落（身份令牌 + update 重挂——update 换新 checking 对象会静默解除旧定时器，故每次重绑）、verdict 清洗与分批合并（每行最后一条 / 500 上限 / 200·500 截断）、`node_update` → `review_timeout` 广播顺序——四条曾以注释散在工具体、定时器闭包、引擎别名与 dashboard 假设里的不变量收拢为私有实现（2026-08-29 架构评审候选 #1） | 176 |
 | `path-conventions` | `SOURCE_EXTENSIONS` / `LANGUAGE_BY_EXTENSION` / `EXCLUDED_DIRECTORIES` | 约定常量单一事实源（曾有四份扩展名副本、三份排除集） | 22 |
-| `index.ts` | CLI 参数（缺 `--root` 回退 cwd）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深；MCP 传输先于基线扫描启动（插件模式握手不能等扫描），基线状态经 `isBaselineDone` deps 供给闸门与 scanning 注记 | 124 |
+| `index.ts` | CLI 参数（缺 `--root` 回退 cwd；`--open` / `--no-open`）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深；MCP 传输先于基线扫描启动（插件模式握手不能等扫描），基线状态经 `isBaselineDone` deps 供给闸门与 scanning 注记；**同仓库去重**（探测首选端口持有者的 `/api/info` rootPath → `shouldAutoOpen` 决定是否弹页；同根 secondary 经 `makeForwarder` 把工具事件 POST 到主实例 `/internal/broadcast`） | 181 |
 
 ### 共享
 
@@ -55,17 +55,18 @@
 | Module | Interface | Implementation 藏了什么 | 行数 |
 |---|---|---|---|
 | `createGraphModel`（graph-model.ts） | `foldSnapshot` / `foldDelta` / `foldNodeUpdate` / `rootPath()` / `nodes()` / `edges()` / `node(id)` / `neighbors(id)`，纯 data-in/data-out | 浏览器端**唯一**的图状态与 fold（snapshot/delta/node_update 三种帧）、邻接查询——main.ts 与 graph-view 的两份副本和两份 fold 已删除 | 78 |
-| `createGraphView`（graph-view.ts） | 9 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `setViewState` / `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调（`setLayoutMode` 从未存在于生产，随 fcose 唯一布局裁定移出文档） | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——四条独立视觉通道）、度数→球径、hover 邻域高亮、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；布局唯一 fcose | 644 |
+| `createGraphView`（graph-view.ts） | 10 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `pulseViewing`（2026-08-29：module_activity 的瞬态查看脉冲，按 id 自到期）/ `setViewState` / `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调（`setLayoutMode` 从未存在于生产，随 fcose 唯一布局裁定移出文档） | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / viewing 紫边+紫 overlay（声明序在 checking 之前：评审赢）/ AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——五条独立视觉通道）、度数→球径（tests 带缩 0.85）、hover 邻域高亮（调暗扫描排除板块）、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；布局唯一 fcose + 区域化后处理（applyLayout 独占板块生命周期与「fcose→平移→rebase」顺序） | 760 |
 | `applyViewState` + `dirBallDirOf`（graph-filters.ts） | `(nodes, edges, ViewState) → {nodes, edges}`；dir-ball id 解析归此 module，纯 data-in/data-out | 图例状态过滤 → 只看未测 → 隐藏已评审 → 搜索 → 目录折叠管线、状态按严重度聚合、边重接、`dir:` 命名空间 | ~180 |
 | `findBackEdges`（back-edges.ts） | 纯函数：`LayoutGraphInput → Set<linkId>`（多起点 DFS，指向 on-stack 祖先的弧即回边） | **循环依赖检测**（红弧与 statusbar 循环计数的唯一来源）；原 `hierarchyLayout` 层级布局已按 ticket-00 amendment 裁定删除（fcose 唯一布局），检测逻辑于 2026-08-29 抽出留存 | 96 |
+| `assignRegions` / `computeRegionSlots` / `applyRegionLayout` / `syncRegionPlates`（graph-areas.ts） | 纯函数 `assignRegions(nodes, edges) → Map<id, RegionId>`（路径前缀表 + 度 0 兜底）、`computeRegionSlots(bboxes, geo) → Map<RegionId, Slot>`；两个 cy 动词 `applyRegionLayout`（刚性平移各区到罗盘槽位，孤儿坞例外——度 0 无排列可保，按 id 排序收确定性网格）/ `syncRegionPlates`（每非空区一枚 `region-plate` 背景节点，z 底层、events:no、随主题调色） | **区域化海报**（2026-08-29 grilling Q1–Q9）：把单张 fcose 云团摆成固定罗盘——web 左 / shared 脊柱居中 / server 右 / tests 底带 / 样例岛右下 / 孤球坞左下；不做布局（fcose 唯一布局裁定不破），只做定位后处理；「fcose→平移→rebase」顺序由 graph-view.applyLayout 独占（rebase 把平移后位置快照为漂移基点，板块与物理状态互不见面） | 280 |
 | `worstReviewVerdict`（ai-review.ts） | `AiReview → '' / confident / unsure / error`（最差 verdict 定环色） | 评审环判定纯函数：仅 done 参与，error > unsure > confident | 26 |
 | `test-states` | `TEST_STATES`（label/severity 一张表）/ `STATE_ORDER` / `stateColor` / `stateLabel` | 四色测试状态词汇单一事实源（调色、标签、图例序、聚合严重度同源） | 27 |
-| `theme` | `THEME` / `MOTION` / `CHROME` / `CY_PALETTES` / `diameterOf` / `shortLabel` / `reviewColor` | 视觉与动效常量单一事实源（边、节点半径、fcose 参数、双主题色板含 AI 评审环三色、脉冲周期）；状态词汇已迁往 test-states | 225 |
-| `createPhysics`（physics.ts） | `rebase` / `popNode` / `restorePop` / `destroy` | 入场漂移、释放弹簧、hover 弹出、checking 脉冲四个 rAF 层；`prefers-reduced-motion` 全降级 | 206 |
+| `theme` | `THEME` / `MOTION` / `CHROME` / `CY_PALETTES` / `diameterOf` / `shortLabel` / `reviewColor` | 视觉与动效常量单一事实源（边、节点半径、fcose 参数、双主题色板含 AI 评审环三色、viewing 紫与板块 plate 三色、`THEME.layout` 罗盘几何、`THEME.areas` 区域视觉通道——tests 缩放与跨区线细淡）；状态词汇已迁往 test-states | 280 |
+| `createPhysics`（physics.ts） | `rebase` / `popNode` / `restorePop` / `destroy` | 入场漂移、释放弹簧、hover 弹出、checking/viewing 双脉冲的 rAF 层（同一 overlay 通道，checking 优先）；`prefers-reduced-motion` 全降级 | 214 |
 | `createStatusbar`（statusbar.ts） | `setCounts` / `setBand` / `flashEvent`；`bandWeights` / `passRatePct` 纯函数 | 左计数（节点/边/循环）、中四色覆盖率带、右事件 ticker | 96 |
 | `createDetailPanel` / `createSourceView` | 工厂 + 注入 `SourceLoader` port；`DetailContext` 由 model 的 `neighbors(id)` 喂养 | 详情面板（meta 行 AI 检查徽章 + AI 评审三色行）、语法高亮、错误行标记、超限截断提示 | 248+192 |
 | `frame-guards` | `isGraphSnapshot` / `isGraphDelta` / `isModuleNode` | 不可信 WS 帧的类型守卫（畸形帧整帧丢弃，保留上一好帧） | 44 |
-| `createFrameSink`（frame-sink.ts） | `apply(event: GraphEvent)`（五类帧全吃 + frame-guards 畸形帧整帧丢弃）/ `refreshDerived()`（视图状态与主题变更的非帧派生刷新）/ `setFocus(node)`——deps 注入 model/view/statusbar/legend/detail/scanNotice/`filters()` | **帧编排唯一归属**（2026-08-29 架构评审候选 #2）：fold → view → 派生 UI（statusbar 计数 / 覆盖带 / 图例 / 聚焦面板）的固定顺序；曾三份手抄 + `renderLegend` 六调用点（a236598 真 bug）收敛为一处；**microtask 合帧**——N 帧 burst 每批一次派生刷新、状态计数单遍一次、ticker flash 保持同步；聚焦面板诚实性（delta/node_update 跟进、节点移除清空一次）；入场仅首次快照播放 | 216 |
+| `createFrameSink`（frame-sink.ts） | `apply(event: GraphEvent)`（六类帧全吃 + frame-guards 畸形帧整帧丢弃；`module_activity` 为瞬态帧——不 fold、不触发派生刷新，只驱动 viewing 脉冲 + ticker）/ `refreshDerived()`（视图状态与主题变更的非帧派生刷新）/ `setFocus(node)`——deps 注入 model/view/statusbar/legend/detail/scanNotice/`filters()` | **帧编排唯一归属**（2026-08-29 架构评审候选 #2）：fold → view → 派生 UI（statusbar 计数 / 覆盖带 / 图例 / 聚焦面板）的固定顺序；曾三份手抄 + `renderLegend` 六调用点（a236598 真 bug）收敛为一处；**microtask 合帧**——N 帧 burst 每批一次派生刷新、状态计数单遍一次、ticker flash 保持同步；聚焦面板诚实性（delta/node_update 跟进、节点移除清空一次）；入场仅首次快照播放 | 231 |
 | `createLegend`（legend.ts） | `createLegend(container, {onToggleState, onToggleReviewed}) → {render(counts)}`——counts 含 states/reviews 计数与 hiddenStates/hideReviewed；toggle 经 hooks 上报，不拥有状态 | dumb 渲染：4 状态行 + AI 评审环行（三色计数）+ 依赖边/循环行、off 类、键盘激活——DOM 结构与原 main.ts `renderLegend` 一致 | 108 |
 | `main.ts` | —— | **浏览器组合根**：REST 首渲染与 WS 帧共用 `FrameSink.apply` 单一 seam、WS 连接/断线 3s 重连、主题切换、视图控件绑定；过滤旋钮（hiddenStates / hideReviewed）所有权留此，sink 渲染时经 `filters()` 读取。帧编排、图例与入场已迁 `FrameSink` / `legend`（无自有图状态、无帧编排） | 214 |
 
@@ -86,6 +87,7 @@
 | 广播 fan-out | `WsHub.broadcast`（`McpToolDeps.broadcast` 同型） | live-reload、StatePipeline、mcp 三处生产调用 | **真实** |
 | 图快照源 | `GraphSnapshotSource`（mcp.ts 定义的 tools 最小图接口） | IncrementalGraph（生产）、测试字面量 fake（mcp-tools 直测） | **真实** |
 | 源码读取注入面 | `McpToolDeps.readSourceFile` | 真实安全信封（生产，默认值）、测试注入假信封 | **真实** |
+| 跨实例事件转发 | `POST /internal/broadcast`（事件白名单 + 仅回环） | 同根 secondary（转发方，`makeForwarder`）、primary 的 WsHub（接收方） | **真实**（两个进程 Adapter；2026-08-29 多会话一页） |
 
 **内部 seam**（私有于实现、供自身测试，符合 seam discipline）：coverage.ts 的纯解析函数、graph-filters.ts 的 `applyViewState`、back-edges.ts 的 `findBackEdges`、ai-review.ts 的 `worstReviewVerdict`、frame-guards.ts——全部 no-DOM/no-cytoscape，data-in/data-out。
 
@@ -101,7 +103,8 @@
 - `readSourceFile`：1 个函数背后是整套安全策略；Interface 把拒绝顺序（400→403→404→415）与超限截断语义（truncated + UTF-8 边界修复）写成契约。
 - `CoverageMapper`：1 个 `refresh` 背后是容错解析 + 路径归一化 + 命名约定索引。
 - `ReviewLifecycle`：3 个动词背后是定时器、身份令牌、verdict 清洗与事件顺序；interface 上只见 typed outcome，MCP 回复格式与路径校验都留在 mcp.ts。deletion test：删掉它，四条不变量在三个文件里重现。
-- `FrameSink`：3 个方法背后是五类帧的编排、microtask 合帧与畸形帧守卫。deletion test：删掉它，六步手抄在三处重现，a236598 类 bug 无 interface 可钉。
+- `FrameSink`：3 个方法背后是六类帧的编排、microtask 合帧与畸形帧守卫。deletion test：删掉它，六步手抄在三处重现，a236598 类 bug 无 interface 可钉。
+- `graph-areas`：4 个导出背后是区域化全部词汇——成员表、罗盘几何、刚性平移、板块生命周期；两个纯函数即测试面，两个 cy 动词把顺序坑（板块与物理状态互不见面、平移必须赶在 rebase 快照之前）全部吸收。deletion test：删掉它，「位置讲区、尺寸讲枢纽、线型讲区内/跨区」的规矩散落成 graph-view 手工活。
 
 **中**：`FileWatcher`（4 项配置 + 2 方法换掉整个 chokidar 世界）、`StatePipeline`、`http`、`mcp`。`createGraphView` 收窄到 9 方法后仍隐藏全部 cytoscape 渲染管线——Leverage 极高。
 
@@ -133,7 +136,11 @@
 
 graph-view 每帧只算一次循环弧（back-edges.ts），渲染样式与 statusbar 计数消费同一集合——计算路径归一（历史：`hierarchyLayout` 曾接受调用方传入 `backEdges`「传入即消费」；2026-08-29 该布局整体删除）。Interface 收窄史：12→8（三个单字段 setter 收敛为 `setViewState(patch)`，死方法 `getLayoutMode`/`destroy` 删除）；现行 9 方法——`setTheme` / `cycleCount` 为 ticket-12 主题切换与循环计数新增（`setLayoutMode` 从未存在于生产）。`dir:` id 命名空间的解析移回 graph-filters（`dirBallDirOf`），view 不再认识 filter 内部。TestState 词汇收敛为 `src/web/test-states.ts` 一张表（调色/标签/图例序/严重度同源）。
 
-### 6. 遗留（低优先）
+### 6. 区域化海报（2026-08-29 grilling Q1–Q9 定案）
+
+~~单张 fcose 云团，孤球散落无解释~~ 新建 `src/web/graph-areas.ts`：成员资格 = 路径前缀表 + 度 0 兜底（表外有连线者不进映射、留 fcose 原位——堆积即扩表信号）；fcose 排完后各区**刚性平移**到固定罗盘（web 左 / shared 脊柱居中 / server 右 / tests 底带 / 样例岛右下 / 孤球坞左下网格）。接线顺序是硬约束：板块先移除 → fcose → 平移 → `physics.rebase()`（rebase 把平移后位置快照为漂移基点，海报不被漂移拽回）→ 板块重建——`region-plate` 背景节点（z 底层、`events:'no'`、调暗扫描排除）与 fcose/物理状态互不见面。跨区线一律细+淡（`edge-cross` 通道，声明序在 cycle 之前：循环报警仍赢），tests 带球缩 0.85；每件事只让一个机制干：**位置讲区、尺寸讲枢纽（球径公式不变）、线型讲区内/跨区**。不违反「fcose 唯一布局」裁定——本模块不做布局，只做定位后处理；唯一重排是孤儿坞（度 0 无排列可保，按 id 排序收确定性网格）。本轮明确不做（Q9 纯视觉）：区点击高亮、区域折叠（与 dir-collapse 的合并留作独立一轮）、拖放位置持久化。
+
+### 7. 遗留（低优先）
 
 edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均为纯内部实现、从没跨界，等真实分叉 bug 出现再收敛。
 
@@ -151,11 +158,14 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 | `typecheck.test.ts` | parseTscOutput / runTypecheck |
 | `mcp-tools.test.ts` | buildTools 直测（fake graph source + 注入 readSourceFile；错误文案按行为断言；checking 超时只留两枚工具级接线钉） |
 | `review-lifecycle.test.ts` | ReviewLifecycle interface（超时窗口 / update 重挂 / 身份令牌 / 事件顺序直测） |
-| `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟（唯一 spawn 套件） |
+| `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟 |
+| `cross-session.e2e.test.ts` | 双实例同根 e2e：secondary 无头（去重日志）+ `module_activity` / `begin_review` 的 `node_update` 跨实例转发（spawn 套件之二） |
+| `open-browser.test.ts` / `internal-relay.test.ts` | `shouldAutoOpen` 全分支 / `/internal/broadcast` 白名单 + 回环 + 413 |
 | `http-security.test.ts` / `source-endpoint.test.ts` | startHttpServer / readSourceFile |
 | `graph-model.test.ts` | GraphModel 三种帧 fold + 邻接（浏览器唯一图状态） |
 | `frame-sink.test.ts` | FrameSink：帧进 → 编排出（每批一次派生刷新 / 畸形帧丢弃 / 聚焦诚实性 / ticker 与 notice） |
 | `legend.test.ts` | Legend 渲染面（行结构 / off 类 / toggle hooks） |
-| `graph-filters.test.ts` / `graph-view.test.ts` / `web-render.test.ts`（构建产物 + findBackEdges 环检测 oracle + frame guards）/ `code-view.test.ts` / `ai-review.test.ts` | web 内部 seam 与 createGraphView |
+| `graph-areas.test.ts` | graph-areas 纯函数直测（成员表 / 罗盘几何不变量）+ 假 cy 上的刚性平移、孤儿网格与板块 upsert |
+| `graph-filters.test.ts` / `graph-view.test.ts`（含区域化 wiring 钉：板块 / edge-cross / tests 缩放 / 孤球退役）/ `web-render.test.ts`（构建产物 + findBackEdges 环检测 oracle + frame guards）/ `code-view.test.ts` / `ai-review.test.ts` | web 内部 seam 与 createGraphView |
 
 规则（replace, don't layer）：在模块 Interface 上写行为断言，不在实现内部探状态；引擎删除时其专属测试同删，Interface 测试存活于内部重构。

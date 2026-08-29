@@ -40,6 +40,11 @@ export interface GraphView {
   setViewState(patch: Partial<ViewState>): void;
   /** Re-lock focus on a node and bring it into view (detail-panel jumps). */
   focusNode(id: string): void;
+  /**
+   * Code-review 2026-08-29: the agent just READ this module (module_activity
+   * frame) — light the transient `viewing` pulse, self-expiring.
+   */
+  pulseViewing(id: string): void;
   /** Drop the current lock (Esc / close). */
   clearFocus(): void;
   resetView(): void;
@@ -374,6 +379,27 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     applyFocus(null);
   }
 
+  // Code-review 2026-08-29: transient "the agent is reading this" pulse.
+  // Each repeat read resets the expiry; a snapshot re-render simply outlives
+  // the class (the pending timer removes a class the fresh element lacks,
+  // which is a no-op).
+  const viewingTimers = new Map<string, number>();
+
+  function pulseViewing(id: string): void {
+    const el = cy.getElementById(id);
+    if (el.empty()) return; // filtered out / aggregated away / not yet scanned
+    el.addClass('viewing');
+    const prev = viewingTimers.get(id);
+    if (prev !== undefined) window.clearTimeout(prev);
+    viewingTimers.set(
+      id,
+      window.setTimeout(() => {
+        viewingTimers.delete(id);
+        cy.getElementById(id).removeClass('viewing');
+      }, MOTION.viewingPulseMs)
+    );
+  }
+
   /**
    * Single layout engine: force-directed fcose (randomize:false keeps balls
    * in place) + the 区域化海报 pass. The pass order is a hard constraint:
@@ -501,6 +527,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     setSnapshot,
     applyDelta,
     applyNodeUpdate,
+    pulseViewing,
     setViewState(patch: Partial<ViewState>): void {
       let changed = false;
       if (patch.query !== undefined && patch.query !== viewState.query) {
@@ -578,11 +605,19 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         height: 'data(diameter)',
         label: 'data(label)',
         'font-size': THEME.node.labelFontSize,
+        // Vibrancy (small text over a busy canvas): slightly heavier weight
+        // + a ground-colored chip behind the glyphs — the label stays legible
+        // over plates, edges and neighboring balls without out-shouting them.
+        'font-weight': 500,
         color: p.label,
         'text-valign': 'bottom',
         'text-margin-y': 3,
         'text-wrap': 'ellipsis',
         'text-max-width': 70,
+        'text-background-color': p.canvas,
+        'text-background-opacity': 0.6,
+        'text-background-padding': 2,
+        'text-background-shape': 'roundrectangle',
         'background-color': p.states.untested,
         'border-width': p.nodeBorderW,
         'border-color': p.nodeBorderColor,
@@ -595,24 +630,22 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       } as EdgeStylePatch)
     },
     {
-      // 区域化海报板块 (graph-areas syncRegionPlates): a place, not just a
-      // position. Bottom z-depth, dashed border, self-alpha fill, caption
-      // sitting on the top edge; events:'no' so taps fall through to the
-      // background. Declared right after the base node rule so it wins the
-      // data(diameter) sizing for plate ids.
+      // 区域题注 (graph-areas syncRegionPlates): per user ruling 2026-08-29
+      // the background plate is GONE — a region is a name floating above its
+      // pile and nothing else. The carrier node is 1×1 and invisible; only
+      // the caption renders, no fill, no border, no chip. events:'no' so
+      // taps fall through to the background.
       selector: '.region-plate',
       style: nodeStyle({
         shape: 'round-rectangle',
-        width: 'data(w)',
-        height: 'data(h)',
+        width: 1,
+        height: 1,
         label: 'data(label)',
-        'background-color': p.plate.fill,
-        'background-opacity': 1,
-        'border-width': 1,
-        'border-style': 'dashed',
-        'border-color': p.plate.border,
+        'background-opacity': 0,
+        'border-width': 0,
         color: p.plate.label,
-        'font-size': 9,
+        'font-size': 10,
+        'font-weight': 600,
         'text-transform': 'uppercase',
         'text-valign': 'top',
         'z-compound-depth': 'bottom',
@@ -661,6 +694,19 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'line-opacity': p.edge.cycleAlpha,
         'target-arrow-opacity': p.edge.cycleAlpha
       })
+    },
+    {
+      // Code-review 2026-08-29: module-activity viewing pulse — violet
+      // border + violet breathing overlay (physics drives `oo` only when the
+      // node is NOT checking). Declared before node.checking so a module
+      // under active review keeps the stronger checking visuals.
+      selector: 'node.viewing',
+      style: {
+        'border-width': 1.2,
+        'border-color': p.viewing,
+        'border-opacity': 1,
+        'overlay-color': p.viewing
+      }
     },
     {
       // Ticket 12: AI 检查中 — theme-accent bright edge; the breathing

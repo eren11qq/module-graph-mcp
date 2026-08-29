@@ -10,6 +10,8 @@
 - **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、目录折叠（同目录 ≥3 个文件折叠为一个目录球，点目录球展开）
 - **MCP 查询**：agent 可拉全图、查单模块详情、列未测模块、写备注（备注实时出现在 dashboard 详情面板）
 - **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）+ 详情面板「AI 已检查」徽章；检查约 10 分钟无活动自动回落
+- **探索可见**：agent 每读一个模块（`get_module_details`），对应球以紫色「查看」脉冲亮 3 秒、ticker 闪「AI 正在查看 …」——浏览文件不再是黑箱
+- **多会话一页**：同仓库新会话不再重复弹浏览器页（也不会闪控制台黑框）；它的 AI 活动（查看脉冲 / 检查脉冲）自动转发到第一个 dashboard 页上
 - **测试运行上报**：agent 跑完测试调 `report_test_run` → 覆盖率报告内文件整批转红 / 回绿
 - **双主题**：暗色仪器盘（默认）/ 亮色工作台，顶栏切换、localStorage 记忆，画布与壳层联动
 
@@ -25,7 +27,7 @@ npm run build          # tsc 编译服务端 + vite 打包前端到 dist/server/
 node dist/server/index.js --root ./test-fixtures/sample-app
 ```
 
-启动后会自动打开浏览器（默认 `http://127.0.0.1:24282`，端口被占自动 +1）；只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 即可。要监视自己的项目，把 `--root` 指向该目录。
+启动后自动打开浏览器（默认 `http://127.0.0.1:24282`，端口被占自动 +1）。**同仓库去重**：首选端口已被本工具的**同一仓库**实例占住时（MCP 每个会话各启一个进程），新会话保持无头、不弹页；不同仓库或探测不到同根实例时照常弹页。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 即可。要监视自己的项目，把 `--root` 指向该目录。
 
 **测试状态判定**：主判定读 `coverage/coverage-summary.json`（vitest/jest 覆盖率报告，**存在即通过——MVP 不设覆盖率阈值**；agent 通过 `report_test_run` 上报失败运行后，报告内文件转红）；没有覆盖率数据时按命名约定兜底——存在同名 `*.test.ts(x)` 视为「有测试未跑」，否则「未测」。
 
@@ -35,7 +37,8 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 |---|---|
 | `--root <dir>` | 监视的项目根目录（默认当前目录；必须是已存在的目录） |
 | `--port <n>` | dashboard 端口（默认 24282；被占用自动递增） |
-| `--no-open` | 不自动打开浏览器（CI / 测试环境用） |
+| `--open` | 强制自动打开浏览器（即使同仓库已有实例在跑也弹新页） |
+| `--no-open` | 从不自动打开浏览器（CI / 测试环境用；优先级高于 `--open`） |
 | `MODULE_GRAPH_NO_OPEN=1` | 同 `--no-open` 的环境变量形式 |
 
 所有人类可读日志走 **stderr**——stdout 属于 MCP JSON-RPC 协议通道。服务只绑定 `127.0.0.1`，是本地单机工具。
@@ -92,7 +95,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 | 工具 | 说明 |
 |---|---|
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
-| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（>512KB 截断并标注 `truncated`）、备注 |
+| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（>512KB 截断并标注 `truncated`）、备注；每次读取让该球短暂亮起紫色脉冲 |
 | `get_dashboard_info` | dashboard 浏览器地址、被监视根目录、节点/边计数：agent 每会话先调它核实监视的树对不对，并把链接给用户 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `report_note` | 给模块写自由备注（≤2000 字符；空串清除） |
@@ -120,7 +123,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 }
 ```
 
-- **不传 `--root`**：服务端回退到子进程 cwd；不传 `--no-open`：启动即自动打开 dashboard（设 env `MODULE_GRAPH_NO_OPEN=1` 可抑制）。
+- **不传 `--root`**：服务端回退到子进程 cwd。浏览器自动打开按**同仓库去重**：同一仓库只有第一个实例弹页（每个 MCP 会话各启一个进程，后续会话静默，其 AI 活动转发到第一页）；跨多个会话只需要盯一个 dashboard 页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
 - agent 侧约定：会话内先调 `get_dashboard_info` 核实 `rootPath` 与 dashboard 链接；若监视的树不对，在该项目的 `<repo>/.zcode/config.json` 里用同名的 workspace 级条目（`--root` 传绝对路径）覆盖。
 - 基线扫描期间握手**不会**被阻塞：`get_dashboard_info` / `get_module_graph` 即时应答并带 `scanning: true`；依赖图内容的工具（begin_review / get_module_details 等）自动等基线落定（上限 20s）再作答。
 

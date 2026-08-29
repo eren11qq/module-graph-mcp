@@ -90,6 +90,8 @@ export function createPhysics(cy: Core): Physics {
     const driftEnabled = cy.nodes().length <= MOTION.driftMaxNodes;
     const pulsePeriod = MOTION.checkingPulsePeriodMs;
     const pulseSpan = MOTION.checkingPulseMax - MOTION.checkingPulseMin;
+    const viewingPeriod = MOTION.viewingPulsePeriodMs;
+    const viewingSpan = MOTION.viewingPulseMax - MOTION.viewingPulseMin;
 
     for (const s of states.values()) {
       if (s.ele.inside() && !s.ele.removed()) {
@@ -97,9 +99,15 @@ export function createPhysics(cy: Core): Physics {
 
         // AI checking pulse: breathing overlay (the border comes from the
         // `checking` stylesheet rule; reduced motion keeps only that border).
+        // Code-review 2026-08-29: the lighter `viewing` pulse rides the same
+        // overlay channel with its own calmer parameters — a module under
+        // active review keeps the checking pulse (checked first).
         if (s.ele.hasClass('checking')) {
           s.ooOn = true;
           s.ele.data('oo', MOTION.checkingPulseMin + pulseSpan * (0.5 + 0.5 * Math.sin((now / pulsePeriod) * Math.PI * 2)));
+        } else if (s.ele.hasClass('viewing')) {
+          s.ooOn = true;
+          s.ele.data('oo', MOTION.viewingPulseMin + viewingSpan * (0.5 + 0.5 * Math.sin((now / viewingPeriod) * Math.PI * 2)));
         } else if (s.ooOn) {
           s.ooOn = false;
           s.ele.data('oo', 0);

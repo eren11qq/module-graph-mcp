@@ -157,10 +157,13 @@ export function createDetailPanel(container: HTMLElement, loadSource: SourceLoad
       aiBadge = document.createElement('span');
       aiBadge.className = 'detail-badge ai-badge';
       aiBadge.textContent = node.aiReview.status === 'checking' ? 'AI 检查中' : 'AI 已检查';
+      // worstReviewVerdict 的 ''（done 且还没有任何 verdict）落回 accent，
+      // reviewColor 只接受三色 verdict。
+      const worst = worstReviewVerdict(node.aiReview);
       const tone =
-        node.aiReview.status === 'checking'
+        node.aiReview.status === 'checking' || worst === ''
           ? 'var(--accent)'
-          : reviewColor(worstReviewVerdict(node.aiReview));
+          : reviewColor(worst);
       aiBadge.style.color = tone;
       aiBadge.style.borderColor = tone;
     }

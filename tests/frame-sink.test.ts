@@ -32,6 +32,7 @@ function harness() {
     setSnapshot: () => viewCalls.push('setSnapshot'),
     applyDelta: () => viewCalls.push('applyDelta'),
     applyNodeUpdate: () => viewCalls.push('applyNodeUpdate'),
+    pulseViewing: (id: string) => viewCalls.push(`viewing:${id}`),
     setViewState: () => viewCalls.push('setViewState'),
     focusNode: (id: string) => viewCalls.push(`focus:${id}`),
     clearFocus: () => viewCalls.push('clearFocus'),
@@ -243,5 +244,32 @@ describe('FrameSink — ticker and notice events', () => {
     const { sink, flashes } = harness();
     sink.apply({ type: 'review_timeout', id: 'a.ts', path: 'src/a.ts' });
     expect(flashes.at(-1)).toContain('AI 检查超时回落');
+  });
+});
+
+describe('FrameSink — module_activity frames (code-review 2026-08-29)', () => {
+  it('lights the viewing pulse and flashes the ticker without touching model or derived UI', async () => {
+    const { sink, model, viewCalls, flashes, legendRenders } = harness();
+    sink.apply({ type: 'snapshot', snapshot: snapshot([node()]) });
+    await flush();
+    const legendAfterSnapshot = legendRenders.length;
+
+    sink.apply({ type: 'module_activity', id: 'a.ts', path: 'src/a.ts', activity: 'viewing', at: Date.now() });
+    expect(viewCalls).toContain('viewing:a.ts');
+    expect(flashes.at(-1)).toBe('AI 正在查看 a');
+    // Transient frame: nothing folded, no derived-UI refresh scheduled.
+    expect(model.node('a.ts')?.aiReview).toBeUndefined();
+    expect(legendRenders).toHaveLength(legendAfterSnapshot);
+  });
+
+  it('drops malformed activity frames whole', () => {
+    const { sink, viewCalls } = harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      sink.apply({ type: 'module_activity', id: 42 } as unknown as GraphEvent);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(viewCalls.filter((c) => String(c).startsWith('viewing'))).toHaveLength(0);
   });
 });

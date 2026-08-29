@@ -1,0 +1,161 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
+import { isForwardableEvent, startHttpServer } from '../src/server/http.js';
+import { getFreePort } from './helpers/net.js';
+import type { GraphEvent, ModuleNode } from '../src/shared/types.js';
+
+/**
+ * Code-review 2026-08-29: the cross-session relay. A same-root secondary
+ * instance POSTs its tool-driven events to the primary's
+ * /internal/broadcast, which re-fans them to the primary's dashboard
+ * websockets. The endpoint is loopback-only and takes an event allowlist —
+ * snapshot/graph_delta are refused because every instance watches the tree
+ * itself and relaying deltas would double-flash every page.
+ */
+
+let root = '';
+let url = '';
+let teardown: (() => Promise<void>) | null = null;
+
+const aNode: ModuleNode = {
+  id: 'src/a.ts',
+  path: 'src/a.ts',
+  language: 'ts',
+  testState: 'untested',
+  coveredBy: [],
+  typeErrors: []
+};
+
+async function post(body: string): Promise<{ status: number; text: string }> {
+  const res = await fetch(`${url}/internal/broadcast`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body
+  });
+  return { status: res.status, text: await res.text() };
+}
+
+/** A socket-level frame collector: nothing can slip past between awaits. */
+function collect(ws: WebSocket): { frames: GraphEvent[]; waitFor(type: string, timeoutMs?: number): Promise<GraphEvent> } {
+  const frames: GraphEvent[] = [];
+  ws.on('message', (data: unknown) => {
+    try {
+      frames.push(JSON.parse(String(data)) as GraphEvent);
+    } catch {
+      /* tolerate malformed frames */
+    }
+  });
+  return {
+    frames,
+    waitFor(type: string, timeoutMs = 2500): Promise<GraphEvent> {
+      return new Promise((resolve, reject) => {
+        const started = Date.now();
+        const poll = (): void => {
+          const at = frames.findIndex((f) => f.type === type);
+          if (at >= 0) return resolve(frames.splice(at, 1)[0]!);
+          if (Date.now() - started > timeoutMs) return reject(new Error(`timed out waiting for a ${type} frame`));
+          setTimeout(poll, 25);
+        };
+        poll();
+      });
+    }
+  };
+}
+
+function dashboardWs(): Promise<ReturnType<typeof collect>> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${url.replace(/^http/, 'ws')}/ws`);
+    const c = collect(ws);
+    ws.once('open', () => resolve(c));
+    ws.once('error', reject);
+  });
+}
+
+beforeAll(async () => {
+  root = await mkdtemp(join(tmpdir(), 'module-graph-relay-'));
+  const started = await startHttpServer({
+    preferredPort: await getFreePort(),
+    publicDir: join('dist', 'server', 'public'),
+    info: { rootPath: root, port: 0, version: 'test' },
+    // The hub greets each socket with a snapshot frame; the relay tests wait
+    // for it before asserting on relayed frames.
+    getSnapshot: () => ({ generatedAt: 0, rootPath: root, nodes: [], edges: [] })
+  });
+  url = started.url;
+  teardown = async () => {
+    started.server.closeAllConnections?.();
+    started.server.close();
+  };
+});
+
+afterAll(async () => {
+  await teardown?.();
+  await rm(root, { recursive: true, force: true });
+});
+
+describe('POST /internal/broadcast relay', () => {
+  it('relays a node_update to dashboard websockets with 204', async () => {
+    const c = await dashboardWs();
+    await c.waitFor('snapshot'); // the hub greets every socket with a snapshot
+
+    const relayed = c.waitFor('node_update');
+    const res = await post(JSON.stringify({ type: 'node_update', node: aNode }));
+    expect(res.status).toBe(204);
+    const ev = (await relayed) as { type: string; node: { id: string } };
+    expect(ev.node.id).toBe('src/a.ts');
+  });
+
+  it('relays a module_activity frame untouched', async () => {
+    const c = await dashboardWs();
+    await c.waitFor('snapshot');
+    const relayed = c.waitFor('module_activity');
+    const activity = { type: 'module_activity', id: 'src/a.ts', path: 'src/a.ts', activity: 'viewing', at: 1 };
+    const res = await post(JSON.stringify(activity));
+    expect(res.status).toBe(204);
+    await expect(relayed).resolves.toEqual(activity);
+  });
+
+  it('refuses snapshot and graph_delta (every instance watches the tree itself)', async () => {
+    const snap = await post(JSON.stringify({ type: 'snapshot', snapshot: { nodes: [], edges: [] } }));
+    expect(snap.status).toBe(400);
+    const delta = await post(
+      JSON.stringify({ type: 'graph_delta', delta: { addedNodes: [], removedNodeIds: [], addedEdges: [], removedEdges: [] } })
+    );
+    expect(delta.status).toBe(400);
+  });
+
+  it('answers 400 for malformed JSON and for shape-invalid events', async () => {
+    expect((await post('not json')).status).toBe(400);
+    expect((await post(JSON.stringify({ type: 'module_activity' }))).status).toBe(400); // missing id
+    expect((await post(JSON.stringify({ type: 'review_timeout' }))).status).toBe(400);
+    expect((await post(JSON.stringify({ type: 'node_update', node: { nope: true } }))).status).toBe(400);
+  });
+
+  it('answers 405 for non-POST', async () => {
+    const res = await fetch(`${url}/internal/broadcast`);
+    expect(res.status).toBe(405);
+  });
+
+  it('answers 413 for an oversized body', async () => {
+    const big = JSON.stringify({ type: 'scan_error', message: 'x'.repeat(1024 * 1024 + 1) });
+    const res = await post(big);
+    expect(res.status).toBe(413);
+  });
+});
+
+describe('isForwardableEvent (unit)', () => {
+  it('accepts exactly the relayable allowlist', () => {
+    expect(isForwardableEvent({ type: 'node_update', node: aNode })).toBe(true);
+    expect(isForwardableEvent({ type: 'module_activity', id: 'a.ts', path: 'a.ts', activity: 'viewing', at: 1 })).toBe(true);
+    expect(isForwardableEvent({ type: 'review_timeout', id: 'a.ts', path: 'a.ts' })).toBe(true);
+    expect(isForwardableEvent({ type: 'scan_error', message: 'boom' })).toBe(true);
+    expect(isForwardableEvent({ type: 'snapshot', snapshot: {} })).toBe(false);
+    expect(isForwardableEvent({ type: 'graph_delta', delta: {} })).toBe(false);
+    expect(isForwardableEvent({ type: 'nope' })).toBe(false);
+    expect(isForwardableEvent(null)).toBe(false);
+    expect(isForwardableEvent('node_update')).toBe(false);
+  });
+});

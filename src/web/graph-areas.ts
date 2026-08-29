@@ -212,10 +212,11 @@ export function applyRegionLayout(cy: Core, regions: ReadonlyMap<string, RegionI
 }
 
 /**
- * Upsert the background plates so every region reads as a place, not just a
- * position: one non-interactive `region-plate` node per non-empty region,
- * sized to its members' bounding box plus padding, captioned "WEB · 16".
- * Ends with a fit so the whole poster (plates included) is on screen.
+ * Region caption (id `plate:<region>`, class `region-plate` — the carrier
+ * kept its name after the background plate was ruled out): one text-only
+ * node per non-empty region, hovering THEME.layout.captionGap above its
+ * members' top edge, captioned "WEB · 16". Ends with a fit so the whole
+ * poster (captions included) is on screen.
  */
 export function syncRegionPlates(cy: Core, regions: ReadonlyMap<string, RegionId>): void {
   const byRegion = groupByRegion(cy, regions);
@@ -231,11 +232,14 @@ export function syncRegionPlates(cy: Core, regions: ReadonlyMap<string, RegionId
       const b = bboxOf(list);
       const data = {
         id: PLATE_PREFIX + r,
-        w: b.x1 - b.x0 + THEME.layout.platePad * 2,
-        h: b.y1 - b.y0 + THEME.layout.platePad * 2,
         label: `${REGION_LABELS[r]} · ${list.length}`
       };
-      const position = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
+      // 上方 = 包围盒顶边再抬 captionGap;text-valign:top 把字渲染在该点
+      // 之上,题注悬浮在整堆小球的头顶,而不是压在球上。
+      const position = {
+        x: (b.x0 + b.x1) / 2,
+        y: b.y0 - THEME.layout.captionGap
+      };
       const existing = cy.getElementById(data.id);
       if (existing.nonempty()) {
         existing.data(data);

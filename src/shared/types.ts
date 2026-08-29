@@ -83,4 +83,11 @@ export type GraphEvent =
    * the server retired the checking state itself (the paired node_update
    * already stopped the pulse); pages surface the timeout in the ticker.
    */
-  | { type: 'review_timeout'; id: string; path: string };
+  | { type: 'review_timeout'; id: string; path: string }
+  /**
+   * Code-review 2026-08-29: the agent READ a module (get_module_details).
+   * Transient — the page lights the ball with the lighter `viewing` pulse
+   * for a few seconds; unlike node_update this carries no state, and pages
+   * that miss it lose nothing.
+   */
+  | { type: 'module_activity'; id: string; path: string; activity: 'viewing'; at: number };

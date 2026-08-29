@@ -201,6 +201,21 @@ export function createFrameSink(opts: FrameSinkDeps): FrameSink {
         statusbar.flashEvent(`AI 检查超时回落 · ${shortLabel(id)}`);
         return;
       }
+
+      case 'module_activity': {
+        // Code-review 2026-08-29: the agent READ this module (get_module_
+        // details). Transient — light the ball's `viewing` pulse for a few
+        // seconds; nothing is folded into the model, so a missed frame (page
+        // mid-reload) loses nothing and no derived UI needs a refresh.
+        const id = typeof event.id === 'string' ? event.id : '';
+        if (id === '') {
+          console.warn('ws: dropped malformed module_activity frame');
+          return;
+        }
+        view.pulseViewing(id);
+        statusbar.flashEvent(`AI 正在查看 ${shortLabel(id)}`);
+        return;
+      }
     }
   }
 

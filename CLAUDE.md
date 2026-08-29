@@ -8,7 +8,7 @@ module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard +
 |---|---|
 | `get_dashboard_info` | dashboard 地址、被监视根目录、节点/边计数：每会话先调它核实监视树，并把链接给用户 |
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
-| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文 |
+| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（读取会让该球短暂亮起） |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `report_note` | 给模块写备注（≤2000 字符；空串清除） |
 | `begin_review` | 标记模块进入 AI 检查（球开始脉冲） |
@@ -20,6 +20,7 @@ module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard +
 
 在**本仓库或任何接入了 module-graph MCP server 的项目**里做代码检查 / 编辑时：
 
+0. **探索即可见**：`get_module_details` 每次读取都会让对应球亮起 3 秒紫色「查看」脉冲——正常浏览文件无需任何额外调用；`begin_review` 仍专用于**开始审查 / 编辑前**的持续检查状态。
 1. **开始前**：对将要审查的每个文件调 `begin_review { path }`——dashboard 上对应小球开始脉冲，用户能看到你正在检查哪里。
 2. **过程中（可选，推荐大文件使用）**：每确认一批行结论就调 `update_review { path, verdicts }`——dashboard 对应行实时逐行上色。verdicts 格式同 `end_review`，与已有部分结论合并（同样新条覆盖旧行）。
 3. **结束时**：对每个 `begin_review` 过的文件调 `end_review { path, verdicts, summary? }`。verdicts 是逐行结论：`{ line: <1-based 行号>, verdict: "confident" | "unsure" | "error", message?: string }`。上限：≤500 条（每行最后一条生效）、message ≤200 字符、summary ≤500 字符。

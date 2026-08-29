@@ -30,13 +30,22 @@ export interface CyPalette {
   nodeBorderColor: string;
   /** Focus ring / checking ring / pulse overlay color. */
   accent: string;
+  /**
+   * Code-review 2026-08-29: module-activity viewing pulse (the agent READ the
+   * module). Violet — distinct from the sky accent (checking) and from every
+   * state fill, so "在看" and "在检查" never read as the same event.
+   */
+  viewing: string;
   /** AI 评审环三色（border 通道）：绿 全 confident / 黄 有 unsure / 红 有 error。 */
   review: { confident: string; unsure: string; error: string };
   /**
-   * 区域化海报板块（graph-areas.ts syncRegionPlates）：fill 自带透明度，
-   * border 走虚线，label 为小号大写区名。安静版海报——低对比、不抢球。
+   * 区域题注（graph-areas.ts syncRegionPlates）：每堆小球合集上方的一个
+   * 名字（「WEB · 16」），无底板无边框——背景材料按 2026-08-29 用户裁定
+   * 整体移除，区域感只靠题注 + 罗盘位置表达。颜色从地面 ink 派生。
    */
-  plate: { fill: string; border: string; label: string };
+  plate: { label: string };
+  /** 画布地面色（styles.css --bg 的 cy 侧镜像）：球标衬底的取色处。 */
+  canvas: string;
   dimNode: number;
   dimEdge: number;
 }
@@ -53,16 +62,16 @@ const DARK: CyPalette = {
     untested: '#5C6E8C'
   },
   edge: { color: '#3D5378', alpha: 0.75, cycleColor: '#FF7A45', cycleAlpha: 0.95 },
-  label: '#C9D6EC',
+  label: '#E7EEF9',
   nodeBorderW: 0,
   nodeBorderColor: 'rgba(0,0,0,0)',
   accent: '#4CC2FF',
+  viewing: '#B18CFF',
   review: { confident: '#00C389', unsure: '#FFD24D', error: '#F85149' },
   plate: {
-    fill: 'rgba(92,110,140,0.10)',
-    border: 'rgba(92,110,140,0.38)',
-    label: 'rgba(201,214,236,0.55)'
+    label: 'rgba(231,238,249,0.7)'
   },
+  canvas: '#0A0F1C',
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -76,16 +85,16 @@ const LIGHT: CyPalette = {
     untested: '#ADB5BD'
   },
   edge: { color: '#A9A294', alpha: 0.75, cycleColor: '#C2410C', cycleAlpha: 0.95 },
-  label: '#57534E',
+  label: '#44403C',
   nodeBorderW: 1.4,
   nodeBorderColor: '#FFFFFF',
   accent: '#26221C',
+  viewing: '#6D28D9',
   review: { confident: '#009E73', unsure: '#B45309', error: '#B42318' },
   plate: {
-    fill: 'rgba(87,83,78,0.06)',
-    border: 'rgba(87,83,78,0.30)',
-    label: 'rgba(87,83,78,0.60)'
+    label: 'rgba(38,34,28,0.66)'
   },
+  canvas: '#F6F4EF',
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -156,10 +165,14 @@ export const THEME = {
   reviewRing: {
     width: 3
   },
-  /** Verdict #1 fcose parameters (randomize:false preserves positions for tickets 04/05). */
+  /**
+   * Verdict #1 fcose parameters (randomize:false preserves positions for
+   * tickets 04/05). 2026-08-29 区域化裁定后调松堆内密度: repulsion ×1.5 +
+   * 理想边长 ×1.26 —— 球堆内更散,区域罗盘槽位不受影响(平移后处理兜底)。
+   */
   fcose: {
-    nodeRepulsion: 7000,
-    idealEdgeLength: 62,
+    nodeRepulsion: 10500,
+    idealEdgeLength: 78,
     nodeSeparation: 120,
     packComponents: true,
     randomize: false
@@ -176,13 +189,13 @@ export const THEME = {
   },
   /**
    * 区域化海报(2026-08-29)compass geometry — graph-areas.ts 是唯一消费者:
-   * regionGapX/Y 是区与区包围盒之间的间距,platePad 是板块四边出血,
-   * dockCols/Spacing 是孤球坞的确定性网格。
+   * regionGapX/Y 是区与区包围盒之间的间距;captionGap 是题注悬在堆顶边上
+   * 方的高度。背景底板已按用户裁定移除,不再有板块出血/网格之外的概念。
    */
   layout: {
     regionGapX: 120,
     regionGapY: 110,
-    platePad: 34,
+    captionGap: 18,
     dockCols: 3,
     dockSpacingX: 84,
     dockSpacingY: 84
@@ -221,6 +234,15 @@ export const MOTION = {
   checkingPulsePeriodMs: 820,
   checkingPulseMin: 0.1,
   checkingPulseMax: 0.26,
+  /**
+   * Code-review 2026-08-29: module-activity viewing pulse — calmer and
+   * shallower than the checking pulse (a read is less urgent than a review).
+   * The class itself expires after viewingPulseMs (graph-view.pulseViewing).
+   */
+  viewingPulseMs: 3000,
+  viewingPulsePeriodMs: 1200,
+  viewingPulseMin: 0.06,
+  viewingPulseMax: 0.18,
   /** Ambient drift stops above this node count (pulse/spring stay on). */
   driftMaxNodes: 600,
   dragVelocityFactor: 0.35,

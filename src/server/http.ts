@@ -17,6 +17,9 @@ const MIME: Record<string, string> = {
 /** Strict CSP for HTML responses (inline styles allowed: legend swatches / hljs themes). */
 const CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'";
 
+/** Upper bound for a relayed event body (node_update carries a small node patch, never source). */
+const MAX_INTERNAL_BODY_BYTES = 1024 * 1024;
+
 /** Every response carries nosniff so a sniffed payload can never execute. */
 function sendHead(resp: ServerResponse, status: number, headers: Record<string, string> = {}): void {
   resp.writeHead(status, { 'x-content-type-options': 'nosniff', ...headers });
@@ -82,9 +85,9 @@ export function startHttpServer(opts: {
   return new Promise((res, rej) => {
     let attempt = preferredPort;
 
-    const app = createServer((req, resp) =>
-      handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, () => attempt)
-    );
+  const app = createServer((req, resp) =>
+    handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, () => attempt, (event) => hub.broadcast(event))
+  );
 
     // Websocket endpoint shares the same port (plan §架构). Upgrades are limited
     // to /ws; browsers must present the dashboard's own origin (CSWSH guard).
@@ -137,7 +140,8 @@ function handle(
   info: HttpInfo,
   getSnapshot: (() => GraphSnapshot) | undefined,
   onSecurityEvent: ((msg: string) => void) | undefined,
-  boundPort: () => number
+  boundPort: () => number,
+  broadcast: (event: GraphEvent) => void
 ): void {
   if (!hostAllowed(req.headers.host, boundPort())) {
     sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
@@ -146,6 +150,14 @@ function handle(
   }
 
   const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+
+  // Code-review 2026-08-29: cross-session relay — a same-root secondary
+  // instance posts its tool-driven events here so the one dashboard tab the
+  // user keeps open shows every session's AI activity.
+  if (pathname === '/internal/broadcast') {
+    serveInternalBroadcast(req, resp, broadcast);
+    return;
+  }
 
   if (pathname === '/api/info') {
     sendHead(resp, 200, { 'content-type': 'application/json; charset=utf-8' });
@@ -237,4 +249,97 @@ function serveSource(
       truncated: result.truncated === true
     })
   );
+}
+
+/**
+ * Code-review 2026-08-29: events a same-root secondary instance may relay to
+ * the primary's dashboards. snapshot/graph_delta are excluded on purpose —
+ * every instance watches the tree itself, so relaying deltas would double
+ * flash every page; only tool-driven state needs the relay.
+ */
+const FORWARDABLE_TYPES: ReadonlySet<string> = new Set(['node_update', 'module_activity', 'review_timeout', 'scan_error']);
+
+/** Light shape check — full client-side guards (frame-guards) still run on the page. */
+export function isForwardableEvent(value: unknown): value is GraphEvent {
+  if (value === null || typeof value !== 'object') return false;
+  const ev = value as Record<string, unknown>;
+  if (typeof ev.type !== 'string' || !FORWARDABLE_TYPES.has(ev.type)) return false;
+  switch (ev.type) {
+    case 'node_update':
+      return ev.node !== null && typeof ev.node === 'object' && typeof (ev.node as { id?: unknown }).id === 'string';
+    case 'module_activity':
+      return typeof ev.id === 'string' && ev.activity === 'viewing';
+    case 'review_timeout':
+      return typeof ev.id === 'string';
+    case 'scan_error':
+      return typeof ev.message === 'string';
+    default:
+      // FORWARDABLE_TYPES already filtered `type`, but TS sees a plain string.
+      return false;
+  }
+}
+
+function isLoopbackPeer(remote: string | undefined): boolean {
+  return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+}
+
+function serveInternalBroadcast(
+  req: IncomingMessage,
+  resp: ServerResponse,
+  broadcast: (event: GraphEvent) => void
+): void {
+  if (req.method !== 'POST') {
+    sendHead(resp, 405, { 'content-type': 'text/plain; charset=utf-8' });
+    resp.end('method not allowed');
+    return;
+  }
+  // The server binds loopback only, but an open local proxy could relay a
+  // foreign peer's POST; the socket address is the check that actually holds.
+  if (!isLoopbackPeer(req.socket.remoteAddress)) {
+    sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
+    resp.end('forbidden');
+    return;
+  }
+
+  let body = '';
+  let size = 0;
+  let done = false;
+  req.setEncoding('utf8');
+  req.on('data', (chunk: string) => {
+    size += chunk.length;
+    if (size > MAX_INTERNAL_BODY_BYTES && !done) {
+      done = true;
+      sendHead(resp, 413, { 'content-type': 'text/plain; charset=utf-8' });
+      resp.end('event too large');
+      req.destroy();
+      return;
+    }
+    body += chunk;
+  });
+  req.on('end', () => {
+    if (done) return;
+    done = true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      sendHead(resp, 400, { 'content-type': 'text/plain; charset=utf-8' });
+      resp.end('malformed JSON');
+      return;
+    }
+    if (!isForwardableEvent(parsed)) {
+      sendHead(resp, 400, { 'content-type': 'text/plain; charset=utf-8' });
+      resp.end('event type not relayable');
+      return;
+    }
+    broadcast(parsed);
+    sendHead(resp, 204);
+    resp.end();
+  });
+  req.on('error', () => {
+    if (!done) {
+      done = true;
+      resp.destroy();
+    }
+  });
 }
