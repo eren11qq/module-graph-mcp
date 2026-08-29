@@ -1,6 +1,7 @@
 import type { ModuleNode } from '../shared/types.js';
+import { worstReviewVerdict } from './ai-review.js';
 import { createSourceView, type SourceLoader } from './code-view.js';
-import { shortLabel } from './theme.js';
+import { reviewColor, shortLabel } from './theme.js';
 import { stateLabel, stateColor } from './test-states.js';
 
 export interface DetailContext {
@@ -148,10 +149,27 @@ export function createDetailPanel(container: HTMLElement, loadSource: SourceLoad
     badge.style.color = stateColor(node.testState);
     badge.style.borderColor = stateColor(node.testState);
     badge.textContent = stateLabel(node.testState);
+    // Code-review 2026-08-29: AI 检查徽章 — 状态徽章旁一眼可见该模块正被 /
+    // 已被 AI 检查；tally 与 summary 细节仍在下方 aiReviewArea。checking 用
+    // accent 色，done 按最差 verdict 取评审环三色。
+    let aiBadge: HTMLSpanElement | null = null;
+    if (node.aiReview !== undefined) {
+      aiBadge = document.createElement('span');
+      aiBadge.className = 'detail-badge ai-badge';
+      aiBadge.textContent = node.aiReview.status === 'checking' ? 'AI 检查中' : 'AI 已检查';
+      const tone =
+        node.aiReview.status === 'checking'
+          ? 'var(--accent)'
+          : reviewColor(worstReviewVerdict(node.aiReview));
+      aiBadge.style.color = tone;
+      aiBadge.style.borderColor = tone;
+    }
     const degrees = document.createElement('span');
     degrees.className = 'detail-degrees';
     degrees.textContent = `度 ${ctx.incoming.length + ctx.outgoing.length} ＝ 出 ${ctx.outgoing.length} ＋ 入 ${ctx.incoming.length}`;
-    metaRow.append(badge, degrees);
+    metaRow.append(badge);
+    if (aiBadge !== null) metaRow.append(aiBadge);
+    metaRow.append(degrees);
     const runAt = document.createElement('div');
     runAt.className = 'detail-degrees detail-runat';
     runAt.textContent = `最近运行 ${formatRunAt(node.lastTestRunAt)}`;
