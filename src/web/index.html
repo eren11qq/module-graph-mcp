@@ -29,6 +29,33 @@
       <h2>状态过滤</h2>
       <div id="legend"></div>
     </div>
+    <div class="card" id="tuning-card">
+      <h2>布局力</h2>
+      <!-- 四力滑杆 (Code-review 2026-08-29): 语义借 Obsidian,过程不借 ——
+           每次重排都从当前位置出发,仅由用户松手(change)触发。范围与步长
+           由 main.ts 按 THEME.TUNING_RANGES 注入。 -->
+      <div class="tuning-row">
+        <label for="tune-gravity">中心引力</label>
+        <input type="range" id="tune-gravity" aria-label="中心引力" />
+        <output id="tune-gravity-val"></output>
+      </div>
+      <div class="tuning-row">
+        <label for="tune-nodeRepulsion">球间斥力</label>
+        <input type="range" id="tune-nodeRepulsion" aria-label="球间斥力" />
+        <output id="tune-nodeRepulsion-val"></output>
+      </div>
+      <div class="tuning-row">
+        <label for="tune-edgeElasticity">连接弹性</label>
+        <input type="range" id="tune-edgeElasticity" aria-label="连接弹性" />
+        <output id="tune-edgeElasticity-val"></output>
+      </div>
+      <div class="tuning-row">
+        <label for="tune-idealEdgeLength">理想边长</label>
+        <input type="range" id="tune-idealEdgeLength" aria-label="理想边长" />
+        <output id="tune-idealEdgeLength-val"></output>
+      </div>
+      <button type="button" id="btn-reset-layout" class="detail-link" title="清空布局存档并从头重排">重置布局</button>
+    </div>
   </aside>
 
   <aside id="dock-right" class="overlay">

@@ -19,7 +19,8 @@ interface FakeCy {
 const h = vi.hoisted(() => {
   const instances: FakeCy[] = [];
   const styles: unknown[] = [];
-  return { instances, styles };
+  const layouts: unknown[] = [];
+  return { instances, styles, layouts };
 });
 
 /** Shared setup for every describe: fresh view + its fake cytoscape instance. */
@@ -30,6 +31,7 @@ function mountView(opts?: { store?: LayoutStore }): {
 } {
   h.instances.length = 0;
   h.styles.length = 0;
+  h.layouts.length = 0;
   const onFocusChange = vi.fn();
   const view = createGraphView(document.createElement('div'), {
     onFocusChange,
@@ -206,7 +208,10 @@ vi.mock('cytoscape', () => {
         const key = typeof selectorOrHandler === 'string' ? `${event}|${selectorOrHandler}` : event;
         register(key, (maybeHandler ?? selectorOrHandler) as (evt: unknown) => void);
       },
-      layout() {
+      layout(opts?: unknown) {
+        // Code-review 2026-08-29: record the options so tuning tests can pin
+        // exactly what reached fcose.
+        h.layouts.push(opts);
         return { run() {} };
       },
       fit() {},
@@ -802,5 +807,54 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     view.resetLayout();
     expect(store.clear).toHaveBeenCalledWith('/proj');
     expect(posOf(cy, 'a.ts')).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('四力滑杆 tuning channel (Code-review 2026-08-29)', () => {
+  const lastLayout = (): Record<string, unknown> =>
+    h.layouts[h.layouts.length - 1] as Record<string, unknown>;
+
+  it('the first solve pins the THEME baseline (gravity/edgeElasticity included)', () => {
+    const { view } = mountView();
+    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
+    expect(lastLayout()).toEqual(
+      expect.objectContaining({
+        name: 'fcose',
+        gravity: 0.25,
+        nodeRepulsion: 10500,
+        edgeElasticity: 0.45,
+        idealEdgeLength: 78,
+        nodeSeparation: 120,
+        randomize: false
+      })
+    );
+  });
+
+  it('setLayoutTuning overrides the four forces and re-solves', () => {
+    const { view } = mountView();
+    view.setSnapshot(snapshotWith([node('a.ts')]));
+    const solves = h.layouts.length;
+
+    view.setLayoutTuning({ gravity: 0.5, nodeRepulsion: 20000, edgeElasticity: 0.8, idealEdgeLength: 120 });
+
+    expect(h.layouts.length).toBe(solves + 1); // user-initiated re-solve happened
+    expect(lastLayout()).toEqual(
+      expect.objectContaining({
+        gravity: 0.5,
+        nodeRepulsion: 20000,
+        edgeElasticity: 0.8,
+        idealEdgeLength: 120,
+        // Pinned options survive the override.
+        nodeSeparation: 120,
+        randomize: false
+      })
+    );
+  });
+
+  it('tuning survives a re-render (the override layer is view state)', () => {
+    const { view } = mountView();
+    view.setLayoutTuning({ gravity: 0.9, nodeRepulsion: 30000, edgeElasticity: 0.6, idealEdgeLength: 100 });
+    view.setSnapshot(snapshotWith([node('a.ts')]));
+    expect(lastLayout()).toEqual(expect.objectContaining({ gravity: 0.9, nodeRepulsion: 30000 }));
   });
 });

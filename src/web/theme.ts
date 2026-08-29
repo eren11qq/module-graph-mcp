@@ -169,9 +169,14 @@ export const THEME = {
    * Verdict #1 fcose parameters (randomize:false preserves positions for
    * tickets 04/05). 2026-08-29 区域化裁定后调松堆内密度: repulsion ×1.5 +
    * 理想边长 ×1.26 —— 球堆内更散,区域罗盘槽位不受影响(平移后处理兜底)。
+   * Code-review 2026-08-29: gravity / edgeElasticity 从 fcose 源码默认
+   * (0.25 / 0.45) 显式钉进 THEME——它们是四力滑杆的基准值,不能悬在
+   * 布局器内部默认上。
    */
   fcose: {
+    gravity: 0.25,
     nodeRepulsion: 10500,
+    edgeElasticity: 0.45,
     idealEdgeLength: 78,
     nodeSeparation: 120,
     packComponents: true,
@@ -258,6 +263,8 @@ export const CHROME = {
    * positions keyed by rootPath, one JSON file under a single key.
    */
   layoutStorageKey: 'mg-layout',
+  /** Four-force slider state (main.ts owns it; view only consumes). */
+  layoutTuningStorageKey: 'mg-layout-tuning',
   /** Entrance choreography replay window (body.enter). */
   entranceTotalMs: 1400,
   /** Statusbar event ticker dims back after this long. */
@@ -278,6 +285,56 @@ export function prefersReducedMotion(): boolean {
 export function diameterOf(deg: number): number {
   const clamped = Math.max(1, deg);
   return 2 * (THEME.node.radiusBase + Math.sqrt(clamped) * THEME.node.radiusSqrtFactor);
+}
+
+/**
+ * Code-review 2026-08-29: 四力可调 —— 借 Obsidian 的「力语义滑杆」,只借
+ * 语义不借模拟过程:重排永远从当前位置出发(randomize:false)、仅由用户
+ * 主动触发,所以可玩性不破坏「位置的唯一权威 = 上一次稳定布局」。THEME
+ * 保持 as const 不解冻;滑杆状态由 main.ts 持有并经 view.setLayoutTuning
+ * 以覆盖层形式进 fcose options。
+ */
+export interface LayoutTuning {
+  /** 中心引力 (fcose gravity, fcose 默认 0.25)。 */
+  gravity: number;
+  /** 球间斥力 (fcose nodeRepulsion, 基准 10500)。 */
+  nodeRepulsion: number;
+  /** 连接弹性 (fcose edgeElasticity, fcose 默认 0.45)。 */
+  edgeElasticity: number;
+  /** 理想边长 (fcose idealEdgeLength, 基准 78)。 */
+  idealEdgeLength: number;
+}
+
+/** Slider geometry per force — also the clamp range for hostile stored values. */
+export const TUNING_RANGES: Record<keyof LayoutTuning, { min: number; max: number; step: number }> = {
+  gravity: { min: 0, max: 1, step: 0.01 },
+  nodeRepulsion: { min: 1000, max: 40000, step: 250 },
+  edgeElasticity: { min: 0, max: 1, step: 0.01 },
+  idealEdgeLength: { min: 30, max: 200, step: 2 }
+};
+
+export function defaultLayoutTuning(): LayoutTuning {
+  return {
+    gravity: THEME.fcose.gravity,
+    nodeRepulsion: THEME.fcose.nodeRepulsion,
+    edgeElasticity: THEME.fcose.edgeElasticity,
+    idealEdgeLength: THEME.fcose.idealEdgeLength
+  };
+}
+
+/** localStorage → LayoutTuning: unknown shape falls back field-by-field. */
+export function clampTuning(value: unknown): LayoutTuning {
+  const out = defaultLayoutTuning();
+  if (value === null || typeof value !== 'object') return out;
+  const raw = value as Record<string, unknown>;
+  for (const key of Object.keys(out) as Array<keyof LayoutTuning>) {
+    const v = raw[key];
+    const r = TUNING_RANGES[key];
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out[key] = Math.min(r.max, Math.max(r.min, v));
+    }
+  }
+  return out;
 }
 
 /** Basename without extension — the ball label; hover tooltip carries the full relative path.

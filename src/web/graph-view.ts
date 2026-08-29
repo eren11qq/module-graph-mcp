@@ -11,10 +11,12 @@ import {
   THEME,
   activeThemeKey,
   cyPalette,
+  defaultLayoutTuning,
   diameterOf,
   prefersReducedMotion,
   setTheme as setActiveTheme,
   shortLabel,
+  type LayoutTuning,
   type ThemeKey
 } from './theme.js';
 import { STATE_ORDER } from './test-states.js';
@@ -59,6 +61,12 @@ export interface GraphView {
    * re-render — balls re-enter fcose with no preset positions (从头解一次).
    */
   resetLayout(): void;
+  /**
+   * Code-review 2026-08-29: swap the four-force values (四力滑杆) and
+   * re-solve. Always user-initiated and always from the CURRENT positions
+   * (randomize:false) — playability never touches layout stability.
+   */
+  setLayoutTuning(tuning: LayoutTuning): void;
   /** Restyle to another theme without touching positions or data. */
   setTheme(key: ThemeKey): void;
   /** Cycle arcs currently rendered — the statusbar's 循环依赖 counter. */
@@ -100,6 +108,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   // 不再丢弃 rootPath),存档按 rootPath 分仓。
   const store: LayoutStore = opts.store ?? createLayoutStore();
   let currentRoot: string | null = null;
+  // 四力滑杆覆盖层 (Code-review 2026-08-29): starts at the THEME baseline;
+  // main.ts pushes user values through setLayoutTuning. THEME stays frozen.
+  let tuning: LayoutTuning = defaultLayoutTuning();
 
   /** Archived positions for the current root (empty when store/root absent). */
   function currentLayout(): Map<string, LayoutPoint> {
@@ -477,6 +488,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     cy.layout({
       name: 'fcose',
       ...THEME.fcose,
+      // 四力覆盖 (Code-review 2026-08-29): user tuning wins over the THEME
+      // baseline for the four sliders; nodeSeparation/packComponents/
+      // randomize stay pinned here.
+      ...tuning,
       fit: true,
       padding: THEME.canvas.padding,
       animate: false
@@ -595,6 +610,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     renderVisible();
   }
 
+  function setLayoutTuning(next: LayoutTuning): void {
+    tuning = { ...next };
+    applyLayout();
+  }
+
   const onResize = (): void => {
     cy.resize();
   };
@@ -638,6 +658,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     clearFocus,
     resetView,
     resetLayout,
+    setLayoutTuning,
     setTheme(key: ThemeKey): void {
       setActiveTheme(key);
       cy.style(buildStylesheet());

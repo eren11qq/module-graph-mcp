@@ -128,6 +128,25 @@ body {
 .legend-row.review-row .cnt { margin-left: 2px; }
 .legend-row.review-row .name { margin-left: auto; color: var(--muted); }
 
+/* ---------------- 布局力滑杆 (Code-review 2026-08-29) ----------------
+   原生 range + accent-color:双主题各跟随自己的 --accent,无需自绘轨道。
+   放在 #dock-left 独立卡片里(不能进 #legend 容器——它每次
+   refreshDerived 都 replaceChildren 重建)。 */
+.tuning-row {
+  display: flex; align-items: center; gap: 8px; margin: 7px 0;
+}
+.tuning-row label {
+  font-size: 11px; color: var(--muted); white-space: nowrap; flex: none; width: 4.5em;
+}
+.tuning-row input[type="range"] {
+  flex: 1; min-width: 0; height: 14px; cursor: pointer; accent-color: var(--accent);
+}
+.tuning-row output {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink);
+  font-variant-numeric: tabular-nums; width: 44px; text-align: right; flex: none;
+}
+#btn-reset-layout { margin-top: 4px; }
+
 /* ---------------- 详情面板 ---------------- */
 .detail-name { font-weight: 600; letter-spacing: -.008em; word-break: break-all; font-size: 13.5px; }
 .detail-path { color: var(--muted); font-size: 11px; margin: 2px 0 8px; word-break: break-all; font-family: var(--font-mono); }
