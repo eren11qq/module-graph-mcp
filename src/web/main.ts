@@ -298,6 +298,7 @@ function applyDelta(delta: GraphDelta): void {
   model.foldDelta(delta);
   view.applyDelta(delta);
   refreshStatus(model.rootPath() ?? '…');
+  renderLegend();
   // A successful delta means the view caught up with disk — retire the
   // stale-frame notice (same contract as applySnapshot).
   scanNotice.hidden = true;
@@ -325,6 +326,9 @@ function applyNodeUpdate(node: ModuleNode): void {
     statusbar.flashEvent(`更新 ${shortLabel(node.id)} · ${stateLabel(node.testState)}`);
   }
   refreshStatus(model.rootPath() ?? '…');
+  // Legend counts (incl. the review-ring row) read the model — keep them
+  // honest when a patch flips a node's state/review in place.
+  renderLegend();
   if (focusedId === node.id) {
     const fresh = model.node(node.id);
     if (fresh) showDetail(fresh);
