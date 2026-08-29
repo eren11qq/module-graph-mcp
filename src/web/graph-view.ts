@@ -5,6 +5,7 @@ import { worstReviewVerdict } from './ai-review.js';
 import { applyViewState, dirBallDirOf, type ViewState } from './graph-filters.js';
 import { applyRegionLayout, assignRegions, syncRegionPlates, type RegionId } from './graph-areas.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
+import { createLayoutStore, type LayoutPoint, type LayoutStore } from './layout-store.js';
 import {
   MOTION,
   THEME,
@@ -28,6 +29,11 @@ export interface GraphViewOptions {
   tooltipEl: HTMLElement;
   /** Prototype node physics (drift / spring-back / hover pop / checking pulse). */
   physics?: boolean;
+  /**
+   * Code-review 2026-08-29: layout archive seam — defaults to the localStorage
+   * store; tests inject a fake. Position authority = last stable layout.
+   */
+  store?: LayoutStore;
 }
 
 export interface GraphView {
@@ -48,6 +54,11 @@ export interface GraphView {
   /** Drop the current lock (Esc / close). */
   clearFocus(): void;
   resetView(): void;
+  /**
+   * Code-review 2026-08-29: forget the archived layout for this root and
+   * re-render — balls re-enter fcose with no preset positions (从头解一次).
+   */
+  resetLayout(): void;
   /** Restyle to another theme without touching positions or data. */
   setTheme(key: ThemeKey): void;
   /** Cycle arcs currently rendered — the statusbar's 循环依赖 counter. */
@@ -83,6 +94,39 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   });
 
   const physics: Physics | null = opts.physics ? createPhysics(cy) : null;
+
+  // 布局存档 (Code-review 2026-08-29): 位置的唯一权威 = 上一次稳定布局。
+  // 存档读写都走 layout-store;currentRoot 随 snapshot 到来(setSnapshot 现在
+  // 不再丢弃 rootPath),存档按 rootPath 分仓。
+  const store: LayoutStore = opts.store ?? createLayoutStore();
+  let currentRoot: string | null = null;
+
+  /** Archived positions for the current root (empty when store/root absent). */
+  function currentLayout(): Map<string, LayoutPoint> {
+    if (currentRoot === null) return new Map();
+    return store.load(currentRoot);
+  }
+
+  /**
+   * Persist the just-settled layout. Runs AFTER physics.rebase() inside
+   * applyLayout — bases() hands out the translated resting spots (drift has
+   * not ticked yet), and region plates are not back in the graph yet, so
+   * they can never leak into the archive. A filtered render is a distorted
+   * view of the full graph, not a layout of record — skip it.
+   */
+  function persistLayout(): void {
+    if (currentRoot === null || filtersActive()) return;
+    const points = new Map<string, { x: number; y: number }>();
+    if (physics !== null) {
+      for (const [id, p] of physics.bases()) points.set(id, p);
+    } else {
+      cy.nodes().forEach((n: cytoscape.NodeSingular) => {
+        const p = n.position();
+        points.set(n.id(), { x: p.x, y: p.y });
+      });
+    }
+    if (points.size > 0) store.save(currentRoot, points);
+  }
 
   let currentNodes = new Map<string, ModuleNode>();
   let currentEdges = new Map<string, Edge>();
@@ -189,6 +233,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     lockedId = null;
     opts.onFocusChange(null);
     expandedDirs.clear();
+    // 布局存档分仓键 (Code-review 2026-08-29): the snapshot is where the view
+    // first learns which repo it is showing.
+    currentRoot = next.rootPath;
 
     currentNodes = new Map(next.nodes.map((n) => [n.id, n]));
     currentEdges = new Map(next.edges.map((e) => [edgeIdOf(e), e]));
@@ -227,9 +274,16 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
     const firstRender = !entered;
     entered = true;
+    // 布局存档恢复 (Code-review 2026-08-29): the element swap used to wipe
+    // every position (every filter toggle re-solved from scratch). Restoring
+    // the archived spots into the fresh defs makes fcose randomize:false
+    // start from the last stable layout — 老球落回原位,新球才交给力模拟。
+    const saved = currentLayout();
     const elements: cytoscape.ElementDefinition[] = [
       ...visible.nodes.map((n) => {
         const def = nodeElement(n);
+        const spot = saved.get(n.id);
+        if (spot !== undefined) def.position = { x: spot.x, y: spot.y };
         if (firstRender) def.classes = `${def.classes} pre`.trim();
         return def;
       }),
@@ -304,7 +358,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
     // 2) DOM mutations. Fresh balls get no preset position — the fcose
     //    re-run below pulls them into the simulation (randomize:false keeps
-    //    existing balls where they are).
+    //    existing balls where they are). A re-entering ball (watcher flicker
+    //    removed and re-added it) is not fresh: the archive hands its old
+    //    spot straight back (Code-review 2026-08-29).
+    const saved = currentLayout();
     let removedFocused = false;
     cy.batch(() => {
       for (const e of delta.removedEdges) {
@@ -315,7 +372,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         if (lockedId === id) removedFocused = true;
       }
       for (const n of delta.addedNodes) {
-        cy.add(nodeElement(n));
+        const def = nodeElement(n);
+        const spot = saved.get(n.id);
+        if (spot !== undefined) def.position = { x: spot.x, y: spot.y };
+        cy.add(def);
       }
       for (const e of delta.addedEdges) {
         cy.add(edgeElement(e, backEdgeIds.has(edgeIdOf(e))));
@@ -407,7 +467,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
    * map; the rigid region translation sits BETWEEN fcose.run() and
    * physics.rebase(), because rebase snapshots whatever positions exist at
    * call time as the drift bases — translated spots in, poster preserved.
-   * Plates come back last, once everything has settled.
+   * The layout archive is written right after rebase (still plate-free, and
+   * bases() is exactly the post-translation resting spots) and plates come
+   * back last, once everything has settled.
    */
   function applyLayout(): void {
     cy.nodes('.region-plate').remove();
@@ -421,6 +483,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     } as cytoscape.LayoutOptions).run();
     applyRegionLayout(cy, regions);
     physics?.rebase();
+    persistLayout();
     syncRegionPlates(cy, regions);
   }
 
@@ -496,6 +559,17 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     if (evt.target === cy && lockedId !== null) clearFocus();
   });
 
+  // 布局存档 · 拖放即保存 (Code-review 2026-08-29, Obsidian Persistent Graph
+  // 语义): the drop point becomes the physics drift base AND the archive
+  // entry in one move — user intent is always authoritative over the last
+  // auto-solve. Independent of the physics option (persistence is not a
+  // motion feature); plates carry events:'no' so they can't be dragged in.
+  cy.on('dragfree', 'node', (evt) => {
+    if (currentRoot === null) return;
+    const p = evt.target.position();
+    store.update(currentRoot, evt.target.id(), { x: p.x, y: p.y });
+  });
+
   // -------------------------------------------------------------------------
   // Controls
   // -------------------------------------------------------------------------
@@ -513,6 +587,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   function resetView(): void {
     if (cy.elements().nonempty()) cy.fit(undefined, THEME.canvas.padding);
+  }
+
+  function resetLayout(): void {
+    if (currentRoot !== null) store.clear(currentRoot);
+    // 存档清空后每个球都拿不回旧位 → 全量重渲,fcose 从头解一次。
+    renderVisible();
   }
 
   const onResize = (): void => {
@@ -557,6 +637,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     focusNode,
     clearFocus,
     resetView,
+    resetLayout,
     setTheme(key: ThemeKey): void {
       setActiveTheme(key);
       cy.style(buildStylesheet());

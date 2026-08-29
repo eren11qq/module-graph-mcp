@@ -41,6 +41,12 @@ interface PhysState {
 export interface Physics {
   /** Re-capture base positions for the current node set; restarts the clock. */
   rebase(): void;
+  /**
+   * Code-review 2026-08-29: the current drift bases — the STABLE resting
+   * spots, not the oscillating position(). Layout persistence reads these
+   * so the archive never bakes in a mid-drift snapshot.
+   */
+  bases(): Map<string, { x: number; y: number }>;
   popNode(ele: NodeSingular, mult: number): void;
   restorePop(): void;
   destroy(): void;
@@ -205,10 +211,16 @@ export function createPhysics(cy: Core): Physics {
     s.hist = [];
   });
 
+  function bases(): Map<string, { x: number; y: number }> {
+    const out = new Map<string, { x: number; y: number }>();
+    for (const [id, s] of states) out.set(id, { x: s.bx, y: s.by });
+    return out;
+  }
+
   function destroy(): void {
     if (raf !== 0) cancelAnimationFrame(raf);
     raf = 0;
   }
 
-  return { rebase, popNode, restorePop, destroy };
+  return { rebase, bases, popNode, restorePop, destroy };
 }

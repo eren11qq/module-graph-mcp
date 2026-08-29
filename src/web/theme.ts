@@ -253,6 +253,11 @@ export const MOTION = {
 export const CHROME = {
   themeStorageKey: 'mg-theme',
   defaultTheme: 'dark' as ThemeKey,
+  /**
+   * Code-review 2026-08-29: layout archive (layout-store.ts) — last-stable
+   * positions keyed by rootPath, one JSON file under a single key.
+   */
+  layoutStorageKey: 'mg-layout',
   /** Entrance choreography replay window (body.enter). */
   entranceTotalMs: 1400,
   /** Statusbar event ticker dims back after this long. */

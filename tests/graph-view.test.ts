@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGraphView } from '../src/web/graph-view.js';
-import type { Edge, GraphDelta, GraphSnapshot, ModuleNode } from '../src/shared/types.js';
+import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../src/shared/types.js';
+import type { LayoutStore } from '../src/web/layout-store.js';
 import { diameterOf } from '../src/web/theme.js';
 
 /**
@@ -22,13 +23,18 @@ const h = vi.hoisted(() => {
 });
 
 /** Shared setup for every describe: fresh view + its fake cytoscape instance. */
-function mountView(): { onFocusChange: ReturnType<typeof vi.fn>; view: ReturnType<typeof createGraphView>; cy: FakeCy } {
+function mountView(opts?: { store?: LayoutStore }): {
+  onFocusChange: ReturnType<typeof vi.fn>;
+  view: ReturnType<typeof createGraphView>;
+  cy: FakeCy;
+} {
   h.instances.length = 0;
   h.styles.length = 0;
   const onFocusChange = vi.fn();
   const view = createGraphView(document.createElement('div'), {
     onFocusChange,
-    tooltipEl: document.createElement('div')
+    tooltipEl: document.createElement('div'),
+    ...opts
   });
   return { onFocusChange, view, cy: h.instances[0]! };
 }
@@ -697,5 +703,104 @@ describe('区域化海报 wiring (2026-08-29)', () => {
         expect.objectContaining({ selector: 'edge.edge-cross' })
       ])
     );
+  });
+});
+
+describe('layout persistence (Code-review 2026-08-29)', () => {
+  // A functional fake: save/update/clear mutate the same map load() hands
+  // out, so restore-after-save sequences behave like the real store.
+  function makeStore(seed: Record<string, { x: number; y: number }> = {}): LayoutStore & {
+    load: ReturnType<typeof vi.fn>;
+    save: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    clear: ReturnType<typeof vi.fn>;
+  } {
+    const map = new Map(Object.entries(seed));
+    const load = vi.fn(() => new Map(map));
+    const save = vi.fn((_root: string, positions: ReadonlyMap<string, { x: number; y: number }>) => {
+      map.clear();
+      for (const [k, v] of positions) map.set(k, { ...v });
+    });
+    const update = vi.fn((_root: string, id: string, p: { x: number; y: number }) => {
+      map.set(id, { ...p });
+    });
+    const clear = vi.fn(() => map.clear());
+    return { load, save, update, clear } as unknown as LayoutStore & {
+      load: ReturnType<typeof vi.fn>;
+      save: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
+      clear: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  type EleHandle = { nonempty(): boolean; data(key?: string): unknown };
+  const eleOf = (cy: FakeCy, id: string): EleHandle =>
+    (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
+  const posOf = (cy: FakeCy, id: string): { x: number; y: number } =>
+    (eleOf(cy, id) as unknown as { position(): { x: number; y: number } }).position();
+
+  // Position assertions need nodes that NO post-pass touches: with an edge
+  // they dodge the orphan dock, and `src/*.ts` paths miss the region table,
+  // so the rigid compass translation leaves strays alone.
+  const strayEdge = (a: ModuleNode, b: ModuleNode): GraphSnapshot =>
+    snapshotWith([a, b], [{ from: a.id, to: b.id }]);
+
+  it('a snapshot restores archived positions into the fresh elements', () => {
+    const store = makeStore({ 'a.ts': { x: 111, y: 222 } });
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(strayEdge(node('a.ts'), node('b.ts')));
+    expect(posOf(cy, 'a.ts')).toEqual({ x: 111, y: 222 });
+    // No archive entry → no preset position (fake default), fcose owns it.
+    expect(posOf(cy, 'b.ts')).toEqual({ x: 0, y: 0 });
+  });
+
+  it('applyLayout archives the settled layout under the snapshot root', () => {
+    const store = makeStore();
+    const { view } = mountView({ store });
+    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
+    expect(store.save).toHaveBeenCalledTimes(1);
+    const [root, positions] = store.save.mock.calls[0] as [string, Map<string, { x: number; y: number }>];
+    expect(root).toBe('/proj');
+    expect([...positions.keys()].sort()).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('drag-free persists the drop point (拖放即保存)', () => {
+    const store = makeStore();
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(snapshotWith([node('a.ts')]));
+    cy.__fire('dragfree|node', { target: { id: () => 'a.ts', position: () => ({ x: 50, y: 60 }) } });
+    expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 });
+  });
+
+  it('filter toggles re-render from the archive and never overwrite it', () => {
+    const store = makeStore();
+    const { view, cy } = mountView({ store });
+    // c keeps a.ts connected while the passing ball is hidden, so a.ts stays
+    // clear of the orphan dock on the filtered re-render.
+    view.setSnapshot(
+      snapshotWith(
+        [node('a.ts'), node('b.ts', 'passing'), node('c.ts')],
+        [
+          { from: 'a.ts', to: 'b.ts' },
+          { from: 'a.ts', to: 'c.ts' }
+        ]
+      )
+    );
+    // Drag a.ts, then hide the passing ball → element swap. a.ts is rebuilt
+    // from the archive, and the filtered layout is NOT saved over it.
+    cy.__fire('dragfree|node', { target: { id: () => 'a.ts', position: () => ({ x: 50, y: 60 }) } });
+    view.setViewState({ hiddenStates: new Set<TestState>(['passing']) });
+    expect(posOf(cy, 'a.ts')).toEqual({ x: 50, y: 60 });
+    expect(store.save).toHaveBeenCalledTimes(1); // only the unfiltered snapshot solve
+  });
+
+  it('resetLayout clears the archive and re-solves from scratch', () => {
+    const store = makeStore({ 'a.ts': { x: 111, y: 222 } });
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(strayEdge(node('a.ts'), node('b.ts')));
+    expect(posOf(cy, 'a.ts')).toEqual({ x: 111, y: 222 });
+    view.resetLayout();
+    expect(store.clear).toHaveBeenCalledWith('/proj');
+    expect(posOf(cy, 'a.ts')).toEqual({ x: 0, y: 0 });
   });
 });
