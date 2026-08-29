@@ -28,7 +28,8 @@ function startServer(): {
   } as unknown as NodeJS.WritableStream;
   const graph: GraphSnapshotSource = {
     snapshot: () => ({ rootPath: '/proj', generatedAt: 1, nodes: [], edges: [] }),
-    setNote: () => false
+    setNote: () => false,
+    setReview: () => false
   };
   const server = new McpStdioServer(input as unknown as NodeJS.ReadableStream, output, () => {}, graph);
   return { input, replies, serving: server.serve() };

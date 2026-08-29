@@ -501,7 +501,10 @@ describe('report_test_run — the agent test-run channel', () => {
   });
 });
 
-describe('begin_review checking timeout (code-review 2026-08-29)', () => {
+describe('begin_review checking timeout — tool-level wiring pins', () => {
+  // Boundary-by-boundary behavior (re-arm windows, identity staleness, event
+  // order) is pinned on the module interface in tests/review-lifecycle.test.ts;
+  // these two pins only prove the tools are wired to that lifecycle.
   const TIMEOUT_MS = 10 * 60 * 1000;
 
   function buildTimed() {
@@ -515,17 +518,12 @@ describe('begin_review checking timeout (code-review 2026-08-29)', () => {
     return { ...built, nodeEvents, nonNodeEvents };
   }
 
-  it('falls back after 10 minutes: checking clears, node_update + review_timeout broadcast', () => {
+  it('a dangling begin_review is retired by the server after the timeout', () => {
     vi.useFakeTimers();
     try {
       const { tools, graph, nodeEvents, nonNodeEvents } = buildTimed();
       tools.begin_review.execute({ path: 'core/app.ts' });
-      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
-
-      vi.advanceTimersByTime(TIMEOUT_MS - 1);
-      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
-
-      vi.advanceTimersByTime(1);
+      vi.advanceTimersByTime(TIMEOUT_MS);
       expect(graph.reviews.get('core/app.ts')).toBeUndefined();
       expect(nodeEvents().at(-1)!.aiReview).toBeUndefined();
       expect(nonNodeEvents()).toEqual([{ type: 'review_timeout', id: 'core/app.ts', path: 'core/app.ts' }]);
@@ -534,75 +532,21 @@ describe('begin_review checking timeout (code-review 2026-08-29)', () => {
     }
   });
 
-  it('end_review disarms the timeout; a re-begin restarts the window', () => {
-    vi.useFakeTimers();
-    try {
-      const { tools, graph, nonNodeEvents } = buildTimed();
-
-      // end_review clears the pending timer: no timeout ever fires.
-      tools.begin_review.execute({ path: 'index.ts' });
-      tools.end_review.execute({ path: 'index.ts', verdicts: [] });
-      vi.advanceTimersByTime(TIMEOUT_MS * 2);
-      expect(graph.reviews.get('index.ts')!.status).toBe('done');
-      expect(nonNodeEvents()).toEqual([]);
-
-      // A re-begin replaces the timer: the old deadline must not retire the
-      // fresh checking state.
-      tools.begin_review.execute({ path: 'core/app.ts' });
-      vi.advanceTimersByTime(TIMEOUT_MS - 1000);
-      tools.begin_review.execute({ path: 'core/app.ts' });
-      vi.advanceTimersByTime(1001);
-      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
-      vi.advanceTimersByTime(TIMEOUT_MS - 1);
-      expect(graph.reviews.get('core/app.ts')).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('update_review re-arms the timer: the old deadline is disarmed, the fresh window governs', () => {
+  it('update re-arms the window and end_review disarms it, through the tools', () => {
     vi.useFakeTimers();
     try {
       const { tools, graph, nonNodeEvents } = buildTimed();
       tools.begin_review.execute({ path: 'core/app.ts' });
-
-      // Push an update 1s before the ORIGINAL deadline. This replaces
-      // node.aiReview with a new checking object — without the re-arm the
-      // old timer would no-op and the module would sit in checking forever.
       vi.advanceTimersByTime(TIMEOUT_MS - 1000);
       tools.update_review.execute({ path: 'core/app.ts', verdicts: [{ line: 4, verdict: 'unsure' }] });
-
-      vi.advanceTimersByTime(1001); // crosses the original deadline
+      vi.advanceTimersByTime(1001); // crosses the original deadline: still checking
       expect(graph.reviews.get('core/app.ts')).toEqual({
         status: 'checking',
         verdicts: [{ line: 4, verdict: 'unsure' }]
       });
-      expect(nonNodeEvents()).toEqual([]);
-
-      // The re-armed window started at the update (t = TIMEOUT-1000): the new
-      // deadline is 2*TIMEOUT-1000, not the original 1*TIMEOUT.
-      vi.advanceTimersByTime(TIMEOUT_MS - 1002);
-      expect(graph.reviews.get('core/app.ts')).toEqual({
-        status: 'checking',
-        verdicts: [{ line: 4, verdict: 'unsure' }]
-      });
-      vi.advanceTimersByTime(1);
-      expect(graph.reviews.get('core/app.ts')).toBeUndefined();
-      expect(nonNodeEvents()).toEqual([{ type: 'review_timeout', id: 'core/app.ts', path: 'core/app.ts' }]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('end_review after an update still disarms the timeout entirely', () => {
-    vi.useFakeTimers();
-    try {
-      const { tools, graph, nonNodeEvents } = buildTimed();
-      tools.begin_review.execute({ path: 'index.ts' });
-      tools.update_review.execute({ path: 'index.ts', verdicts: [{ line: 2, verdict: 'confident' }] });
-      tools.end_review.execute({ path: 'index.ts', verdicts: [] });
+      tools.end_review.execute({ path: 'core/app.ts', verdicts: [] });
       vi.advanceTimersByTime(TIMEOUT_MS * 2);
-      expect(graph.reviews.get('index.ts')!.status).toBe('done');
+      expect(graph.reviews.get('core/app.ts')!.status).toBe('done');
       expect(nonNodeEvents()).toEqual([]);
     } finally {
       vi.useRealTimers();

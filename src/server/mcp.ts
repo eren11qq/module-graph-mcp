@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
-import type { AiReview, AiReviewEntry, AiVerdict, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
+import type { AiReview, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
 
 /**
  * Minimal MCP (Model Context Protocol) server over stdio.
@@ -137,56 +138,10 @@ function notFoundResult(nodes: readonly ModuleNode[], rawPath: unknown): ToolRes
 // Ticket 12: AI review tooling. The agent is the executor — begin_review
 // marks a module "checking" (edge pulse on the dashboard), update_review
 // pushes partial verdicts while it works (rows paint line by line), and
-// end_review stores the final three-color verdicts. Caps keep a runaway
-// agent from flooding the wire or the DOM.
+// end_review stores the final three-color verdicts. The pairing discipline,
+// verdict cleaning, the checking timeout and the event order live in
+// review-lifecycle.ts; these tools only validate arguments and shape replies.
 // ---------------------------------------------------------------------------
-
-const AI_VERDICTS: readonly AiVerdict[] = ['confident', 'unsure', 'error'];
-const MAX_VERDICT_ENTRIES = 500;
-const MAX_VERDICT_MESSAGE = 200;
-const MAX_REVIEW_SUMMARY = 500;
-/**
- * Code-review 2026-08-29: a begin_review without its end_review leaves the
- * ball pulsing forever — the "checking" state would be lying. After this
- * long the server retires the checking state itself and tells the dashboard.
- */
-const REVIEW_CHECKING_TIMEOUT_MS = 10 * 60 * 1000;
-
-/**
- * Validate and normalise raw verdict entries: non-objects, bad lines and
- * unknown verdicts are dropped silently (a partial review beats none);
- * messages are truncated; per line the LAST entry wins; output is sorted by
- * line and capped at MAX_VERDICT_ENTRIES.
- */
-function normalizeVerdicts(raw: unknown): AiReviewEntry[] {
-  if (!Array.isArray(raw)) return [];
-  const byLine = new Map<number, AiReviewEntry>();
-  for (const item of raw) {
-    if (typeof item !== 'object' || item === null) continue;
-    const e = item as { line?: unknown; verdict?: unknown; message?: unknown };
-    if (typeof e.line !== 'number' || !Number.isInteger(e.line) || e.line < 1) continue;
-    if (typeof e.verdict !== 'string' || !AI_VERDICTS.includes(e.verdict as AiVerdict)) continue;
-    const entry: AiReviewEntry = { line: e.line, verdict: e.verdict as AiVerdict };
-    if (typeof e.message === 'string' && e.message.trim().length > 0) {
-      entry.message = e.message.trim().slice(0, MAX_VERDICT_MESSAGE);
-    }
-    byLine.set(entry.line, entry);
-  }
-  return [...byLine.values()].sort((a, b) => a.line - b.line).slice(0, MAX_VERDICT_ENTRIES);
-}
-
-/**
- * Code-review 2026-08-29: fold one update_review batch into the pending
- * verdicts — on the same line the batch entry wins (the same last-wins rule
- * normalizeVerdicts applies within one batch); output stays line-sorted and
- * capped at MAX_VERDICT_ENTRIES.
- */
-function mergeVerdicts(existing: AiReviewEntry[], batch: AiReviewEntry[]): AiReviewEntry[] {
-  const byLine = new Map<number, AiReviewEntry>();
-  for (const e of existing) byLine.set(e.line, e);
-  for (const e of batch) byLine.set(e.line, e);
-  return [...byLine.values()].sort((a, b) => a.line - b.line).slice(0, MAX_VERDICT_ENTRIES);
-}
 
 /**
  * Shared argument handling of the two path-taking tools (get_module_details,
@@ -214,37 +169,7 @@ function resolveRequestedNode(
 
 export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): Record<string, ToolDef> {
   const readSource = deps.readSourceFile ?? readSourceFile;
-  // node id → pending checking-timeout timer (code-review 2026-08-29).
-  // Cleared by end_review and by a re-arm; the callback is a no-op unless
-  // the node still carries the exact review object captured when the timer
-  // was armed, so a rescan or a fresh begin disarms stale timers for free.
-  const checkingTimers = new Map<string, NodeJS.Timeout>();
-  const clearCheckingTimer = (id: string): void => {
-    const timer = checkingTimers.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      checkingTimers.delete(id);
-    }
-  };
-  // (Re)arm the checking timeout for `checking`. BOTH begin_review and
-  // update_review must arm it: update_review replaces node.aiReview with a
-  // new checking object, which would otherwise silently disarm a timer that
-  // captured the old object (the identity token no longer matches) and leave
-  // the module stuck in checking forever.
-  const armCheckingTimer = (id: string, path: string, checking: AiReview): void => {
-    clearCheckingTimer(id);
-    const timer = setTimeout(() => {
-      checkingTimers.delete(id);
-      const current = graph.snapshot().nodes.find((n) => n.id === id);
-      if (current === undefined || current.aiReview !== checking) return;
-      graph.setReview(id, undefined);
-      deps.broadcast?.({ type: 'node_update', node: current });
-      // After the paired node_update so the ticker shows the timeout.
-      deps.broadcast?.({ type: 'review_timeout', id, path });
-    }, REVIEW_CHECKING_TIMEOUT_MS);
-    timer.unref?.(); // never keep the dashboard process alive for a dangling check
-    checkingTimers.set(id, timer);
-  };
+  const lifecycle = createReviewLifecycle({ graph, broadcast: deps.broadcast });
   return {
     get_dashboard_info: {
       description:
@@ -439,14 +364,11 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         if ('failure' in found) return found.failure;
         const node = found.node;
 
-        const checking: AiReview = { status: 'checking', verdicts: [] };
-        graph.setReview(node.id, checking);
-        armCheckingTimer(node.id, node.path, checking);
-        deps.broadcast?.({ type: 'node_update', node });
+        const { checking } = lifecycle.begin(node.id, node.path);
         return textToolResult({
           ok: true,
           id: node.id,
-          aiReview: node.aiReview ?? null
+          aiReview: checking
         });
       }
     },
@@ -492,29 +414,18 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
             isError: true
           };
         }
-        const pending = node.aiReview;
-        if (pending === undefined || pending.status !== 'checking') {
+        const outcome = lifecycle.update(node.id, node.path, args.verdicts);
+        if (!outcome.ok) {
           return {
             content: [{ type: 'text', text: 'no review in progress for this module — call begin_review first.' }],
             isError: true
           };
         }
-
-        // A fresh checking object per update: setReview swaps node.aiReview,
-        // which would go stale against the pending timer's identity token —
-        // armCheckingTimer re-binds the timeout to the new object.
-        const checking: AiReview = {
-          status: 'checking',
-          verdicts: mergeVerdicts(pending.verdicts, normalizeVerdicts(args.verdicts))
-        };
-        graph.setReview(node.id, checking);
-        armCheckingTimer(node.id, node.path, checking);
-        deps.broadcast?.({ type: 'node_update', node });
         return textToolResult({
           ok: true,
           id: node.id,
-          verdictCount: checking.verdicts.length,
-          aiReview: node.aiReview ?? null
+          verdictCount: outcome.verdictCount,
+          aiReview: outcome.checking
         });
       }
     },
@@ -564,22 +475,12 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
             isError: true
           };
         }
-        const verdicts = normalizeVerdicts(args.verdicts);
-        const summary =
-          typeof args.summary === 'string' && args.summary.trim().length > 0
-            ? args.summary.trim().slice(0, MAX_REVIEW_SUMMARY)
-            : undefined;
-
-        clearCheckingTimer(node.id);
-        const review: AiReview = { status: 'done', verdicts, reviewedAt: Date.now() };
-        if (summary !== undefined) review.summary = summary;
-        graph.setReview(node.id, review);
-        deps.broadcast?.({ type: 'node_update', node });
+        const { done, verdictCount } = lifecycle.end(node.id, args.verdicts, args.summary);
         return textToolResult({
           ok: true,
           id: node.id,
-          verdictCount: verdicts.length,
-          aiReview: node.aiReview ?? null
+          verdictCount,
+          aiReview: done
         });
       }
     },

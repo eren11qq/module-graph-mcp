@@ -41,7 +41,8 @@
 | `gitignore` | `parseIgnoreRule(line)` / `loadGitignore(rootAbs)` | 最小 glob（`*` `**` `?`、锚定、目录限定、取反）、last-match-wins、不可读 .gitignore 降级为空规则集 | ~110 |
 | `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok{content, truncated} / denied{status 400/403/404/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、二进制嗅探；超限不再 413，按字节截断（`utf8HeadEnd` 修复到 UTF-8 序列边界，truncated 标记 + sizeBytes 保真） | 152 |
 | `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size` | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照、/api/source 截断透传 | 240 |
-| `McpStdioServer` + `buildTools` | `serve()`；9 工具：`get_dashboard_info` / `get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun, httpInfo, isBaselineDone}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、verdict 清洗（每行最后一条 / 500 上限 / 200·500 截断；`update_review` 分批合并进 pending、同样新条胜）、checking 超时回落（`armCheckingTimer`：begin/update 都要重挂，以最新 checking 对象为身份令牌，否则 update 换新对象会静默解除旧定时器）、**基线闸门**（内容依赖型工具有界等基线，自述型工具即时应答带 scanning 注记） | 804 |
+| `McpStdioServer` + `buildTools` | `serve()`；9 工具：`get_dashboard_info` / `get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun, httpInfo, isBaselineDone}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、AI 评审三工具经 `ReviewLifecycle` 委派（工具体只剩参数校验 + reply 整形，回复字节级不变）、**基线闸门**（内容依赖型工具有界等基线，自述型工具即时应答带 scanning 注记） | 705 |
+| `ReviewLifecycle`（review-lifecycle.ts） | `begin(id, path)` / `update(id, path, rawVerdicts) → outcome` / `end(id, rawVerdicts, rawSummary)`——typed outcome，不认识 MCP 回复格式；`AI_VERDICTS` / `REVIEW_CHECKING_TIMEOUT_MS` 是它导出的接口词汇 | begin/end 配对纪律、checking 超时回落（身份令牌 + update 重挂——update 换新 checking 对象会静默解除旧定时器，故每次重绑）、verdict 清洗与分批合并（每行最后一条 / 500 上限 / 200·500 截断）、`node_update` → `review_timeout` 广播顺序——四条曾以注释散在工具体、定时器闭包、引擎别名与 dashboard 假设里的不变量收拢为私有实现（2026-08-29 架构评审候选 #1） | 176 |
 | `path-conventions` | `SOURCE_EXTENSIONS` / `LANGUAGE_BY_EXTENSION` / `EXCLUDED_DIRECTORIES` | 约定常量单一事实源（曾有四份扩展名副本、三份排除集） | 22 |
 | `index.ts` | CLI 参数（缺 `--root` 回退 cwd）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深；MCP 传输先于基线扫描启动（插件模式握手不能等扫描），基线状态经 `isBaselineDone` deps 供给闸门与 scanning 注记 | 124 |
 
@@ -97,6 +98,7 @@
 - `typecheck`：1 个函数背后是 267 行进程管理 + 解析 + 五种降级模式，Interface 上"从不 throw"是关键错误模式契约。
 - `readSourceFile`：1 个函数背后是整套安全策略；Interface 把拒绝顺序（400→403→404→415）与超限截断语义（truncated + UTF-8 边界修复）写成契约。
 - `CoverageMapper`：1 个 `refresh` 背后是容错解析 + 路径归一化 + 命名约定索引。
+- `ReviewLifecycle`：3 个动词背后是定时器、身份令牌、verdict 清洗与事件顺序；interface 上只见 typed outcome，MCP 回复格式与路径校验都留在 mcp.ts。deletion test：删掉它，四条不变量在三个文件里重现。
 
 **中**：`FileWatcher`（4 项配置 + 2 方法换掉整个 chokidar 世界）、`StatePipeline`、`http`、`mcp`。`createGraphView` 收窄到 9 方法后仍隐藏全部 cytoscape 渲染管线——Leverage 极高。
 
@@ -144,7 +146,8 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 | `state-pipeline.test.ts` | StatePipeline（假 runTypecheck） |
 | `coverage.test.ts` | CoverageMapper + 纯函数内部 seam |
 | `typecheck.test.ts` | parseTscOutput / runTypecheck |
-| `mcp-tools.test.ts` | buildTools 直测（fake graph source + 注入 readSourceFile；错误文案按行为断言） |
+| `mcp-tools.test.ts` | buildTools 直测（fake graph source + 注入 readSourceFile；错误文案按行为断言；checking 超时只留两枚工具级接线钉） |
+| `review-lifecycle.test.ts` | ReviewLifecycle interface（超时窗口 / update 重挂 / 身份令牌 / 事件顺序直测） |
 | `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟（唯一 spawn 套件） |
 | `http-security.test.ts` / `source-endpoint.test.ts` | startHttpServer / readSourceFile |
 | `graph-model.test.ts` | GraphModel 三种帧 fold + 邻接（浏览器唯一图状态） |
