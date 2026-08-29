@@ -10,7 +10,8 @@ import { THEME } from './theme.js';
  * computes a layout — each region's fcose arrangement is picked up whole and
  * RIGIDLY TRANSLATED to its compass slot. The one exception is the orphan
  * dock: degree-0 balls have no edges, hence no arrangement to preserve, so
- * they are re-placed on a deterministic grid.
+ * they are re-placed on a deterministic grid anchored outside the non-orphan
+ * main mass (边缘=外围), independent of fcose's scatter.
  *
  * Order is a hard constraint owned by graph-view.applyLayout: plates removed
  * → fcose → THIS translation → physics.rebase() → plates re-added. rebase
@@ -171,17 +172,33 @@ export function applyRegionLayout(cy: Core, regions: ReadonlyMap<string, RegionI
   if (byRegion.size === 0) return;
 
   // 孤儿坞不保形:零连线没有可保的排列,先把散落的孤球收成确定性网格
-  // (按 id 排序),锚在它们当前包围盒的左上;随后的罗盘平移对网格与
-  // 其它区域一视同仁。
+  // (按 id 排序);随后的罗盘平移对网格与其它区域一视同仁。
   const orphans = byRegion.get('orphan');
   if (orphans) {
     const sorted = [...orphans].sort((a, b) => (a.id() < b.id() ? -1 : 1));
-    let anchorX = Infinity;
-    let anchorY = Infinity;
-    for (const n of sorted) {
-      const p = n.position();
-      anchorX = Math.min(anchorX, p.x);
-      anchorY = Math.min(anchorY, p.y);
+    // Code-review 2026-08-29: 锚点不再吃 fcose 把孤球散到哪——改锚在
+    // 「非孤儿主质量包围盒」的左下角外一格,借 Obsidian「边缘=外围」惯例
+    // 让孤儿确定性地待在主图下方外围。孤儿由规则管、不由存档管:存档
+    // 恢复的孤儿位置会被本坞覆盖,这是预期。全场皆孤儿(无主质量)时回退
+    // 旧锚(自身散布包围盒左上),纯孤儿图同样保持确定性。
+    const mass: NodeSingular[] = [];
+    for (const [r, list] of byRegion) {
+      if (r !== 'orphan') mass.push(...list);
+    }
+    let anchorX: number;
+    let anchorY: number;
+    if (mass.length > 0) {
+      const m = bboxOf(mass);
+      anchorX = m.x0;
+      anchorY = m.y1 + THEME.layout.regionGapY;
+    } else {
+      anchorX = Infinity;
+      anchorY = Infinity;
+      for (const n of sorted) {
+        const p = n.position();
+        anchorX = Math.min(anchorX, p.x);
+        anchorY = Math.min(anchorY, p.y);
+      }
     }
     sorted.forEach((n, i) => {
       n.position({

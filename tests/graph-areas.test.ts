@@ -310,3 +310,62 @@ describe('applyRegionLayout + syncRegionPlates (fake cy)', () => {
     expect(plateById.size).toBe(2);
   });
 });
+
+describe('orphan dock anchor (Code-review 2026-08-29)', () => {
+  /** Two web balls + two orphans; orphans start on the given scatter. */
+  function runWithOrphansAt(scatter: ReadonlyArray<{ x: number; y: number }>): FakeNode[] {
+    const nodes: FakeNode[] = [
+      { id: 'src/web/a.ts', x: 0, y: 0, d: 20 },
+      { id: 'src/web/b.ts', x: 100, y: 0, d: 20 },
+      { id: 'vite.config.ts', x: scatter[0]!.x, y: scatter[0]!.y, d: 21 },
+      { id: 'vitest.config.ts', x: scatter[1]!.x, y: scatter[1]!.y, d: 21 }
+    ];
+    const regions = assignRegions(
+      nodes.map((n) => ({ id: n.id, path: n.id })),
+      [{ from: 'src/web/a.ts', to: 'src/web/b.ts' }]
+    );
+    const { cy } = fakeCy(nodes);
+    applyRegionLayout(cy, regions);
+    return nodes;
+  }
+
+  it('dock output is independent of the fcose scatter — main-mass anchor', () => {
+    const a = runWithOrphansAt([
+      { x: 999, y: 999 },
+      { x: -500, y: 300 }
+    ]);
+    const b = runWithOrphansAt([
+      { x: 42, y: -700 },
+      { x: 10, y: 10 }
+    ]);
+    // The anchor is a pure function of the non-orphan mass now, so the whole
+    // poster — dock included — comes out bitwise identical scatter or not.
+    expect(b.map((n) => ({ id: n.id, x: n.x, y: n.y }))).toEqual(
+      a.map((n) => ({ id: n.id, x: n.x, y: n.y }))
+    );
+  });
+
+  it('all-orphan graph falls back to the own-scatter anchor; grid shape kept', () => {
+    const nodes: FakeNode[] = [
+      { id: 'a.config.ts', x: 50, y: 40, d: 20 },
+      { id: 'b.config.ts', x: -900, y: 12, d: 20 },
+      { id: 'c.config.ts', x: 7, y: 800, d: 20 },
+      { id: 'd.config.ts', x: 300, y: -12, d: 20 }
+    ];
+    const regions = assignRegions(
+      nodes.map((n) => ({ id: n.id, path: n.id })),
+      []
+    );
+    const { cy } = fakeCy(nodes);
+    applyRegionLayout(cy, regions);
+    const sorted = [...nodes].sort((x, y) => (x.id < y.id ? -1 : 1));
+    // dockCols = 3: a/b/c on the first row, d wraps to row 2 column 0. The
+    // compass translation moves the whole dock rigidly, so only shape
+    // invariants are assertable here.
+    expect(sorted[1]!.x - sorted[0]!.x).toBeCloseTo(THEME.layout.dockSpacingX, 6);
+    expect(sorted[2]!.x - sorted[1]!.x).toBeCloseTo(THEME.layout.dockSpacingX, 6);
+    expect(sorted[1]!.y).toBeCloseTo(sorted[0]!.y, 6);
+    expect(sorted[3]!.x).toBeCloseTo(sorted[0]!.x, 6);
+    expect(sorted[3]!.y - sorted[0]!.y).toBeCloseTo(THEME.layout.dockSpacingY, 6);
+  });
+});
