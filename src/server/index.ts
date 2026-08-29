@@ -88,16 +88,28 @@ async function main(): Promise<void> {
   // scan logs a warning and serves an empty graph until the next file event
   // rebuilds it) and the watcher is listening.
   const liveReload = startLiveReload({ rootPath, hub, log, graph });
-  await liveReload.ready.catch((err: unknown) => {
-    log(`warning      : startup pipeline failed (${err instanceof Error ? err.message : String(err)})`);
-  });
+  // Plugin mode (code-review 2026-08-29): the MCP transport must come up
+  // BEFORE the baseline scan finishes — an MCP client drops a server whose
+  // handshake times out (30s default), and a big repository can scan longer
+  // than that. So the scan runs concurrently; mid-scan tool calls are
+  // annotated via isBaselineDone instead of being blocked.
+  let baselineDone = false;
+  void liveReload.ready
+    .catch((err: unknown) => {
+      log(`warning      : startup pipeline failed (${err instanceof Error ? err.message : String(err)})`);
+    })
+    .finally(() => {
+      baselineDone = true;
+    });
 
   const openMsg = openBrowser(url, { noOpen });
   if (openMsg) log(openMsg);
 
   const mcp = new McpStdioServer(process.stdin, process.stdout, log, graph, {
     broadcast: (event: GraphEvent) => hub.broadcast(event),
-    reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed)
+    reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed),
+    httpInfo: () => ({ url, port: boundPort, rootPath, version: VERSION }),
+    isBaselineDone: () => baselineDone
   });
   await mcp.serve();
   log('stdin closed — shutting down');

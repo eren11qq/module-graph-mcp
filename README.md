@@ -93,12 +93,36 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 |---|---|
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
 | `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（>512KB 截断并标注 `truncated`）、备注 |
+| `get_dashboard_info` | dashboard 浏览器地址、被监视根目录、节点/边计数：agent 每会话先调它核实监视的树对不对，并把链接给用户 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `report_note` | 给模块写自由备注（≤2000 字符；空串清除） |
 | `begin_review` | 标记模块进入 AI 检查：球开始脉冲、面板显示「检查中」；与 `end_review` 配对使用 |
 | `update_review` | 检查进行中分批推送部分 verdicts（格式同 `end_review`，与已有结论合并、同样新条覆盖旧行）：源码行实时逐行上色 |
 | `end_review` | 提交逐行 verdicts（`confident/unsure/error`，1-based 行号；≤500 条、每行最后一条生效、message ≤200 字符、summary ≤500 字符）；球停止脉冲，三色与评审环上屏 |
 | `report_test_run` | 上报刚跑完的测试结果 `{ failed: true \| false }`：覆盖率报告内文件整批转红 / 回绿 |
+
+## 接入为 ZCode MCP 插件（推荐用法）
+
+在 `~/.zcode/cli/config.json` 注册（用户级，所有会话自动连接）：
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "module-graph": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["<本仓库绝对路径>/dist/server/index.js"],
+        "timeoutMs": 60000
+      }
+    }
+  }
+}
+```
+
+- **不传 `--root`**：服务端回退到子进程 cwd；不传 `--no-open`：启动即自动打开 dashboard（设 env `MODULE_GRAPH_NO_OPEN=1` 可抑制）。
+- agent 侧约定：会话内先调 `get_dashboard_info` 核实 `rootPath` 与 dashboard 链接；若监视的树不对，在该项目的 `<repo>/.zcode/config.json` 里用同名的 workspace 级条目（`--root` 传绝对路径）覆盖。
+- 基线扫描期间握手**不会**被阻塞：`get_dashboard_info` / `get_module_graph` 即时应答并带 `scanning: true`；依赖图内容的工具（begin_review / get_module_details 等）自动等基线落定（上限 20s）再作答。
 
 ## MVP 边界（明确不做）
 

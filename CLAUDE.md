@@ -2,10 +2,11 @@
 
 module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard + stdio MCP server**：浏览器实时渲染模块依赖图（球色 = 测试状态、红环 = 类型错误、评审环 = AI 检查结果），同一进程通过 stdio 提供 MCP 工具。
 
-## MCP 工具速览（8 个）
+## MCP 工具速览（9 个）
 
 | 工具 | 用途 |
 |---|---|
+| `get_dashboard_info` | dashboard 地址、被监视根目录、节点/边计数：每会话先调它核实监视树，并把链接给用户 |
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
 | `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文 |
 | `list_untested` | 所有「未测」模块 id + 计数 |

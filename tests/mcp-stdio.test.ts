@@ -89,4 +89,44 @@ describe('MCP stdio robustness (P1-2)', () => {
     input.emit('data', Buffer.alloc(10 * 1024 * 1024 + 1, 0x61));
     await expect(serving).rejects.toThrow(/stdio limit/);
   });
+
+  it('holds content-dependent calls until the baseline lands; self-describing ones answer immediately', async () => {
+    const input = new EventEmitter();
+    const replies: Array<Record<string, any>> = [];
+    const output = {
+      write: (s: string) => {
+        replies.push(JSON.parse(s));
+        return true;
+      }
+    } as unknown as NodeJS.WritableStream;
+    const graph: GraphSnapshotSource = {
+      snapshot: () => ({ rootPath: '/proj', generatedAt: 1, nodes: [], edges: [] }),
+      setNote: () => false,
+      setReview: () => false
+    };
+    let baselineDone = false;
+    const server = new McpStdioServer(input as unknown as NodeJS.ReadableStream, output, () => {}, graph, {
+      isBaselineDone: () => baselineDone
+    });
+    void server.serve();
+
+    const call = (id: number, name: string): void => {
+      input.emit(
+        'data',
+        Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } })}\n`)
+      );
+    };
+    call(1, 'get_dashboard_info'); // ungated: answers mid-scan
+    call(2, 'begin_review'); // gated: waits for the baseline
+
+    await waitForReplies(replies, 1, 500);
+    expect(replies.map((r) => r.id)).toEqual([1]);
+
+    setTimeout(() => {
+      baselineDone = true;
+    }, 120);
+    await waitForReplies(replies, 2);
+    expect(replies.map((r) => r.id)).toEqual([1, 2]);
+    expect(replies[1]!.result).toBeDefined();
+  });
 });

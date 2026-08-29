@@ -78,6 +78,18 @@ export interface McpToolDeps {
    * production and HTTP share identical security semantics.
    */
   readSourceFile?(rootPath: string, requested: string): SourceReadResult;
+  /**
+   * Plugin-mode discovery (code-review 2026-08-29): lets get_dashboard_info
+   * hand the agent the dashboard URL and the watched root, so a wrong-root
+   * spawn is visible immediately and the user can be handed the link.
+   */
+  httpInfo?(): { url: string; port: number; rootPath: string; version: string };
+  /**
+   * False while the startup baseline scan is still running (wired by
+   * index.ts). get_module_graph annotates its reply so an agent reading the
+   * graph during the scan knows the node list is partial, not empty.
+   */
+  isBaselineDone?(): boolean;
 }
 
 /**
@@ -234,6 +246,37 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     checkingTimers.set(id, timer);
   };
   return {
+    get_dashboard_info: {
+      description:
+        'Return dashboard connection info: the browser URL of the live module-graph dashboard, the watched repository root, and current node/edge counts. Call this once per session to verify the server watches the tree you are working in, and to hand the user the dashboard link.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      },
+      execute() {
+        const snap = graph.snapshot();
+        const info = deps.httpInfo?.();
+        if (info === undefined) {
+          return textToolResult({
+            rootPath: snap.rootPath,
+            nodeCount: snap.nodes.length,
+            edgeCount: snap.edges.length,
+            note: 'dashboard not wired in this deployment'
+          });
+        }
+        return textToolResult({
+          dashboardUrl: info.url,
+          port: info.port,
+          rootPath: info.rootPath,
+          version: info.version,
+          nodeCount: snap.nodes.length,
+          edgeCount: snap.edges.length,
+          ...(deps.isBaselineDone?.() === false ? { scanning: true } : {})
+        });
+      }
+    },
+
     get_module_graph: {
       description:
         'Return the full module dependency graph of the watched repository: file-level nodes with their test/typecheck status and the import edges between them.',
@@ -244,9 +287,16 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
       },
       execute() {
         const snap = graph.snapshot();
+        // Plugin mode: the handshake must never wait for the baseline scan,
+        // so an early call lands mid-scan — say so instead of presenting an
+        // empty graph as fact.
+        const scanning = deps.isBaselineDone?.() === false;
         return textToolResult({
           rootPath: snap.rootPath,
           generatedAt: snap.generatedAt,
+          ...(scanning
+            ? { scanning: true, note: 'baseline scan still in progress — node list is partial; retry shortly' }
+            : {}),
           nodes: snap.nodes,
           edges: snap.edges
         });
@@ -566,8 +616,27 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 }
 
 export class McpStdioServer {
+  /**
+   * Tools whose answers depend on graph CONTENT (code-review 2026-08-29).
+   * Plugin mode serves before the baseline scan finishes, and an agent's
+   * first begin_review would otherwise hit "module not found" through no
+   * fault of its own — these wait (bounded) for the baseline instead.
+   * Self-describing tools (get_dashboard_info, get_module_graph) answer
+   * immediately with their scanning annotation, and report_test_run is
+   * content-independent.
+   */
+  private static readonly BASELINE_GATED = new Set([
+    'get_module_details',
+    'list_untested',
+    'report_note',
+    'begin_review',
+    'update_review',
+    'end_review'
+  ]);
+
   private buffer = '';
   private readonly tools: Record<string, ToolDef>;
+  private readonly deps: McpToolDeps;
 
   constructor(
     private readonly input: NodeJS.ReadableStream,
@@ -577,6 +646,7 @@ export class McpStdioServer {
     deps: McpToolDeps = {}
   ) {
     this.tools = buildTools(graph, deps);
+    this.deps = deps;
   }
 
   /** Start consuming stdin; resolves when stdin closes. */
@@ -673,7 +743,9 @@ export class McpStdioServer {
             msg.params?.arguments && typeof msg.params.arguments === 'object'
               ? (msg.params.arguments as Record<string, unknown>)
               : {};
-          this.reply(msg.id!, tool.execute(args));
+          // Dispatch is async (the baseline gate may hold the reply); JSON-RPC
+          // allows responses to leave in completion order.
+          void this.callTool(msg.id!, String(name), tool, args);
           return;
         }
         default:
@@ -684,6 +756,38 @@ export class McpStdioServer {
       this.logger(`mcp: handler error: ${err instanceof Error ? err.message : String(err)}`);
       if (hasId) this.errorReply(msg.id!, -32603, 'Internal error');
     }
+  }
+
+  private async callTool(id: string | number, name: string, tool: ToolDef, args: Record<string, unknown>): Promise<void> {
+    try {
+      await this.awaitBaseline(name);
+      this.reply(id, tool.execute(args));
+    } catch (err) {
+      this.logger(`mcp: handler error: ${err instanceof Error ? err.message : String(err)}`);
+      this.errorReply(id, -32603, 'Internal error');
+    }
+  }
+
+  /**
+   * Bounded wait for the startup baseline when `name` reads graph content.
+   * Past the cap the tool runs against the partial graph anyway — the
+   * self-explaining errors guide the agent to retry — so a slow scan can
+   * never wedge a request.
+   */
+  private awaitBaseline(name: string): Promise<void> {
+    if (this.deps.isBaselineDone?.() !== false || !McpStdioServer.BASELINE_GATED.has(name)) {
+      return Promise.resolve();
+    }
+    const WAIT_CAP_MS = 20_000;
+    const started = Date.now();
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (this.deps.isBaselineDone?.() !== false || Date.now() - started >= WAIT_CAP_MS) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 50);
+    });
   }
 
   private reply(id: string | number, result: unknown): void {

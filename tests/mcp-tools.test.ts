@@ -78,11 +78,12 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the eight tools with their input schemas', () => {
+  it('exposes the nine tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
       'begin_review',
       'end_review',
+      'get_dashboard_info',
       'get_module_details',
       'get_module_graph',
       'list_untested',
@@ -96,6 +97,7 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(tools.update_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.report_test_run!.inputSchema.required).toEqual(['failed']);
+    expect(tools.get_dashboard_info!.inputSchema.properties).toEqual({});
     expect(tools.list_untested!.inputSchema.properties).toEqual({});
   });
 
@@ -105,6 +107,45 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(body.rootPath).toBe('/proj');
     expect(body.nodes).toHaveLength(3);
     expect(body.edges).toEqual(FIXTURE_SNAPSHOT.edges);
+  });
+
+  it('get_module_graph flags a mid-baseline-scan reply instead of faking completeness', () => {
+    const graph = fakeGraph();
+    const tools = buildTools(graph, { isBaselineDone: () => false });
+    const body = payload(tools.get_module_graph.execute({}));
+    expect(body.scanning).toBe(true);
+    expect(body.note).toContain('baseline scan');
+
+    const done = buildTools(fakeGraph(), { isBaselineDone: () => true });
+    const settled = payload(done.get_module_graph.execute({}));
+    expect(settled.scanning).toBeUndefined();
+  });
+
+  it('get_dashboard_info reports url/root/counts and flags a mid-scan server', () => {
+    const graph = fakeGraph();
+    const tools = buildTools(graph, {
+      httpInfo: () => ({ url: 'http://127.0.0.1:24282', port: 24282, rootPath: '/proj', version: '0.1.0' }),
+      isBaselineDone: () => false
+    });
+    const body = payload(tools.get_dashboard_info.execute({}));
+    expect(body).toMatchObject({
+      dashboardUrl: 'http://127.0.0.1:24282',
+      port: 24282,
+      rootPath: '/proj',
+      version: '0.1.0',
+      nodeCount: 3,
+      edgeCount: 2,
+      scanning: true
+    });
+  });
+
+  it('get_dashboard_info degrades gracefully without the http wiring', () => {
+    const { tools } = build();
+    const body = payload(tools.get_dashboard_info.execute({}));
+    expect(body.rootPath).toBe('/proj');
+    expect(body.nodeCount).toBe(3);
+    expect(body.dashboardUrl).toBeUndefined();
+    expect(body.note).toContain('not wired');
   });
 
   it('get_module_details returns metadata, adjacency and the source text', () => {
