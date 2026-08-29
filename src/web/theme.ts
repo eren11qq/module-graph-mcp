@@ -196,6 +196,9 @@ export const THEME = {
    * 区域化海报(2026-08-29)compass geometry — graph-areas.ts 是唯一消费者:
    * regionGapX/Y 是区与区包围盒之间的间距;captionGap 是题注悬在堆顶边上
    * 方的高度。背景底板已按用户裁定移除,不再有板块出血/网格之外的概念。
+   * Code-review 2026-08-29: ballGap 是同区域内相邻小球边到边的保底间距
+   * (用户裁定 32):漂移最坏接近量 2×driftAmpMax×√2 ≈ 10.2 ≪ 32,静止与
+   * 漂移中都留得出空隙;代价是区域包围盒变大、fit() 后整图略缩一档。
    */
   layout: {
     regionGapX: 120,
@@ -203,7 +206,8 @@ export const THEME = {
     captionGap: 18,
     dockCols: 3,
     dockSpacingX: 84,
-    dockSpacingY: 84
+    dockSpacingY: 84,
+    ballGap: 32
   },
   /**
    * 区域化海报 visual channels: tests 带的球整体缩一档、跨区线一律细+淡

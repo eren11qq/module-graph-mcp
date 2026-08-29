@@ -208,6 +208,10 @@ export function applyRegionLayout(cy: Core, regions: ReadonlyMap<string, RegionI
     });
   }
 
+  // Code-review 2026-08-29: 分离通道在孤儿网格之后、包围盒之前——推开后
+  // 的区域包围盒才是罗盘槽位与题注的输入。
+  for (const list of byRegion.values()) separateTouching(list, THEME.layout.ballGap);
+
   const bboxes = new Map<RegionId, BBox>();
   for (const [r, list] of byRegion) bboxes.set(r, bboxOf(list));
   const slots = computeRegionSlots(bboxes, { gapX: THEME.layout.regionGapX, gapY: THEME.layout.regionGapY });
@@ -267,6 +271,50 @@ export function syncRegionPlates(cy: Core, regions: ReadonlyMap<string, RegionId
     }
   });
   cy.fit(undefined, THEME.canvas.padding);
+}
+
+/**
+ * 确定性分离通道 (Code-review 2026-08-29): fcose 力平衡只认中心距离不吃
+ * 半径,堆内球会贴边。把中心距 < r1 + r2 + gap 的同区域对沿连线轴各推
+ * 一半,直到处处满足边到边 ≥ gap。按 id 排序迭代、有限轮数、对已满足的
+ * 布局零移动(幂等)——配合存档回放与 randomize:false 不产生跨会话漂移。
+ * 只处理同区域对:跨区有 regionGapX ≥ 120 的包围盒间距,孤儿坞 84 网格
+ * 也天然满足。这是确定性修正,不是布局引擎——保形,只开缝。
+ */
+function separateTouching(list: readonly NodeSingular[], gap: number): void {
+  if (list.length < 2) return;
+  const sorted = [...list].sort((a, b) => (a.id() < b.id() ? -1 : 1));
+  const radii = sorted.map((n) => (Number(n.data('diameter')) || 0) / 2);
+  for (let round = 0; round < 30; round++) {
+    let moved = false;
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const a = sorted[i]!;
+        const b = sorted[j]!;
+        const pa = a.position();
+        const pb = b.position();
+        const need = radii[i]! + radii[j]! + gap;
+        const dx = pb.x - pa.x;
+        const dy = pb.y - pa.y;
+        const d = Math.hypot(dx, dy);
+        if (d >= need) continue;
+        moved = true;
+        if (d < 0.01) {
+          // 完全重合:确定性沿横轴拆开(id 小的去 -x)。
+          const push = need / 2;
+          a.position({ x: pa.x - push, y: pa.y });
+          b.position({ x: pb.x + push, y: pb.y });
+          continue;
+        }
+        const push = (need - d) / 2;
+        const ux = dx / d;
+        const uy = dy / d;
+        a.position({ x: pa.x - ux * push, y: pa.y - uy * push });
+        b.position({ x: pb.x + ux * push, y: pb.y + uy * push });
+      }
+    }
+    if (!moved) break;
+  }
 }
 
 function groupByRegion(

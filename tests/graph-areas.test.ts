@@ -369,3 +369,55 @@ describe('orphan dock anchor (Code-review 2026-08-29)', () => {
     expect(sorted[3]!.y - sorted[0]!.y).toBeCloseTo(THEME.layout.dockSpacingY, 6);
   });
 });
+
+describe('region gap channel (Code-review 2026-08-29)', () => {
+  function webPair(ax: number, ay: number, bx: number, by: number): FakeNode[] {
+    return [
+      { id: 'src/web/a.ts', x: ax, y: ay, d: 20 },
+      { id: 'src/web/b.ts', x: bx, y: by, d: 20 }
+    ];
+  }
+  const webEdge = [{ from: 'src/web/a.ts', to: 'src/web/b.ts' }];
+  const runPass = (nodes: FakeNode[]): void => {
+    const regions = assignRegions(
+      nodes.map((n) => ({ id: n.id, path: n.id })),
+      webEdge
+    );
+    const { cy } = fakeCy(nodes);
+    applyRegionLayout(cy, regions);
+  };
+
+  it('touching same-region balls are pushed apart to exactly r1+r2+ballGap', () => {
+    const nodes = webPair(0, 0, 25, 0); // 25 center-to-center = touching + some
+    runPass(nodes);
+    const need = 10 + 10 + THEME.layout.ballGap;
+    expect(Math.hypot(nodes[0]!.x - nodes[1]!.x, nodes[0]!.y - nodes[1]!.y)).toBeCloseTo(need, 6);
+  });
+
+  it('already-spaced balls are not moved at all (single region, gap satisfied)', () => {
+    const nodes = webPair(0, 0, 100, 0); // edge-to-edge 80 > 32 → zero work
+    runPass(nodes);
+    // One main-row region lands with zero translation, and the gap pass is a
+    // no-op here — the pair must sit EXACTLY where it started.
+    expect([nodes[0]!.x, nodes[0]!.y]).toEqual([0, 0]);
+    expect([nodes[1]!.x, nodes[1]!.y]).toEqual([100, 0]);
+  });
+
+  it('fully overlapping balls split deterministically along the x-axis', () => {
+    const nodes = webPair(40, 40, 40, 40);
+    runPass(nodes);
+    const need = 10 + 10 + THEME.layout.ballGap;
+    expect(Math.hypot(nodes[0]!.x - nodes[1]!.x, nodes[0]!.y - nodes[1]!.y)).toBeCloseTo(need, 6);
+    // id order decides the direction: a.ts goes -x, b.ts +x; same row.
+    expect(nodes[0]!.x).toBeLessThan(nodes[1]!.x);
+    expect(nodes[0]!.y).toBeCloseTo(nodes[1]!.y, 6);
+  });
+
+  it('the gap pass is idempotent — a second apply moves nothing', () => {
+    const nodes = webPair(0, 0, 25, 0);
+    runPass(nodes);
+    const after = nodes.map((n) => ({ id: n.id, x: n.x, y: n.y }));
+    runPass(nodes);
+    expect(nodes.map((n) => ({ id: n.id, x: n.x, y: n.y }))).toEqual(after);
+  });
+});
