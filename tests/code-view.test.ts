@@ -95,15 +95,28 @@ describe('AI verdict rows (ticket 12)', () => {
     expect(rows[3]!.className).toBe('cl'); // unmarked rows stay plain
   });
 
-  it('checking status renders plain rows (no verdict colors yet)', async () => {
+  it('checking with no verdicts yet renders plain rows', async () => {
     const container = document.createElement('div');
     const view = createSourceView(container, async () => ({ content: 'const a = 1;\nconst b = 2;' }));
 
-    await view.show(node({ aiReview: review('checking', [{ line: 1, verdict: 'error' }]) }));
+    await view.show(node({ aiReview: review('checking', []) }));
 
     for (const row of container.querySelectorAll('.cl')) {
       expect(row.className).toBe('cl');
     }
+  });
+
+  it('update_review partials paint during checking, line by line (code-review 2026-08-29)', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({ content: 'const a = 1;\nconst b = 2;\nconst c = 3;' }));
+
+    await view.show(node({ aiReview: review('checking', [{ line: 2, verdict: 'error', message: '读错了' }]) }));
+
+    const rows = container.querySelectorAll('.cl');
+    expect(rows[0]!.className).toBe('cl');
+    expect(rows[1]!.classList.contains('v-error')).toBe(true);
+    expect(rows[1]!.querySelector('.mk')?.textContent).toContain('读错了');
+    expect(rows[2]!.className).toBe('cl');
   });
 
   it('type-error bars coexist with verdict rows (two channels, no override)', async () => {

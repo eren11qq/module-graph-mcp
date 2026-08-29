@@ -125,8 +125,11 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
     const lines = content.split('\n');
     const errorLines = new Set(node.typeErrors.filter((e) => e.line >= 1).map((e) => e.line));
     const verdictByLine = new Map<number, AiReviewEntry>();
-    // Verdict colors only once the review is done; while checking, rows stay plain.
-    if (review?.status === 'done') {
+    // Verdict rows paint as soon as verdicts exist: update_review pushes
+    // partial batches while the review is checking and they render live
+    // (code-review 2026-08-29). A pending review with no verdicts yet leaves
+    // every row plain.
+    if (review !== undefined) {
       for (const v of review.verdicts) verdictByLine.set(v.line, v);
     }
 

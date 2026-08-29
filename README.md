@@ -9,7 +9,7 @@
 - **节点详情**：点击锁球 → 测试状态 / 覆盖它的测试文件 / 类型错误列表（含行号）/ 入出边跳转 / 语法高亮源码（错误行标记）
 - **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、目录折叠（同目录 ≥3 个文件折叠为一个目录球，点目录球展开）
 - **MCP 查询**：agent 可拉全图、查单模块详情、列未测模块、写备注（备注实时出现在 dashboard 详情面板）
-- **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）；检查约 10 分钟未收尾自动回落
+- **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）；检查约 10 分钟无活动自动回落
 - **测试运行上报**：agent 跑完测试调 `report_test_run` → 覆盖率报告内文件整批转红 / 回绿
 - **双主题**：暗色仪器盘（默认）/ 亮色工作台，顶栏切换、localStorage 记忆，画布与壳层联动
 
@@ -96,6 +96,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `report_note` | 给模块写自由备注（≤2000 字符；空串清除） |
 | `begin_review` | 标记模块进入 AI 检查：球开始脉冲、面板显示「检查中」；与 `end_review` 配对使用 |
+| `update_review` | 检查进行中分批推送部分 verdicts（格式同 `end_review`，与已有结论合并、同样新条覆盖旧行）：源码行实时逐行上色 |
 | `end_review` | 提交逐行 verdicts（`confident/unsure/error`，1-based 行号；≤500 条、每行最后一条生效、message ≤200 字符、summary ≤500 字符）；球停止脉冲，三色与评审环上屏 |
 | `report_test_run` | 上报刚跑完的测试结果 `{ failed: true \| false }`：覆盖率报告内文件整批转红 / 回绿 |
 

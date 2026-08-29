@@ -78,7 +78,7 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the seven tools with their input schemas', () => {
+  it('exposes the eight tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
       'begin_review',
@@ -87,11 +87,13 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
       'get_module_graph',
       'list_untested',
       'report_note',
-      'report_test_run'
+      'report_test_run',
+      'update_review'
     ]);
     expect(tools.get_module_details!.inputSchema.required).toEqual(['path']);
     expect(tools.report_note!.inputSchema.required).toEqual(['path', 'text']);
     expect(tools.begin_review!.inputSchema.required).toEqual(['path']);
+    expect(tools.update_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.report_test_run!.inputSchema.required).toEqual(['failed']);
     expect(tools.list_untested!.inputSchema.properties).toEqual({});
@@ -296,6 +298,126 @@ describe('begin_review / end_review — the AI check channel (Ticket 12)', () =>
   });
 });
 
+describe('update_review — partial verdicts while checking (code-review 2026-08-29)', () => {
+  function buildReview() {
+    const built = build();
+    const nodeEvents = (): ModuleNode[] =>
+      built.broadcasts
+        .filter((e) => e.type === 'node_update')
+        .map((e) => (e as { node: ModuleNode }).node);
+    return { ...built, nodeEvents };
+  }
+
+  it('errors before begin_review and never broadcasts', () => {
+    const { tools, broadcasts } = buildReview();
+    const result = tools.update_review.execute({
+      path: 'core/app.ts',
+      verdicts: [{ line: 1, verdict: 'error' }]
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('begin_review first');
+    expect(broadcasts).toHaveLength(0);
+  });
+
+  it('merges batches into the pending review, last-per-line wins, sorted, capped', () => {
+    const { tools, graph, nodeEvents } = buildReview();
+    tools.begin_review.execute({ path: 'core/app.ts' });
+
+    const first = payload(
+      tools.update_review.execute({
+        path: 'core/app.ts',
+        verdicts: [
+          { line: 9, verdict: 'unsure', message: '待确认' },
+          { line: 3, verdict: 'confident' }
+        ]
+      })
+    );
+    expect(first).toMatchObject({ ok: true, id: 'core/app.ts', verdictCount: 2 });
+    expect(graph.reviews.get('core/app.ts')).toEqual({
+      status: 'checking',
+      verdicts: [
+        { line: 3, verdict: 'confident' },
+        { line: 9, verdict: 'unsure', message: '待确认' }
+      ]
+    });
+
+    // Second batch: line 3 flips (last wins), line 9 untouched, line 1 added.
+    const second = payload(
+      tools.update_review.execute({
+        path: 'core/app.ts',
+        verdicts: [{ line: 3, verdict: 'error', message: '读错了' }]
+      })
+    );
+    expect(second.verdictCount).toBe(2);
+    expect(graph.reviews.get('core/app.ts')!.verdicts).toEqual([
+      { line: 3, verdict: 'error', message: '读错了' },
+      { line: 9, verdict: 'unsure', message: '待确认' }
+    ]);
+
+    // Every update pushes one node_update. The fake broadcast stores the node
+    // REFERENCE (aliasing contract), so all events alias the live node and
+    // show the latest review — on the real wire each frame serializes per
+    // send. Count + latest payload is the honest assertion here.
+    const events = nodeEvents();
+    expect(events).toHaveLength(3); // begin + two updates
+    expect(events.at(-1)!.aiReview).toEqual({
+      status: 'checking',
+      verdicts: [
+        { line: 3, verdict: 'error', message: '读错了' },
+        { line: 9, verdict: 'unsure', message: '待确认' }
+      ]
+    });
+  });
+
+  it('sanitizes update batches like end_review (bad entries dropped, 500-cap total)', () => {
+    const { tools, graph } = buildReview();
+    tools.begin_review.execute({ path: 'index.ts' });
+    tools.update_review.execute({
+      path: 'index.ts',
+      verdicts: [
+        'garbage',
+        { line: 0, verdict: 'error' },
+        { line: 2, verdict: 'confident', message: 'x'.repeat(400) }
+      ]
+    });
+    const stored = graph.reviews.get('index.ts')!;
+    expect(stored.verdicts).toEqual([{ line: 2, verdict: 'confident', message: 'x'.repeat(200) }]);
+
+    // 600 more lines across two batches: total stays capped at 500.
+    for (let i = 0; i < 300; i++) {
+      tools.update_review.execute({ path: 'index.ts', verdicts: [{ line: 100 + i, verdict: 'confident' }] });
+      tools.update_review.execute({ path: 'index.ts', verdicts: [{ line: 500 + i, verdict: 'confident' }] });
+    }
+    expect(graph.reviews.get('index.ts')!.verdicts).toHaveLength(500);
+  });
+
+  it('end_review after updates replaces the pending verdicts and lands done', () => {
+    const { tools, graph, nodeEvents } = buildReview();
+    tools.begin_review.execute({ path: 'index.ts' });
+    tools.update_review.execute({ path: 'index.ts', verdicts: [{ line: 1, verdict: 'unsure' }] });
+    payload(tools.end_review.execute({ path: 'index.ts', verdicts: [], summary: 'clean' }));
+
+    const stored = graph.reviews.get('index.ts')!;
+    expect(stored.status).toBe('done');
+    expect(stored.verdicts).toEqual([]);
+    expect(stored.summary).toBe('clean');
+    expect(nodeEvents().at(-1)!.aiReview!.status).toBe('done');
+  });
+
+  it('rejects non-array verdicts and unknown paths', () => {
+    const { tools, broadcasts } = buildReview();
+    tools.begin_review.execute({ path: 'index.ts' });
+    const bad = tools.update_review.execute({ path: 'index.ts', verdicts: 'nope' });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain('verdicts is required');
+
+    const missing = tools.update_review.execute({ path: 'app.tsx', verdicts: [] });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('module not found');
+    expect(broadcasts.filter((e) => e.type === 'node_update')).toHaveLength(1); // only the begin
+  });
+});
+
 describe('report_test_run — the agent test-run channel', () => {
   it('forwards the flag to the wired pipeline and confirms receipt', () => {
     const graph = fakeGraph();
@@ -379,6 +501,55 @@ describe('begin_review checking timeout (code-review 2026-08-29)', () => {
       expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
       vi.advanceTimersByTime(TIMEOUT_MS - 1);
       expect(graph.reviews.get('core/app.ts')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('update_review re-arms the timer: the old deadline is disarmed, the fresh window governs', () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, graph, nonNodeEvents } = buildTimed();
+      tools.begin_review.execute({ path: 'core/app.ts' });
+
+      // Push an update 1s before the ORIGINAL deadline. This replaces
+      // node.aiReview with a new checking object — without the re-arm the
+      // old timer would no-op and the module would sit in checking forever.
+      vi.advanceTimersByTime(TIMEOUT_MS - 1000);
+      tools.update_review.execute({ path: 'core/app.ts', verdicts: [{ line: 4, verdict: 'unsure' }] });
+
+      vi.advanceTimersByTime(1001); // crosses the original deadline
+      expect(graph.reviews.get('core/app.ts')).toEqual({
+        status: 'checking',
+        verdicts: [{ line: 4, verdict: 'unsure' }]
+      });
+      expect(nonNodeEvents()).toEqual([]);
+
+      // The re-armed window started at the update (t = TIMEOUT-1000): the new
+      // deadline is 2*TIMEOUT-1000, not the original 1*TIMEOUT.
+      vi.advanceTimersByTime(TIMEOUT_MS - 1002);
+      expect(graph.reviews.get('core/app.ts')).toEqual({
+        status: 'checking',
+        verdicts: [{ line: 4, verdict: 'unsure' }]
+      });
+      vi.advanceTimersByTime(1);
+      expect(graph.reviews.get('core/app.ts')).toBeUndefined();
+      expect(nonNodeEvents()).toEqual([{ type: 'review_timeout', id: 'core/app.ts', path: 'core/app.ts' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('end_review after an update still disarms the timeout entirely', () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, graph, nonNodeEvents } = buildTimed();
+      tools.begin_review.execute({ path: 'index.ts' });
+      tools.update_review.execute({ path: 'index.ts', verdicts: [{ line: 2, verdict: 'confident' }] });
+      tools.end_review.execute({ path: 'index.ts', verdicts: [] });
+      vi.advanceTimersByTime(TIMEOUT_MS * 2);
+      expect(graph.reviews.get('index.ts')!.status).toBe('done');
+      expect(nonNodeEvents()).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
