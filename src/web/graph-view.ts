@@ -3,6 +3,7 @@ import fcose from 'cytoscape-fcose';
 import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
 import { worstReviewVerdict } from './ai-review.js';
 import { applyViewState, dirBallDirOf, type ViewState } from './graph-filters.js';
+import { applyRegionLayout, assignRegions, syncRegionPlates, type RegionId } from './graph-areas.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
 import {
   MOTION,
@@ -82,6 +83,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   let currentEdges = new Map<string, Edge>();
   let degrees = new Map<string, { in: number; out: number }>();
   let backEdgeIds = new Set<string>();
+  // 区域化海报 (graph-areas): node id → compass region, always derived from
+  // the VISIBLE graph (the pipelined one in renderVisible, the full map on
+  // the incremental applyDelta path).
+  let regions = new Map<string, RegionId>();
   let lockedId: string | null = null;
   let entered = false; // entrance choreography (pre → fade-in) runs once, on first load
   // Ticket 11 + theme.html legend filter: the view owns the mutable copies;
@@ -118,6 +123,17 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     return next;
   }
 
+  /** 区域成员 (graph-areas): 路径前缀 + 度 0 兜底,对传入的可见图计算。 */
+  function refreshRegions(nodes: ModuleNode[], edges: Edge[]): void {
+    regions = assignRegions(nodes, edges);
+  }
+
+  /** Ball size from degree; tests-band balls shrink one notch (区域化海报). */
+  function diameterFor(id: string, totalDeg: number): number {
+    const d = diameterOf(totalDeg);
+    return regions.get(id) === 'tests' ? d * THEME.areas.testsScale : d;
+  }
+
   function nodeElement(n: ModuleNode): cytoscape.ElementDefinition {
     const deg = degrees.get(n.id) ?? { in: 0, out: 0 };
     const classes: string[] = [];
@@ -130,7 +146,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         label: shortLabel(n.path),
         path: n.path,
         state: n.testState,
-        diameter: diameterOf(deg.in + deg.out),
+        diameter: diameterFor(n.id, deg.in + deg.out),
         typeErrorCount: n.typeErrors.length,
         // Code-review 2026-08-29: '' = 无环；confident/unsure/error = 评审环
         // 色档（underlay 通道，见 buildStylesheet）。
@@ -145,9 +161,14 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // Cycle styling rides the CLASS channel (edge.cycle): the data-field
     // bracket selector `[cycle]` matches mere field presence, so cycle:false
     // would light every edge up as a cycle.
+    // 区域化海报: cross-region lines get `edge-cross` (thin+faint) — both
+    // endpoints must be regioned; unassigned strays keep the plain style.
+    const rf = regions.get(e.from);
+    const rt = regions.get(e.to);
+    const cross = rf !== undefined && rt !== undefined && rf !== rt;
     return {
       data: { id: edgeIdOf(e), source: e.from, target: e.to },
-      classes: cycle ? 'cycle' : ''
+      classes: [cycle ? 'cycle' : '', cross ? 'edge-cross' : ''].join(' ').trim()
     };
   }
 
@@ -189,6 +210,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   function renderVisible(): void {
     const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
     degrees = rebuildDegrees(visible.nodes, visible.edges);
+    refreshRegions(visible.nodes, visible.edges);
 
     // Cycle arcs are computed once here and consumed by the edge styling
     // (dashed vermillion). Placement is fcose's job.
@@ -261,6 +283,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       bumpDegree(e.to, 'in', 1);
     }
     refreshCycleFlags();
+    // A node's region is a pure function of (path, incident edges), so a
+    // region can only flip through an edge add/remove — the fresh map here
+    // covers both the new elements below and the region pass in applyLayout.
+    refreshRegions([...currentNodes.values()], [...currentEdges.values()]);
 
     // Ticket 11: while any view control reshapes the graph, the incremental
     // DOM path no longer matches what should be visible — fall back to a
@@ -307,7 +333,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         const el = cy.getElementById(id);
         if (el.nonempty()) {
           const deg = degrees.get(id) ?? { in: 0, out: 0 };
-          el.data('diameter', diameterOf(deg.in + deg.out));
+          el.data('diameter', diameterFor(id, deg.in + deg.out));
         }
       }
     });
@@ -348,8 +374,17 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     applyFocus(null);
   }
 
-  /** Single layout engine: force-directed fcose (randomize:false keeps balls in place). */
+  /**
+   * Single layout engine: force-directed fcose (randomize:false keeps balls
+   * in place) + the 区域化海报 pass. The pass order is a hard constraint:
+   * plates are removed first so they never enter fcose or the physics state
+   * map; the rigid region translation sits BETWEEN fcose.run() and
+   * physics.rebase(), because rebase snapshots whatever positions exist at
+   * call time as the drift bases — translated spots in, poster preserved.
+   * Plates come back last, once everything has settled.
+   */
   function applyLayout(): void {
+    cy.nodes('.region-plate').remove();
     if (cy.nodes().empty()) return;
     cy.layout({
       name: 'fcose',
@@ -358,7 +393,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       padding: THEME.canvas.padding,
       animate: false
     } as cytoscape.LayoutOptions).run();
+    applyRegionLayout(cy, regions);
     physics?.rebase();
+    syncRegionPlates(cy, regions);
   }
 
   // -------------------------------------------------------------------------
@@ -373,7 +410,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       const focus = cy.getElementById(focusId);
       if (focus.empty()) return;
       const hood = focus.closedNeighborhood();
-      cy.elements().not(hood).addClass('dimmed');
+      // 区域板块是背景铬,不参与聚焦调暗。
+      cy.elements().not(hood).not('.region-plate').addClass('dimmed');
       hood.edges().addClass('focused');
       focus.addClass('focused');
     });
@@ -556,6 +594,32 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'transition-timing-function': 'ease-out'
       } as EdgeStylePatch)
     },
+    {
+      // 区域化海报板块 (graph-areas syncRegionPlates): a place, not just a
+      // position. Bottom z-depth, dashed border, self-alpha fill, caption
+      // sitting on the top edge; events:'no' so taps fall through to the
+      // background. Declared right after the base node rule so it wins the
+      // data(diameter) sizing for plate ids.
+      selector: '.region-plate',
+      style: nodeStyle({
+        shape: 'round-rectangle',
+        width: 'data(w)',
+        height: 'data(h)',
+        label: 'data(label)',
+        'background-color': p.plate.fill,
+        'background-opacity': 1,
+        'border-width': 1,
+        'border-style': 'dashed',
+        'border-color': p.plate.border,
+        color: p.plate.label,
+        'font-size': 9,
+        'text-transform': 'uppercase',
+        'text-valign': 'top',
+        'z-compound-depth': 'bottom',
+        events: 'no',
+        'overlay-opacity': 0
+      } as EdgeStylePatch)
+    },
     ...stateRules,
     {
       selector: 'edge',
@@ -571,6 +635,18 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'overlay-opacity': 0,
         'transition-property': 'opacity',
         'transition-duration': reduced ? 0 : 140
+      })
+    },
+    {
+      // 区域化海报: cross-region lines all thin+faint — the hub story is
+      // told by node size and spine position, not by line volume. Declared
+      // after the base edge rule (it wins) and before edge.cycle so a
+      // cross-region cycle keeps the vermillion alarm.
+      selector: 'edge.edge-cross',
+      style: edgeStyle({
+        width: THEME.areas.crossEdgeWidth,
+        'line-opacity': THEME.areas.crossEdgeAlpha,
+        'target-arrow-opacity': THEME.areas.crossEdgeAlpha
       })
     },
     {

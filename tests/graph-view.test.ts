@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGraphView } from '../src/web/graph-view.js';
 import type { Edge, GraphDelta, GraphSnapshot, ModuleNode } from '../src/shared/types.js';
+import { diameterOf } from '../src/web/theme.js';
 
 /**
  * P1-1 acceptance: after a graph_delta adds nodes, tapping a newcomer must
@@ -33,9 +34,11 @@ function mountView(): { onFocusChange: ReturnType<typeof vi.fn>; view: ReturnTyp
 }
 
 vi.mock('cytoscape', () => {
+  type Pos = { x: number; y: number };
   type Ele = {
     id(): string;
-    data(key?: string, value?: unknown): unknown;
+    data(key?: unknown, value?: unknown): unknown;
+    position(next?: Pos): Pos;
     remove(): void;
     nonempty(): boolean;
     empty(): boolean;
@@ -45,46 +48,12 @@ vi.mock('cytoscape', () => {
     hasClass(name: string): boolean;
     closedNeighborhood(): { edges(): { addClass(): void; removeClass(): void }; addClass(): void };
   };
-  type Def = { data: Record<string, unknown>; classes?: string };
-
-  function makeEle(def: Def): Ele {
-    const d = { ...def.data };
-    const classes = new Set<string>(
-      typeof def.classes === 'string' ? def.classes.split(/\s+/).filter(Boolean) : []
-    );
-    const ele: Ele = {
-      id: () => String(d.id),
-      data(key?: string, value?: unknown) {
-        if (key === undefined) return d;
-        if (value !== undefined) d[key] = value;
-        return d[key];
-      },
-      remove() {},
-      nonempty: () => true,
-      empty: () => false,
-    addClass: (...names: string[]) => {
-      for (const n of names) classes.add(n);
-      return ele;
-    },
-    removeClass: (...names: string[]) => {
-      for (const n of names) classes.delete(n);
-      return ele;
-    },
-    toggleClass: (name: string, force?: boolean) => {
-      const want = force ?? !classes.has(name);
-      if (want) classes.add(name);
-      else classes.delete(name);
-      return ele;
-    },
-    hasClass: (name: string) => classes.has(name),
-      closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
-    };
-    return ele;
-  }
+  type Def = { data: Record<string, unknown>; classes?: string; position?: Pos };
 
   const EMPTY_ELE: Ele = {
     id: () => '',
     data: () => undefined,
+    position: () => ({ x: 0, y: 0 }),
     remove() {},
     nonempty: () => false,
     empty: () => true,
@@ -98,6 +67,54 @@ vi.mock('cytoscape', () => {
   function makeCy(): FakeCy & Record<string, unknown> {
     const defs = new Map<string, Def>();
     const eles = new Map<string, Ele>();
+
+    const makeEle = (def: Def): Ele => {
+      const d: Record<string, unknown> = { ...def.data };
+      const classes = new Set<string>(
+        typeof def.classes === 'string' ? def.classes.split(/\s+/).filter(Boolean) : []
+      );
+      let pos: Pos = def.position ? { ...def.position } : { x: 0, y: 0 };
+      const ele: Ele = {
+        id: () => String(d.id),
+        data(key?: unknown, value?: unknown) {
+          if (key === undefined) return d;
+          if (typeof key === 'object') {
+            Object.assign(d, key);
+            return d;
+          }
+          if (value !== undefined) d[key as string] = value;
+          return d[key as string];
+        },
+        position(next?: Pos) {
+          if (next !== undefined) pos = { ...next };
+          return pos;
+        },
+        remove() {
+          defs.delete(String(d.id));
+          eles.delete(String(d.id));
+        },
+        nonempty: () => true,
+        empty: () => false,
+        addClass(...names: string[]) {
+          for (const n of names) classes.add(n);
+          return ele;
+        },
+        removeClass(...names: string[]) {
+          for (const n of names) classes.delete(n);
+          return ele;
+        },
+        toggleClass(name: string, force?: boolean) {
+          const want = force ?? !classes.has(name);
+          if (want) classes.add(name);
+          else classes.delete(name);
+          return ele;
+        },
+        hasClass: (name: string) => classes.has(name),
+        closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
+      };
+      return ele;
+    };
+
     // Elements are persistent instances (like real cytoscape): data() writes
     // via one getElementById handle must be visible through the next one.
     const eleOf = (id: string): Ele => {
@@ -109,12 +126,47 @@ vi.mock('cytoscape', () => {
       }
       return e;
     };
+
+    const isNode = (d: Def): boolean => d.data.source === undefined;
+    const nodeDefs = (): Def[] => [...defs.values()].filter(isNode);
+    const edgeDefs = (): Def[] => [...defs.values()].filter((d) => !isNode(d));
+
+    // Uniform collection over a snapshot of element handles — covers every
+    // traversal graph-view uses (empty/nonempty/forEach/not/addClass/
+    // removeClass/remove), selector args are class filters.
+    const collection = (list: Ele[]) => ({
+      empty: () => list.length === 0,
+      nonempty: () => list.length > 0,
+      forEach(fn: (e: Ele) => void) {
+        for (const e of [...list]) fn(e);
+      },
+      addClass(...names: string[]) {
+        for (const e of list) e.addClass(...names);
+        return collection(list);
+      },
+      removeClass(...names: string[]) {
+        for (const e of list) e.removeClass(...names);
+        return collection(list);
+      },
+      remove() {
+        for (const e of [...list]) e.remove();
+      },
+      not(sel: string) {
+        // applyFocus chains not(hood-object) before not('.region-plate') —
+        // the fake has no neighborhoods, so object args pass unfiltered.
+        if (typeof sel !== 'string') return collection(list);
+        const cls = sel.startsWith('.') ? sel.slice(1) : sel;
+        return collection(list.filter((e) => !e.hasClass(cls)));
+      }
+    });
+
     const handlers = new Map<string, Array<(evt: unknown) => void>>();
     const register = (key: string, handler: (evt: unknown) => void): void => {
       const list = handlers.get(key) ?? [];
       list.push(handler);
       handlers.set(key, list);
     };
+
     const cy = {
       batch(fn: () => void) {
         fn();
@@ -126,24 +178,20 @@ vi.mock('cytoscape', () => {
         }
       },
       elements() {
-        return {
-          remove: () => {
-            defs.clear();
-            eles.clear();
-          },
-          removeClass() {},
-          not: () => ({ addClass() {} })
-        };
+        return collection(
+          [...nodeDefs(), ...edgeDefs()].map((d) => eleOf(String(d.data.id)))
+        );
       },
-      nodes() {
-        return { empty: () => ![...defs.values()].some((e) => e.data.source === undefined) };
+      nodes(selector?: string) {
+        let list = nodeDefs().map((d) => eleOf(String(d.data.id)));
+        if (selector !== undefined) {
+          const cls = selector.startsWith('.') ? selector.slice(1) : selector;
+          list = list.filter((e) => e.hasClass(cls));
+        }
+        return collection(list);
       },
       edges() {
-        return {
-          forEach(fn: (e: Ele) => void) {
-            for (const d of defs.values()) if (d.data.source !== undefined) fn(eleOf(String(d.data.id)));
-          }
-        };
+        return collection(edgeDefs().map((d) => eleOf(String(d.data.id))));
       },
       getElementById(id: string): Ele {
         return eleOf(id);
@@ -558,5 +606,96 @@ describe('view controls: 只看未测 / 搜索 / 目录折叠 (ticket 11 seam 4)
     view.focusNode('pkg/a.ts'); // untested → visible
     expect(onFocusChange).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'pkg/a.ts' }));
     expect(ele('pkg/a.ts').hasClass('focused')).toBe(true);
+  });
+});
+
+describe('区域化海报 wiring (2026-08-29)', () => {
+  // The shared node() helper prefixes paths with src/ — the region table
+  // reads real repo paths, so region tests carry explicit ones.
+  function pathNode(path: string): ModuleNode {
+    return { id: path, path, language: 'ts', testState: 'untested', coveredBy: [], typeErrors: [] };
+  }
+
+  function regionFixture(): GraphSnapshot {
+    return snapshotWith(
+      [
+        pathNode('src/web/main.ts'),
+        pathNode('src/web/util.ts'),
+        pathNode('src/server/http.ts'),
+        pathNode('src/shared/types.ts'),
+        pathNode('tests/main.test.ts'),
+        pathNode('vite.config.ts') // degree 0 → orphan dock
+      ],
+      [
+        { from: 'src/web/main.ts', to: 'src/shared/types.ts' },
+        { from: 'src/server/http.ts', to: 'src/shared/types.ts' },
+        { from: 'src/web/main.ts', to: 'src/web/util.ts' },
+        { from: 'tests/main.test.ts', to: 'src/web/main.ts' },
+        { from: 'src/server/http.ts', to: 'src/web/util.ts' }
+      ]
+    );
+  }
+
+  let view: ReturnType<typeof createGraphView>;
+  let cy: FakeCy;
+
+  beforeEach(() => {
+    ({ view, cy } = mountView());
+  });
+
+  type EleHandle = { nonempty(): boolean; data(key?: string): unknown; hasClass(name: string): boolean };
+  const ele = (id: string): EleHandle =>
+    (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
+
+  it('mounts a plate per non-empty region, captioned and classed', () => {
+    view.setSnapshot(regionFixture());
+    expect(ele('plate:web').nonempty()).toBe(true);
+    expect(ele('plate:web').hasClass('region-plate')).toBe(true);
+    expect(ele('plate:web').data('label')).toBe('WEB · 2');
+    expect(ele('plate:spine').data('label')).toBe('SHARED · 1');
+    expect(ele('plate:orphan').nonempty()).toBe(true);
+    expect(ele('plate:orphan').data('label')).toBe('ORPHANS · 1');
+  });
+
+  it('marks cross-region edges edge-cross, leaves intra-region edges plain', () => {
+    view.setSnapshot(regionFixture());
+    expect(ele('src/web/main.ts->src/shared/types.ts').hasClass('edge-cross')).toBe(true);
+    expect(ele('src/server/http.ts->src/web/util.ts').hasClass('edge-cross')).toBe(true);
+    expect(ele('src/web/main.ts->src/web/util.ts').hasClass('edge-cross')).toBe(false);
+  });
+
+  it('shrinks tests-band balls one notch and leaves the rest full size', () => {
+    view.setSnapshot(regionFixture());
+    expect(ele('tests/main.test.ts').data('diameter')).toBeCloseTo(diameterOf(1) * 0.85, 6);
+    // src/web/main.ts: 2 out + 1 in.
+    expect(ele('src/web/main.ts').data('diameter')).toBe(diameterOf(3));
+  });
+
+  it('a delta that connects the last orphan retires its plate and rescales the ball', () => {
+    view.setSnapshot(regionFixture());
+    expect(ele('plate:orphan').nonempty()).toBe(true);
+
+    view.applyDelta({
+      addedNodes: [],
+      removedNodeIds: [],
+      addedEdges: [{ from: 'vite.config.ts', to: 'src/web/main.ts' }],
+      removedEdges: []
+    });
+
+    expect(ele('vite.config.ts').data('diameter')).toBe(diameterOf(1));
+    expect(ele('plate:orphan').nonempty()).toBe(false);
+    // vite.config.ts is outside the path table: connected, it becomes an
+    // unassigned stray (no region, no plate move) — web stays at 2.
+    expect(ele('plate:web').data('label')).toBe('WEB · 2');
+  });
+
+  it('installs the plate and edge-cross stylesheet rules', () => {
+    view.setSnapshot(regionFixture());
+    expect(h.styles[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ selector: '.region-plate' }),
+        expect.objectContaining({ selector: 'edge.edge-cross' })
+      ])
+    );
   });
 });

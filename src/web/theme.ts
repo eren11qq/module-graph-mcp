@@ -32,6 +32,11 @@ export interface CyPalette {
   accent: string;
   /** AI 评审环三色（border 通道）：绿 全 confident / 黄 有 unsure / 红 有 error。 */
   review: { confident: string; unsure: string; error: string };
+  /**
+   * 区域化海报板块（graph-areas.ts syncRegionPlates）：fill 自带透明度，
+   * border 走虚线，label 为小号大写区名。安静版海报——低对比、不抢球。
+   */
+  plate: { fill: string; border: string; label: string };
   dimNode: number;
   dimEdge: number;
 }
@@ -53,6 +58,11 @@ const DARK: CyPalette = {
   nodeBorderColor: 'rgba(0,0,0,0)',
   accent: '#4CC2FF',
   review: { confident: '#00C389', unsure: '#FFD24D', error: '#F85149' },
+  plate: {
+    fill: 'rgba(92,110,140,0.10)',
+    border: 'rgba(92,110,140,0.38)',
+    label: 'rgba(201,214,236,0.55)'
+  },
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -71,6 +81,11 @@ const LIGHT: CyPalette = {
   nodeBorderColor: '#FFFFFF',
   accent: '#26221C',
   review: { confident: '#009E73', unsure: '#B45309', error: '#B42318' },
+  plate: {
+    fill: 'rgba(87,83,78,0.06)',
+    border: 'rgba(87,83,78,0.30)',
+    label: 'rgba(87,83,78,0.60)'
+  },
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -158,6 +173,29 @@ export const THEME = {
    */
   collapse: {
     minFiles: 3
+  },
+  /**
+   * 区域化海报(2026-08-29)compass geometry — graph-areas.ts 是唯一消费者:
+   * regionGapX/Y 是区与区包围盒之间的间距,platePad 是板块四边出血,
+   * dockCols/Spacing 是孤球坞的确定性网格。
+   */
+  layout: {
+    regionGapX: 120,
+    regionGapY: 110,
+    platePad: 34,
+    dockCols: 3,
+    dockSpacingX: 84,
+    dockSpacingY: 84
+  },
+  /**
+   * 区域化海报 visual channels: tests 带的球整体缩一档、跨区线一律细+淡
+   * (枢纽地位由节点尺寸+脊柱居中表达,不用线的音量表达)。每件事只让一个
+   * 机制干:位置讲区、尺寸讲枢纽、线型讲区内/跨区。
+   */
+  areas: {
+    testsScale: 0.85,
+    crossEdgeWidth: 0.8,
+    crossEdgeAlpha: 0.22
   }
 } as const;
 
