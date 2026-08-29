@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildTools, type GraphSnapshotSource } from '../src/server/mcp.js';
 import type { AiReview, ModuleNode } from '../src/shared/types.js';
 
@@ -78,7 +78,7 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the six tools with their input schemas', () => {
+  it('exposes the seven tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
       'begin_review',
@@ -86,12 +86,14 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
       'get_module_details',
       'get_module_graph',
       'list_untested',
-      'report_note'
+      'report_note',
+      'report_test_run'
     ]);
     expect(tools.get_module_details!.inputSchema.required).toEqual(['path']);
     expect(tools.report_note!.inputSchema.required).toEqual(['path', 'text']);
     expect(tools.begin_review!.inputSchema.required).toEqual(['path']);
     expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
+    expect(tools.report_test_run!.inputSchema.required).toEqual(['failed']);
     expect(tools.list_untested!.inputSchema.properties).toEqual({});
   });
 
@@ -291,5 +293,94 @@ describe('begin_review / end_review — the AI check channel (Ticket 12)', () =>
     );
     expect(body.verdictCount).toBe(0);
     expect(graph.reviews.get('utils/logger.ts')!.summary!.length).toBe(500);
+  });
+});
+
+describe('report_test_run — the agent test-run channel', () => {
+  it('forwards the flag to the wired pipeline and confirms receipt', () => {
+    const graph = fakeGraph();
+    const calls: boolean[] = [];
+    const tools = buildTools(graph, { reportTestRun: (failed) => calls.push(failed) });
+    expect(payload(tools.report_test_run.execute({ failed: true }))).toEqual({
+      ok: true,
+      failed: true,
+      note: 'coverage remap triggered'
+    });
+    expect(payload(tools.report_test_run.execute({ failed: false }))).toEqual({
+      ok: true,
+      failed: false,
+      note: 'coverage remap triggered'
+    });
+    expect(calls).toEqual([true, false]);
+  });
+
+  it('tolerates a missing pipeline and rejects a non-boolean flag', () => {
+    const { tools } = build(); // no reportTestRun dep wired
+    const body = payload(tools.report_test_run.execute({ failed: true }));
+    expect(body.note).toBe('no state pipeline wired; flag not applied');
+
+    const bad = tools.report_test_run.execute({ failed: 'yes' });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain('failed is required');
+  });
+});
+
+describe('begin_review checking timeout (code-review 2026-08-29)', () => {
+  const TIMEOUT_MS = 10 * 60 * 1000;
+
+  function buildTimed() {
+    const built = build();
+    const nodeEvents = (): ModuleNode[] =>
+      built.broadcasts
+        .filter((e) => e.type === 'node_update')
+        .map((e) => (e as { node: ModuleNode }).node);
+    const nonNodeEvents = (): Array<{ type: string; id?: string; path?: string }> =>
+      built.broadcasts.filter((e) => e.type !== 'node_update') as Array<{ type: string; id?: string; path?: string }>;
+    return { ...built, nodeEvents, nonNodeEvents };
+  }
+
+  it('falls back after 10 minutes: checking clears, node_update + review_timeout broadcast', () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, graph, nodeEvents, nonNodeEvents } = buildTimed();
+      tools.begin_review.execute({ path: 'core/app.ts' });
+      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
+
+      vi.advanceTimersByTime(TIMEOUT_MS - 1);
+      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
+
+      vi.advanceTimersByTime(1);
+      expect(graph.reviews.get('core/app.ts')).toBeUndefined();
+      expect(nodeEvents().at(-1)!.aiReview).toBeUndefined();
+      expect(nonNodeEvents()).toEqual([{ type: 'review_timeout', id: 'core/app.ts', path: 'core/app.ts' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('end_review disarms the timeout; a re-begin restarts the window', () => {
+    vi.useFakeTimers();
+    try {
+      const { tools, graph, nonNodeEvents } = buildTimed();
+
+      // end_review clears the pending timer: no timeout ever fires.
+      tools.begin_review.execute({ path: 'index.ts' });
+      tools.end_review.execute({ path: 'index.ts', verdicts: [] });
+      vi.advanceTimersByTime(TIMEOUT_MS * 2);
+      expect(graph.reviews.get('index.ts')!.status).toBe('done');
+      expect(nonNodeEvents()).toEqual([]);
+
+      // A re-begin replaces the timer: the old deadline must not retire the
+      // fresh checking state.
+      tools.begin_review.execute({ path: 'core/app.ts' });
+      vi.advanceTimersByTime(TIMEOUT_MS - 1000);
+      tools.begin_review.execute({ path: 'core/app.ts' });
+      vi.advanceTimersByTime(1001);
+      expect(graph.reviews.get('core/app.ts')).toEqual({ status: 'checking', verdicts: [] });
+      vi.advanceTimersByTime(TIMEOUT_MS - 1);
+      expect(graph.reviews.get('core/app.ts')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

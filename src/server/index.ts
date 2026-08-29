@@ -96,7 +96,8 @@ async function main(): Promise<void> {
   if (openMsg) log(openMsg);
 
   const mcp = new McpStdioServer(process.stdin, process.stdout, log, graph, {
-    broadcast: (event: GraphEvent) => hub.broadcast(event)
+    broadcast: (event: GraphEvent) => hub.broadcast(event),
+    reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed)
   });
   await mcp.serve();
   log('stdin closed — shutting down');

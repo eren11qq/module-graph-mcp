@@ -72,7 +72,7 @@ async function startStatesPipeline(root: string, opts: {
   const graph = new IncrementalGraph(root);
   const started = await startHttpServer({
     preferredPort: await getFreePort(),
-    publicDir: 'src/server/public',
+    publicDir: join('dist', 'server', 'public'),
     info: { rootPath: root, port: 0, version: 'test' },
     getSnapshot: () => graph.snapshot()
   });
@@ -91,7 +91,7 @@ async function startStatesPipeline(root: string, opts: {
     started.server.closeAllConnections?.();
     started.server.close();
   };
-  return { url: started.url, graph, teardown };
+  return { url: started.url, graph, live, teardown };
 }
 
 describe('state pipeline wiring (Ticket 08 over 06/07)', () => {
@@ -223,6 +223,51 @@ describe('state pipeline wiring (Ticket 08 over 06/07)', () => {
       const after = graph.snapshot().nodes.find((n) => n.id === 'a.ts')!;
       expect(after.testState).toBe('passing');
       expect(graph.snapshot().nodes.find((n) => n.id === 'a.test.ts')!.testState).toBe('untested');
+    } finally {
+      client.close();
+      await teardown();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reportTestRun flips in-report files red/green and broadcasts (agent test-run channel)', async () => {
+    const root = await makeTempProject({
+      'a.ts': 'export const a = 1;\n',
+      'a.test.ts': "import { a } from './a';\ntest('a', () => {});\n",
+      'b.ts': 'export const b = 2;\n'
+    });
+    const { url, graph, live, teardown } = await startStatesPipeline(root);
+    const client = await openClient(url);
+    try {
+      // A report makes a.ts pass; b.ts is not in the report.
+      await mkdir(join(root, 'coverage'), { recursive: true });
+      const reportRel = COVERAGE_REPORT_CANDIDATES[0]!;
+      await writeFile(
+        join(root, reportRel),
+        JSON.stringify({ total: {}, [`${root}/a.ts`]: { lines: { total: 1, covered: 1, pct: 100 } } }),
+        'utf8'
+      );
+      await client.waitFor(
+        (e) => isNodeUpdate(e) && e.node.id === 'a.ts' && e.node.testState === 'passing',
+        'a.ts passing'
+      );
+
+      // The agent reports a failing run: in-report files flip red, the
+      // out-of-report file keeps its convention color.
+      live.reportTestRun(true);
+      const red = await client.waitFor(
+        (e) => isNodeUpdate(e) && e.node.id === 'a.ts' && e.node.testState === 'failing',
+        'a.ts failing'
+      );
+      if (!isNodeUpdate(red)) throw new Error('unreachable');
+      expect(graph.snapshot().nodes.find((n) => n.id === 'b.ts')!.testState).toBe('untested');
+
+      // A clean-run report flips it back green.
+      live.reportTestRun(false);
+      await client.waitFor(
+        (e) => isNodeUpdate(e) && e.node.id === 'a.ts' && e.node.testState === 'passing',
+        'a.ts green again'
+      );
     } finally {
       client.close();
       await teardown();

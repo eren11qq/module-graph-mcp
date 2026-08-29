@@ -124,6 +124,9 @@ body {
 .legend-row.edge-row:hover { background: transparent; }
 .legend-line { width: 16px; height: 0; border-top: 3px solid var(--edge-line); border-radius: 0; flex: none; }
 .legend-line.dashed { border-top-style: dashed; border-top-color: var(--cycle-line); }
+/* 评审环行:三色计数在左、标签靠右(与状态行的密度方向相反) */
+.legend-row.review-row .cnt { margin-left: 2px; }
+.legend-row.review-row .name { margin-left: auto; color: var(--muted); }
 
 /* ---------------- 详情面板 ---------------- */
 .detail-name { font-weight: 600; letter-spacing: -.008em; word-break: break-all; font-size: 13.5px; }

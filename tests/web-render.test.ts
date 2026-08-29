@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { IncrementalGraph } from '../src/server/incremental-graph.js';
-import { hierarchyLayout, type HierarchyLayoutResult, type LayoutGraphInput } from '../src/web/hierarchy-layout.js';
+import { findBackEdges, type LayoutGraphInput } from '../src/web/back-edges.js';
 import { isGraphDelta, isGraphSnapshot, isModuleNode } from '../src/web/frame-guards.js';
 import type { GraphSnapshot } from '../src/shared/types.js';
 
@@ -41,38 +41,21 @@ describe('built dashboard artifacts (Ticket 03)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// hierarchyLayout against the real sample-app snapshot (ticket-03 handoff:
-// 全节点有 pos / 非回边 y 严格递增 / backEdges 恰含 state⇄emitter 环弧 / 多根不重叠)
+// findBackEdges cycle oracle against the real sample-app snapshot (ticket-03
+// handoff: 红弧唯一来源). The hierarchyLayout assertions died with the layout
+// (fcose-only ruling, ticket-00 amendment); the deterministic cycle oracle
+// lives on in back-edges.ts.
 // ---------------------------------------------------------------------------
 
-describe('hierarchyLayout on the sample-app snapshot (Ticket 03)', () => {
+describe('findBackEdges on the sample-app snapshot (cycle oracle)', () => {
   let snapshot: GraphSnapshot;
-  let result: HierarchyLayoutResult;
+  let backEdges: Set<string>;
 
   beforeAll(async () => {
     const graph = new IncrementalGraph(FIXTURE);
     await graph.fullScan();
     snapshot = graph.snapshot();
-    result = hierarchyLayout(toLayoutInput(snapshot));
-  });
-
-  it('assigns finite positions to every node', () => {
-    for (const n of snapshot.nodes) {
-      const p = result.pos.get(n.id);
-      expect(p, n.id).toBeDefined();
-      expect(Number.isFinite(p!.x)).toBe(true);
-      expect(Number.isFinite(p!.y)).toBe(true);
-    }
-  });
-
-  it('keeps every non-back edge strictly descending (y(to) > y(from))', () => {
-    for (const e of snapshot.edges) {
-      const id = `${e.from}->${e.to}`;
-      if (result.backEdges.has(id)) continue;
-      const a = result.pos.get(e.from)!;
-      const b = result.pos.get(e.to)!;
-      expect(b.y, id).toBeGreaterThan(a.y);
-    }
+    backEdges = findBackEdges(toLayoutInput(snapshot));
   });
 
   it('peels exactly one arc of the state⇄emitter cycle as the back edge', () => {
@@ -80,16 +63,11 @@ describe('hierarchyLayout on the sample-app snapshot (Ticket 03)', () => {
     const pairs = snapshot.edges.map((e) => `${e.from}->${e.to}`);
     expect(pairs).toContain('core/emitter.ts->store/state.ts');
     expect(pairs).toContain('store/state.ts->core/emitter.ts');
-    // …and the engine removes exactly one deterministic arc to break it.
-    expect([...result.backEdges]).toEqual(['store/state.ts->core/emitter.ts']);
+    // …and the detector reports exactly one deterministic arc to break it.
+    expect([...backEdges]).toEqual(['store/state.ts->core/emitter.ts']);
   });
 
-  it('leaves no orphans: every sample-app node is reachable from the entry', () => {
-    expect(result.orphans).toEqual([]);
-    expect(result.layers[0]).toEqual(['index.ts']);
-  });
-
-  it('spreads multiple in-degree-0 roots horizontally without overlap', () => {
+  it('an acyclic multi-root graph yields no back edges', () => {
     const multi: LayoutGraphInput = {
       nodes: [{ id: 'a.ts' }, { id: 'b.ts' }, { id: 'c.ts' }, { id: 'd.ts' }],
       links: [
@@ -98,14 +76,7 @@ describe('hierarchyLayout on the sample-app snapshot (Ticket 03)', () => {
         { from: 'c.ts', to: 'd.ts' }
       ]
     };
-    const r = hierarchyLayout(multi);
-    expect(r.layers[0]!.slice().sort()).toEqual(['a.ts', 'b.ts']);
-
-    const a = r.pos.get('a.ts')!;
-    const b = r.pos.get('b.ts')!;
-    expect(a.y).toBe(0);
-    expect(b.y).toBe(0);
-    expect(a.x).not.toBe(b.x);
+    expect([...findBackEdges(multi)]).toEqual([]);
   });
 });
 

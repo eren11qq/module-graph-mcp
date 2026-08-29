@@ -44,6 +44,11 @@ export interface LiveReloadHandle {
    */
   ready: Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Agent-driven test outcome (report_test_run): sets the red/green flag and
+   * remaps immediately. No-op when the state layers are disabled.
+   */
+  reportTestRun(failed: boolean): void;
 }
 
 export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
@@ -123,6 +128,9 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
 
   return {
     ready,
-    stop: () => watcher.stop()
+    stop: () => watcher.stop(),
+    reportTestRun: (failed: boolean): void => {
+      states?.reportTestRun(failed);
+    }
   };
 }

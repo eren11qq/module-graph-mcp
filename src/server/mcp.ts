@@ -67,6 +67,13 @@ export interface McpToolDeps {
    */
   broadcast?(event: GraphEvent): void;
   /**
+   * Agent-driven test outcome (code-review 2026-08-29): the agent runs the
+   * tests, so only it holds the real exit code. Fire-and-forget — the
+   * pipeline owns the remap and the node_update broadcast; the tool reply
+   * only confirms receipt.
+   */
+  reportTestRun?(failed: boolean): void;
+  /**
    * Test seam for the source-read envelope; defaults to the real one so
    * production and HTTP share identical security semantics.
    */
@@ -125,6 +132,12 @@ const AI_VERDICTS: readonly AiVerdict[] = ['confident', 'unsure', 'error'];
 const MAX_VERDICT_ENTRIES = 500;
 const MAX_VERDICT_MESSAGE = 200;
 const MAX_REVIEW_SUMMARY = 500;
+/**
+ * Code-review 2026-08-29: a begin_review without its end_review leaves the
+ * ball pulsing forever — the "checking" state would be lying. After this
+ * long the server retires the checking state itself and tells the dashboard.
+ */
+const REVIEW_CHECKING_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Validate and normalise raw verdict entries: non-objects, bad lines and
@@ -175,6 +188,18 @@ function resolveRequestedNode(
 
 export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): Record<string, ToolDef> {
   const readSource = deps.readSourceFile ?? readSourceFile;
+  // node id → pending checking-timeout timer (code-review 2026-08-29).
+  // Cleared by end_review and by a re-begin; the callback is a no-op unless
+  // the node still carries the exact review object captured at begin time,
+  // so a rescan or a fresh begin disarms stale timers for free.
+  const checkingTimers = new Map<string, NodeJS.Timeout>();
+  const clearCheckingTimer = (id: string): void => {
+    const timer = checkingTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      checkingTimers.delete(id);
+    }
+  };
   return {
     get_module_graph: {
       description:
@@ -326,8 +351,24 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         if ('failure' in found) return found.failure;
         const node = found.node;
 
-        graph.setReview(node.id, { status: 'checking', verdicts: [] });
+        clearCheckingTimer(node.id);
+        // The captured object is the timeout's identity token: end_review,
+        // a re-begin or a rescan replaces node.aiReview, which disarms the
+        // stale callback.
+        const checking: AiReview = { status: 'checking', verdicts: [] };
+        graph.setReview(node.id, checking);
         deps.broadcast?.({ type: 'node_update', node });
+        const timer = setTimeout(() => {
+          checkingTimers.delete(node.id);
+          const current = graph.snapshot().nodes.find((n) => n.id === node.id);
+          if (current === undefined || current.aiReview !== checking) return;
+          graph.setReview(node.id, undefined);
+          deps.broadcast?.({ type: 'node_update', node: current });
+          // After the paired node_update so the ticker shows the timeout.
+          deps.broadcast?.({ type: 'review_timeout', id: node.id, path: node.path });
+        }, REVIEW_CHECKING_TIMEOUT_MS);
+        timer.unref?.(); // never keep the dashboard process alive for a dangling check
+        checkingTimers.set(node.id, timer);
         return textToolResult({
           ok: true,
           id: node.id,
@@ -387,6 +428,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
             ? args.summary.trim().slice(0, MAX_REVIEW_SUMMARY)
             : undefined;
 
+        clearCheckingTimer(node.id);
         const review: AiReview = { status: 'done', verdicts, reviewedAt: Date.now() };
         if (summary !== undefined) review.summary = summary;
         graph.setReview(node.id, review);
@@ -397,6 +439,35 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           verdictCount: verdicts.length,
           aiReview: node.aiReview ?? null
         });
+      }
+    },
+
+    report_test_run: {
+      description:
+        'Report the outcome of the test run you just executed. failed=true marks the run as failing: files present in the coverage report turn red on the dashboard; failed=false turns them back green. Call this after every test run so the map reflects the real last run.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          failed: {
+            type: 'boolean',
+            description: 'true = the run had failures, false = clean run'
+          }
+        },
+        required: ['failed'],
+        additionalProperties: false
+      },
+      execute(args) {
+        if (typeof args.failed !== 'boolean') {
+          return {
+            content: [{ type: 'text', text: 'failed is required and must be a boolean (true = failing run).' }],
+            isError: true
+          };
+        }
+        if (deps.reportTestRun === undefined) {
+          return textToolResult({ ok: true, failed: args.failed, note: 'no state pipeline wired; flag not applied' });
+        }
+        deps.reportTestRun(args.failed);
+        return textToolResult({ ok: true, failed: args.failed, note: 'coverage remap triggered' });
       }
     }
   };

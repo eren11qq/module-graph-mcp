@@ -30,6 +30,8 @@ export interface CyPalette {
   nodeBorderColor: string;
   /** Focus ring / checking ring / pulse overlay color. */
   accent: string;
+  /** AI 评审环三色（underlay 通道）：绿 全 confident / 黄 有 unsure / 红 有 error。 */
+  review: { confident: string; unsure: string; error: string };
   dimNode: number;
   dimEdge: number;
 }
@@ -50,6 +52,7 @@ const DARK: CyPalette = {
   nodeBorderW: 0,
   nodeBorderColor: 'rgba(0,0,0,0)',
   accent: '#4CC2FF',
+  review: { confident: '#00C389', unsure: '#FFD24D', error: '#F85149' },
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -67,6 +70,7 @@ const LIGHT: CyPalette = {
   nodeBorderW: 1.4,
   nodeBorderColor: '#FFFFFF',
   accent: '#26221C',
+  review: { confident: '#009E73', unsure: '#B45309', error: '#B42318' },
   dimNode: 0.12,
   dimEdge: 0.05
 };
@@ -92,6 +96,11 @@ export function cyPalette(): CyPalette {
 /** Theme-scoped test-state color (delegates to the active palette). */
 export function stateColor(state: TestState): string {
   return CY_PALETTES[activeTheme].states[state];
+}
+
+/** Theme-scoped AI review-ring color (delegates to the active palette). */
+export function reviewColor(verdict: 'confident' | 'unsure' | 'error'): string {
+  return CY_PALETTES[activeTheme].review[verdict];
 }
 
 export const THEME = {
@@ -122,6 +131,15 @@ export const THEME = {
   typeError: {
     dark: { color: '#F85149', borderWidth: 3 },
     light: { color: '#B42318', borderWidth: 3 }
+  },
+  /**
+   * Code-review 2026-08-29: AI 评审环走 underlay 通道（球底下画一圈更大的
+   * 圆，节点本体遮住圆心，露出的是外圈环带）——border 通道留给 checking
+   * 亮边 / type-error 环 / 聚焦环，overlay 通道留给脉冲，互不覆盖。
+   */
+  reviewRing: {
+    padding: 5,
+    opacity: 0.9
   },
   /** Verdict #1 fcose parameters (randomize:false preserves positions for tickets 04/05). */
   fcose: {

@@ -9,7 +9,7 @@ describe('startHttpServer port fallback (Ticket 01)', () => {
     const preferred = await getFreePort();
     const started = await startHttpServer({
       preferredPort: preferred,
-      publicDir: 'src/server/public',
+      publicDir: join('dist', 'server', 'public'),
       info: { rootPath: '/x', port: preferred, version: 'test' }
     });
     expect(started.port).toBe(preferred);
@@ -25,7 +25,7 @@ describe('startHttpServer port fallback (Ticket 01)', () => {
       const started = await startHttpServer({
         preferredPort: occupied,
         maxTries: 5,
-        publicDir: 'src/server/public',
+        publicDir: join('dist', 'server', 'public'),
         info: { rootPath: '/x', port: occupied, version: 'test' }
       });
       expect(started.port).toBe(occupied + 1);
@@ -50,7 +50,7 @@ describe('startHttpServer port fallback (Ticket 01)', () => {
       const started = await startHttpServer({
         preferredPort: first,
         maxTries: 5,
-        publicDir: 'src/server/public',
+        publicDir: join('dist', 'server', 'public'),
         info: { rootPath: '/x', port: first, version: 'test' }
       });
       expect(started.port).toBe(first + 2);
@@ -67,7 +67,7 @@ describe('http handler (Ticket 01)', () => {
     const preferred = await getFreePort();
     const started = await startHttpServer({
       preferredPort: preferred,
-      publicDir: join('src', 'server', 'public'),
+      publicDir: join('dist', 'server', 'public'),
       info: { rootPath: '/x', port: preferred, version: 'test' }
     });
     try {

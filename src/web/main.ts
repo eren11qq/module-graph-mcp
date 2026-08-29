@@ -1,12 +1,13 @@
 import './styles.css';
 import type { GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
 import { createDetailPanel } from './detail-panel.js';
+import { worstReviewVerdict } from './ai-review.js';
 import { isGraphDelta, isGraphSnapshot, isModuleNode } from './frame-guards.js';
 import { createGraphView } from './graph-view.js';
 import type { SourceLoader } from './code-view.js';
 import { createGraphModel } from './graph-model.js';
 import { createStatusbar } from './statusbar.js';
-import { CHROME, shortLabel, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
+import { CHROME, reviewColor, shortLabel, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
 import { STATE_ORDER, stateColor, stateLabel } from './test-states.js';
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,8 @@ themeBtn.addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 const hiddenStates = new Set<TestState>();
+// Code-review 2026-08-29 评审环图例行: 点击隐藏/显示已评审节点（同图例过滤交互）。
+let hideReviewed = false;
 
 function renderLegend(): void {
   legendEl.replaceChildren();
@@ -186,7 +189,45 @@ function renderLegend(): void {
   cycleLabel.textContent = '循环依赖';
   cycleRow.append(cycleLine, cycleLabel);
 
-  legendEl.append(edgeRow, cycleRow);
+  // 评审环行：三色小样本 + 各档计数，点击隐藏/显示已评审节点。
+  const reviewRow = document.createElement('div');
+  reviewRow.className = 'legend-row review-row' + (hideReviewed ? ' off' : '');
+  reviewRow.setAttribute('role', 'button');
+  reviewRow.tabIndex = 0;
+  const ringCounts: Record<'confident' | 'unsure' | 'error', number> = { confident: 0, unsure: 0, error: 0 };
+  for (const n of model.nodes()) {
+    const v = worstReviewVerdict(n.aiReview);
+    if (v !== '') ringCounts[v]++;
+  }
+  for (const verdict of ['confident', 'unsure', 'error'] as const) {
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = reviewColor(verdict);
+    dot.title = `评审环 ${verdict}`;
+    const cnt = document.createElement('span');
+    cnt.className = 'cnt';
+    cnt.textContent = String(ringCounts[verdict]);
+    reviewRow.append(dot, cnt);
+  }
+  const reviewLabel = document.createElement('span');
+  reviewLabel.className = 'name';
+  reviewLabel.textContent = 'AI 评审环';
+  reviewRow.append(reviewLabel);
+
+  const toggleReviewed = (): void => {
+    hideReviewed = !hideReviewed;
+    setViewState({ hideReviewed });
+    renderLegend();
+  };
+  reviewRow.addEventListener('click', toggleReviewed);
+  reviewRow.addEventListener('keydown', (evt) => {
+    if (evt.key === 'Enter' || evt.key === ' ') {
+      evt.preventDefault();
+      toggleReviewed();
+    }
+  });
+
+  legendEl.append(reviewRow, edgeRow, cycleRow);
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +298,9 @@ function applyDelta(delta: GraphDelta): void {
   model.foldDelta(delta);
   view.applyDelta(delta);
   refreshStatus(model.rootPath() ?? '…');
+  // A successful delta means the view caught up with disk — retire the
+  // stale-frame notice (same contract as applySnapshot).
+  scanNotice.hidden = true;
   statusbar.flashEvent(`推送 +${delta.addedNodes.length}−${delta.removedNodeIds.length} 节点 · +${delta.addedEdges.length}−${delta.removedEdges.length} 边`);
   // Keep the detail panel honest when the locked node's edges changed.
   if (focusedId !== null) {
@@ -305,7 +349,7 @@ function connectWs(): void {
       return; // tolerate malformed frames
     }
     if (msg === null || typeof msg !== 'object') return;
-    const event = msg as { type?: unknown; snapshot?: unknown; message?: unknown; delta?: unknown; node?: unknown };
+    const event = msg as { type?: unknown; snapshot?: unknown; message?: unknown; delta?: unknown; node?: unknown; id?: unknown };
     switch (event.type) {
       case 'snapshot':
         if (isGraphSnapshot(event.snapshot)) applySnapshot(event.snapshot);
@@ -325,6 +369,11 @@ function connectWs(): void {
         // Light notice: the last good frame stays on screen until a rescan succeeds.
         scanNotice.textContent = `最近一次重扫失败（${String(event.message ?? 'unknown error')}），当前显示上一帧快照；文件恢复后将自动追平。`;
         scanNotice.hidden = false;
+        return;
+      case 'review_timeout':
+        // 服务端强制回落了一个没人收尾的检查——脉冲已由配对的 node_update
+        // 停止，这里只在 ticker 里说明原因。
+        statusbar.flashEvent(`AI 检查超时回落 · ${shortLabel(String(event.id ?? ''))}`);
         return;
     }
   });

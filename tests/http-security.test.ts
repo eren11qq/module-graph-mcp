@@ -24,7 +24,7 @@ async function start(): Promise<void> {
   root = await mkdtemp(join(tmpdir(), 'module-graph-httpsec-'));
   const started = await startHttpServer({
     preferredPort: await getFreePort(),
-    publicDir: 'src/server/public',
+    publicDir: join('dist', 'server', 'public'),
     info: { rootPath: root, port: 0, version: 'test' },
     getSnapshot: () => ({ generatedAt: 0, rootPath: root, nodes: [], edges: [] })
   });

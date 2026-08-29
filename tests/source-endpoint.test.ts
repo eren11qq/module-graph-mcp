@@ -32,7 +32,7 @@ async function start(): Promise<void> {
 
   const started = await startHttpServer({
     preferredPort: await getFreePort(),
-    publicDir: 'src/server/public',
+    publicDir: join('dist', 'server', 'public'),
     info: { rootPath: root, port: 0, version: 'test' },
     onSecurityEvent: (msg) => securityEvents.push(msg)
   });

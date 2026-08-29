@@ -127,6 +127,11 @@ export interface ViewState {
    * the render list (empty set = everything visible).
    */
   hiddenStates: ReadonlySet<TestState>;
+  /**
+   * Code-review 2026-08-29 评审环图例行: true 隐藏所有已评审（aiReview done）
+   * 的节点——在目录折叠之前剔除，目录球只聚合剩余文件。
+   */
+  hideReviewed: boolean;
 }
 
 /**
@@ -152,6 +157,11 @@ export function applyViewState(
 
   if (view.untestedOnly) {
     keptNodes = keptNodes.filter(isUntested);
+    keptEdges = edgesWithin(keptEdges, new Set(keptNodes.map((n) => n.id)));
+  }
+
+  if (view.hideReviewed) {
+    keptNodes = keptNodes.filter((n) => n.aiReview?.status !== 'done');
     keptEdges = edgesWithin(keptEdges, new Set(keptNodes.map((n) => n.id)));
   }
 

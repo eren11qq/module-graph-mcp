@@ -1,8 +1,9 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
+import { worstReviewVerdict } from './ai-review.js';
 import { applyViewState, dirBallDirOf, type ViewState } from './graph-filters.js';
-import { findBackEdges, type LayoutGraphInput } from './hierarchy-layout.js';
+import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
 import {
   MOTION,
   THEME,
@@ -91,7 +92,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     untestedOnly: false,
     collapseEnabled: false,
     expandedDirs,
-    hiddenStates: new Set<TestState>()
+    hiddenStates: new Set<TestState>(),
+    hideReviewed: false
   };
 
   // -------------------------------------------------------------------------
@@ -130,6 +132,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         state: n.testState,
         diameter: diameterOf(deg.in + deg.out),
         typeErrorCount: n.typeErrors.length,
+        // Code-review 2026-08-29: '' = 无环；confident/unsure/error = 评审环
+        // 色档（underlay 通道，见 buildStylesheet）。
+        reviewVerdict: worstReviewVerdict(n.aiReview),
         oo: 0
       },
       classes: classes.join(' ')
@@ -170,7 +175,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       viewState.query.trim() !== '' ||
       viewState.untestedOnly ||
       viewState.collapseEnabled ||
-      viewState.hiddenStates.size > 0
+      viewState.hiddenStates.size > 0 ||
+      viewState.hideReviewed
     );
   }
 
@@ -326,6 +332,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       el.data('state', node.testState);
       // Ticket 07: keep the badge channel in sync (ring disappears at 0).
       el.data('typeErrorCount', node.typeErrors.length);
+      // Code-review 2026-08-29: keep the review-ring channel in sync ('' at
+      // checking/re-open, worst verdict once done).
+      el.data('reviewVerdict', worstReviewVerdict(node.aiReview));
       // Ticket 12: checking class drives the edge pulse; done removes it.
       if (node.aiReview?.status === 'checking') el.addClass('checking');
       else el.removeClass('checking');
@@ -446,6 +455,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     cy.resize();
   };
   window.addEventListener('resize', onResize);
+  // Physics owns a self-continuing rAF loop; stop it when the page goes away
+  // (destroy() existed unwired until the 2026-08-29 review).
+  window.addEventListener('pagehide', () => physics?.destroy(), { once: true });
 
   return {
     setSnapshot,
@@ -469,6 +481,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       }
       if (patch.hiddenStates !== undefined) {
         viewState.hiddenStates = new Set(patch.hiddenStates);
+        changed = true;
+      }
+      if (patch.hideReviewed !== undefined && patch.hideReviewed !== viewState.hideReviewed) {
+        viewState.hideReviewed = patch.hideReviewed;
         changed = true;
       }
       if (changed) renderVisible();
@@ -501,6 +517,20 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     style: { 'background-color': p.states[state] }
   }));
 
+  // Code-review 2026-08-29: AI 评审环 — underlay channel（独立于 border 的
+  // checking/type-error/focus 环与 overlay 的脉冲）。checking 中无环：
+  // begin_review 会把 data 复位成 ''。
+  const reviewRingRules: cytoscape.StylesheetStyle[] = (
+    ['confident', 'unsure', 'error'] as const
+  ).map((verdict) => ({
+    selector: `node[reviewVerdict = "${verdict}"]`,
+    style: nodeStyle({
+      'underlay-color': p.review[verdict],
+      'underlay-opacity': THEME.reviewRing.opacity,
+      'underlay-padding': THEME.reviewRing.padding
+    } as EdgeStylePatch)
+  }));
+
   return [
     {
       selector: 'node',
@@ -526,6 +556,7 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       } as EdgeStylePatch)
     },
     ...stateRules,
+    ...reviewRingRules,
     {
       selector: 'edge',
       style: edgeStyle({

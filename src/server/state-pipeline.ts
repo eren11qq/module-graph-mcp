@@ -79,6 +79,18 @@ export class StatePipeline {
   }
 
   /**
+   * Agent-driven test outcome (code-review 2026-08-29): the agent runs the
+   * tests, so only it holds the real exit code. The flag alone changes
+   * nothing — refresh() consults it on every call — so this triggers the
+   * cheap idempotent remap, which broadcasts node_update for whatever
+   * actually flipped.
+   */
+  reportTestRun(failed: boolean): void {
+    this.coverage.setLastRunFailed(failed);
+    void this.refreshCoverage();
+  }
+
+  /**
    * Queue a typecheck run after the save burst settles. Coalesced: a run in
    * flight + new changes ⇒ exactly one rerun afterwards.
    */

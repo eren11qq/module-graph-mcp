@@ -511,12 +511,19 @@ export class IncrementalGraph {
     return this.cachedSnapshot;
   }
 
-  /** Attach/clear the note on one node. Returns false for an unknown id. */
-  setNote(id: string, note: string | undefined): boolean {
+  /** Shared lookup+mutate of one node; false for an unknown id. */
+  private mutateNode(id: string, mutate: (node: ModuleNode) => void): boolean {
     const node = this.nodes.get(id);
     if (node === undefined) return false;
-    node.note = note;
+    mutate(node);
     return true;
+  }
+
+  /** Attach/clear the note on one node. Returns false for an unknown id. */
+  setNote(id: string, note: string | undefined): boolean {
+    return this.mutateNode(id, (node) => {
+      node.note = note;
+    });
   }
 
   /**
@@ -527,10 +534,9 @@ export class IncrementalGraph {
    * re-reports (begin_review/end_review) as needed.
    */
   setReview(id: string, review: AiReview | undefined): boolean {
-    const node = this.nodes.get(id);
-    if (node === undefined) return false;
-    node.aiReview = review;
-    return true;
+    return this.mutateNode(id, (node) => {
+      node.aiReview = review;
+    });
   }
 
   /** Mutable access for state-injection layers (coverage/typecheck wiring). */

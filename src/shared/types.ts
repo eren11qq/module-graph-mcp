@@ -77,4 +77,10 @@ export type GraphEvent =
   | { type: 'graph_delta'; delta: GraphDelta }
   | { type: 'node_update'; node: ModuleNode }
   /** Ticket 04: a debounced rescan failed; pages keep the last good snapshot and show a light notice. */
-  | { type: 'scan_error'; message: string };
+  | { type: 'scan_error'; message: string }
+  /**
+   * Code-review 2026-08-29: a begin_review never followed by end_review —
+   * the server retired the checking state itself (the paired node_update
+   * already stopped the pulse); pages surface the timeout in the ticker.
+   */
+  | { type: 'review_timeout'; id: string; path: string };

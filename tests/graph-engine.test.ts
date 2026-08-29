@@ -213,7 +213,7 @@ describe('GET /api/graph (Ticket 02)', () => {
     const fixtureSnapshot = await fullScanSnapshot(FIXTURE);
     const started = await startHttpServer({
       preferredPort: port,
-      publicDir: 'src/server/public',
+      publicDir: join('dist', 'server', 'public'),
       info: { rootPath: '/x', port, version: 'test' },
       getSnapshot: () => fixtureSnapshot
     });
@@ -235,7 +235,7 @@ describe('GET /api/graph (Ticket 02)', () => {
     const port = await getFreePort();
     const started = await startHttpServer({
       preferredPort: port,
-      publicDir: 'src/server/public',
+      publicDir: join('dist', 'server', 'public'),
       info: { rootPath: '/x', port, version: 'test' }
     });
     try {

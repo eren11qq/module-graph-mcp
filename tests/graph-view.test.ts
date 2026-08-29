@@ -333,6 +333,63 @@ describe('AI 检查 checking 类同步 (ticket 12)', () => {
   });
 });
 
+describe('AI 评审环 data channel (code-review 2026-08-29)', () => {
+  let onFocusChange: ReturnType<typeof vi.fn>;
+  let view: ReturnType<typeof createGraphView>;
+  let cy: FakeCy;
+
+  beforeEach(() => {
+    ({ onFocusChange, view, cy } = mountView());
+  });
+
+  const dataOf = (id: string, key: string): unknown =>
+    (
+      cy as unknown as {
+        getElementById(id: string): { data(key?: string): unknown };
+      }
+    ).getElementById(id).data(key);
+
+  it('snapshot data carries the worst verdict as reviewVerdict', () => {
+    const err: ModuleNode = {
+      ...node('err.ts'),
+      aiReview: {
+        status: 'done',
+        verdicts: [
+          { line: 1, verdict: 'unsure' },
+          { line: 2, verdict: 'error' }
+        ],
+        reviewedAt: 1
+      }
+    };
+    const ok: ModuleNode = { ...node('ok.ts'), aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } };
+    view.setSnapshot(snapshotWith([err, ok]));
+    expect(dataOf('err.ts', 'reviewVerdict')).toBe('error');
+    expect(dataOf('ok.ts', 'reviewVerdict')).toBe('confident');
+  });
+
+  it('applyNodeUpdate clears the ring while checking and re-colors once done', () => {
+    const a = node('a.ts');
+    view.setSnapshot(snapshotWith([a]));
+    view.applyNodeUpdate({ ...a, aiReview: { status: 'checking', verdicts: [] } });
+    expect(dataOf('a.ts', 'reviewVerdict')).toBe('');
+    view.applyNodeUpdate({
+      ...a,
+      aiReview: { status: 'done', verdicts: [{ line: 1, verdict: 'unsure' }], reviewedAt: 1 }
+    });
+    expect(dataOf('a.ts', 'reviewVerdict')).toBe('unsure');
+  });
+
+  it('installs the three review-ring rules on the underlay channel', () => {
+    expect(h.styles[0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ selector: 'node[reviewVerdict = "confident"]' }),
+        expect.objectContaining({ selector: 'node[reviewVerdict = "unsure"]' }),
+        expect.objectContaining({ selector: 'node[reviewVerdict = "error"]' })
+      ])
+    );
+  });
+});
+
 describe('view controls: 只看未测 / 搜索 / 目录折叠 (ticket 11 seam 4)', () => {
   // pkg holds 3 direct files (folds at THEME.collapse.minFiles = 3), solo
   // holds 2 (stays), main.ts is root-level (never folds).
@@ -402,6 +459,25 @@ describe('view controls: 只看未测 / 搜索 / 目录折叠 (ticket 11 seam 4)
     view.setViewState({ untestedOnly: true });
     view.applyNodeUpdate(node('pkg/a.ts', 'passing'));
     expect(visible('pkg/a.ts')).toBe(false);
+  });
+
+  it('hideReviewed removes reviewed balls (and their edges) until toggled off', () => {
+    view.setSnapshot(controlFixture());
+    const reviewed: ModuleNode = { ...node('main.ts'), aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } };
+    const checking: ModuleNode = { ...node('pkg/c.ts', 'failing'), aiReview: { status: 'checking', verdicts: [] } };
+    view.applyNodeUpdate(reviewed);
+    view.applyNodeUpdate(checking);
+
+    view.setViewState({ hideReviewed: true });
+    expect(visible('main.ts')).toBe(false);
+    expect(visible('main.ts->pkg/a.ts')).toBe(false);
+    // checking 中的节点与未评审节点保留。
+    expect(visible('pkg/c.ts')).toBe(true);
+    expect(visible('pkg/a.ts')).toBe(true);
+
+    view.setViewState({ hideReviewed: false });
+    expect(visible('main.ts')).toBe(true);
+    expect(visible('main.ts->pkg/a.ts')).toBe(true);
   });
 
   it('search shows only matching balls (case-insensitive); clearing restores the graph', () => {

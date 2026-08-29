@@ -144,6 +144,7 @@ describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)',
     collapseEnabled: false,
     expandedDirs: new Set<string>(),
     hiddenStates: new Set<TestState>(),
+    hideReviewed: false,
     ...over
   });
 
@@ -219,6 +220,7 @@ describe('hiddenStates — 图例状态过滤 (theme.html legend filter)', () =>
     collapseEnabled: false,
     expandedDirs: new Set<string>(),
     hiddenStates: new Set<TestState>(hidden),
+    hideReviewed: false,
     ...over
   });
 
@@ -244,5 +246,54 @@ describe('hiddenStates — 图例状态过滤 (theme.html legend filter)', () =>
     const out = applyViewState(nodes, edges, view(['passing', 'failing', 'has-tests-unrun']));
     expect(out.nodes.map((n) => n.id)).toEqual(['pkg/a.ts']);
     expect(out.edges).toEqual([]);
+  });
+});
+
+describe('hideReviewed — 评审环图例过滤 (code-review 2026-08-29)', () => {
+  const done = (id: string): ModuleNode => ({
+    ...file(id),
+    aiReview: { status: 'done', verdicts: [], reviewedAt: 1 }
+  });
+  const checking = (id: string): ModuleNode => ({
+    ...file(id),
+    aiReview: { status: 'checking', verdicts: [] }
+  });
+  const nodes = [file('main.ts'), done('reviewed.ts'), checking('checking.ts')];
+  const edges: Edge[] = [
+    { from: 'main.ts', to: 'reviewed.ts' },
+    { from: 'reviewed.ts', to: 'checking.ts' }
+  ];
+
+  const view = (over: Partial<Parameters<typeof applyViewState>[2]> = {}): Parameters<typeof applyViewState>[2] => ({
+    query: '',
+    untestedOnly: false,
+    collapseEnabled: false,
+    expandedDirs: new Set<string>(),
+    hiddenStates: new Set<TestState>(),
+    hideReviewed: false,
+    ...over
+  });
+
+  it('off by default: everything stays', () => {
+    expect(applyViewState(nodes, edges, view())).toEqual({ nodes, edges });
+  });
+
+  it('on: hides done-reviewed balls (and their edges), keeps checking and unreviewed', () => {
+    const out = applyViewState(nodes, edges, view({ hideReviewed: true }));
+    expect(out.nodes.map((n) => n.id)).toEqual(['main.ts', 'checking.ts']);
+    expect(out.edges).toEqual([]);
+  });
+
+  it('runs before collapse, so dir balls only aggregate the remaining files', () => {
+    // pkg 有 4 个文件，其中 1 个已评审被剔除 → 3 个幸存者仍达折叠阈值。
+    const folded = [
+      done('pkg/a.ts'),
+      file('pkg/b.ts'),
+      file('pkg/c.ts'),
+      file('pkg/d.ts'),
+      file('main.ts')
+    ];
+    const out = applyViewState(folded, [], view({ hideReviewed: true, collapseEnabled: true }));
+    expect(out.nodes.map((n) => n.id)).toEqual(['main.ts', `${DIR_PREFIX}pkg`]);
   });
 });
