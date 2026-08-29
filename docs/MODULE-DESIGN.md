@@ -39,9 +39,9 @@
 | `CoverageMapper`（coverage.ts） | `refresh(files) → {states, reportMtimeMs, reportFound}`；纯函数：`parseCoverageSummaryJson` / `deriveTestState` / `buildTestTargetIndex` | istanbul json-summary 容错解析、报告 key → 根相对路径归一化、命名约定测试索引、四色判定 | 317 |
 | `typecheck.ts` | `runTypecheck(root) → TypecheckResult`（五种状态：`ok/errors/timeout/unavailable/parse-failed`，**从不 throw**）；纯函数 `parseTscOutput` | 子进程 spawn、超时 SIGTERM→SIGKILL 宽限、诊断解析与按文件分组、tsc 探测 | 267 |
 | `gitignore` | `parseIgnoreRule(line)` / `loadGitignore(rootAbs)` | 最小 glob（`*` `**` `?`、锚定、目录限定、取反）、last-match-wins、不可读 .gitignore 降级为空规则集 | ~110 |
-| `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok{content, truncated} / denied{status 400/403/404/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、二进制嗅探；超限不再 413，按字节截断（`utf8HeadEnd` 修复到 UTF-8 序列边界，truncated 标记 + sizeBytes 保真） | 116 |
-| `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size` | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照 | 233 |
-| `McpStdioServer` + `buildTools` | `serve()`；8 工具：`get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、verdict 清洗（每行最后一条 / 500 上限 / 200·500 截断；`update_review` 分批合并进 pending、同样新条胜）、checking 超时回落（`armCheckingTimer`：begin/update 都要重挂，以最新 checking 对象为身份令牌，否则 update 换新对象会静默解除旧定时器） | 608 |
+| `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok{content, truncated} / denied{status 400/403/404/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、二进制嗅探；超限不再 413，按字节截断（`utf8HeadEnd` 修复到 UTF-8 序列边界，truncated 标记 + sizeBytes 保真） | 152 |
+| `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size` | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照、/api/source 截断透传 | 240 |
+| `McpStdioServer` + `buildTools` | `serve()`；8 工具：`get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、verdict 清洗（每行最后一条 / 500 上限 / 200·500 截断；`update_review` 分批合并进 pending、同样新条胜）、checking 超时回落（`armCheckingTimer`：begin/update 都要重挂，以最新 checking 对象为身份令牌，否则 update 换新对象会静默解除旧定时器） | 700 |
 | `path-conventions` | `SOURCE_EXTENSIONS` / `LANGUAGE_BY_EXTENSION` / `EXCLUDED_DIRECTORIES` | 约定常量单一事实源（曾有四份扩展名副本、三份排除集） | 22 |
 | `index.ts` | CLI 参数（缺 `--root` 回退 cwd）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深 | 112 |
 
@@ -54,7 +54,7 @@
 | Module | Interface | Implementation 藏了什么 | 行数 |
 |---|---|---|---|
 | `createGraphModel`（graph-model.ts） | `foldSnapshot` / `foldDelta` / `foldNodeUpdate` / `rootPath()` / `nodes()` / `edges()` / `node(id)` / `neighbors(id)`，纯 data-in/data-out | 浏览器端**唯一**的图状态与 fold（snapshot/delta/node_update 三种帧）、邻接查询——main.ts 与 graph-view 的两份副本和两份 fold 已删除 | 78 |
-| `createGraphView`（graph-view.ts） | 9 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `setViewState` / `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调（`setLayoutMode` 从未存在于生产，随 fcose 唯一布局裁定移出文档） | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——四条独立视觉通道）、度数→球径、hover 邻域高亮、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；布局唯一 fcose | 641 |
+| `createGraphView`（graph-view.ts） | 9 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `setViewState` / `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调（`setLayoutMode` 从未存在于生产，随 fcose 唯一布局裁定移出文档） | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——四条独立视觉通道）、度数→球径、hover 邻域高亮、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；布局唯一 fcose | 644 |
 | `applyViewState` + `dirBallDirOf`（graph-filters.ts） | `(nodes, edges, ViewState) → {nodes, edges}`；dir-ball id 解析归此 module，纯 data-in/data-out | 图例状态过滤 → 只看未测 → 隐藏已评审 → 搜索 → 目录折叠管线、状态按严重度聚合、边重接、`dir:` 命名空间 | ~180 |
 | `findBackEdges`（back-edges.ts） | 纯函数：`LayoutGraphInput → Set<linkId>`（多起点 DFS，指向 on-stack 祖先的弧即回边） | **循环依赖检测**（红弧与 statusbar 循环计数的唯一来源）；原 `hierarchyLayout` 层级布局已按 ticket-00 amendment 裁定删除（fcose 唯一布局），检测逻辑于 2026-08-29 抽出留存 | 96 |
 | `worstReviewVerdict`（ai-review.ts） | `AiReview → '' / confident / unsure / error`（最差 verdict 定环色） | 评审环判定纯函数：仅 done 参与，error > unsure > confident | 26 |
@@ -62,9 +62,9 @@
 | `theme` | `THEME` / `MOTION` / `CHROME` / `CY_PALETTES` / `diameterOf` / `shortLabel` / `reviewColor` | 视觉与动效常量单一事实源（边、节点半径、fcose 参数、双主题色板含 AI 评审环三色、脉冲周期）；状态词汇已迁往 test-states | 225 |
 | `createPhysics`（physics.ts） | `rebase` / `popNode` / `restorePop` / `destroy` | 入场漂移、释放弹簧、hover 弹出、checking 脉冲四个 rAF 层；`prefers-reduced-motion` 全降级 | 206 |
 | `createStatusbar`（statusbar.ts） | `setCounts` / `setBand` / `flashEvent`；`bandWeights` / `passRatePct` 纯函数 | 左计数（节点/边/循环）、中四色覆盖率带、右事件 ticker | 96 |
-| `createDetailPanel` / `createSourceView` | 工厂 + 注入 `SourceLoader` port；`DetailContext` 由 model 的 `neighbors(id)` 喂养 | 详情面板（含 AI 评审三色行）、语法高亮、错误行标记 | 230+178 |
+| `createDetailPanel` / `createSourceView` | 工厂 + 注入 `SourceLoader` port；`DetailContext` 由 model 的 `neighbors(id)` 喂养 | 详情面板（meta 行 AI 检查徽章 + AI 评审三色行）、语法高亮、错误行标记、超限截断提示 | 248+192 |
 | `frame-guards` | `isGraphSnapshot` / `isGraphDelta` / `isModuleNode` | 不可信 WS 帧的类型守卫（畸形帧整帧丢弃，保留上一好帧） | 44 |
-| `main.ts` | —— | **浏览器组合根**：REST 首渲染、WS 客户端、帧 → GraphModel → view 的分发、主题切换、图例与评审环行、断线 3s 重连（无自有图状态） | 400 |
+| `main.ts` | —— | **浏览器组合根**：REST 首渲染、WS 客户端、帧 → GraphModel → view 的分发、主题切换、图例与评审环行、断线 3s 重连（无自有图状态） | 404 |
 
 ---
 
