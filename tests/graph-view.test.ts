@@ -858,3 +858,91 @@ describe('四力滑杆 tuning channel (Code-review 2026-08-29)', () => {
     expect(lastLayout()).toEqual(expect.objectContaining({ gravity: 0.9, nodeRepulsion: 30000 }));
   });
 });
+
+describe('新球种子落点 (Code-review 2026-08-29)', () => {
+  // Minimal functional store fake (same shape as the persistence suite's).
+  function makeStore(seed: Record<string, { x: number; y: number }> = {}): LayoutStore {
+    const map = new Map(Object.entries(seed));
+    return {
+      load: () => new Map(map),
+      save: (_root, positions) => {
+        map.clear();
+        for (const [k, v] of positions) map.set(k, { ...v });
+      },
+      update: (_root, id, p) => {
+        map.set(id, { ...p });
+      },
+      clear: () => map.clear()
+    };
+  }
+
+  const posOf = (cy: FakeCy, id: string): { x: number; y: number } =>
+    (
+      cy as unknown as {
+        getElementById(id: string): { position(): { x: number; y: number } };
+      }
+    )
+      .getElementById(id)
+      .position();
+
+  // a/b stay UNREGIONED strays (src/*.ts misses the path table but carries
+  // edges), so no post-pass touches them or the seeded newcomer — position
+  // assertions read exactly what applyDelta wrote.
+  function runSeedScenario(): { x: number; y: number } {
+    const store = makeStore({ 'a.ts': { x: 100, y: 100 } });
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(
+      snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }])
+    );
+    view.applyDelta({
+      addedNodes: [node('c.ts')],
+      removedNodeIds: [],
+      addedEdges: [{ from: 'a.ts', to: 'c.ts' }],
+      removedEdges: []
+    });
+    return posOf(cy, 'c.ts');
+  }
+
+  it('a fresh ball seeds off its existing-neighbor centroid, 30–70px away', () => {
+    const p = runSeedScenario();
+    const d = Math.hypot(p.x - 100, p.y - 100);
+    expect(d).toBeGreaterThanOrEqual(30);
+    expect(d).toBeLessThanOrEqual(70);
+  });
+
+  it('the seed is a pure function of the inputs — two runs land bitwise equal', () => {
+    expect(runSeedScenario()).toEqual(runSeedScenario());
+  });
+
+  it('brand-new balls with no EXISTING neighbor get no seed (fcose owns them)', () => {
+    const { view, cy } = mountView();
+    view.setSnapshot(snapshotWith([node('a.ts')]));
+    view.applyDelta({
+      addedNodes: [node('c.ts'), node('d.ts')],
+      removedNodeIds: [],
+      addedEdges: [{ from: 'c.ts', to: 'd.ts' }],
+      removedEdges: []
+    });
+    // Each is the other's only neighbor and neither exists at seed time →
+    // no seed → the fake's default (0,0); strays dodge every post-pass.
+    expect(posOf(cy, 'c.ts')).toEqual({ x: 0, y: 0 });
+    expect(posOf(cy, 'd.ts')).toEqual({ x: 0, y: 0 });
+  });
+
+  it('the archive beats the seed for a re-entering ball', () => {
+    const store = makeStore({ 'a.ts': { x: 100, y: 100 } });
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
+    // The snapshot's wholesale save only keeps a/b — re-add the re-entering
+    // ball's entry afterwards (it stands in for an archive spot that outlived
+    // the removal, e.g. a watcher flicker that netted out before a save).
+    store.update('/proj', 'c.ts', { x: 500, y: 500 });
+    view.applyDelta({
+      addedNodes: [node('c.ts')],
+      removedNodeIds: [],
+      addedEdges: [{ from: 'a.ts', to: 'c.ts' }],
+      removedEdges: []
+    });
+    expect(posOf(cy, 'c.ts')).toEqual({ x: 500, y: 500 });
+  });
+});

@@ -91,6 +91,19 @@ function nodeStyle(
 
 const edgeIdOf = (e: Edge): string => `${e.from}->${e.to}`;
 
+/**
+ * FNV-1a 32-bit — 新球种子的确定性抖动源 (Code-review 2026-08-29)。同一
+ * path 永远哈希出同一角度/半径,种子是路径的可复现函数,不引入随机数。
+ */
+function fnv1a(text: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 export function createGraphView(container: HTMLElement, opts: GraphViewOptions): GraphView {
   const cy = cytoscape({
     container,
@@ -367,12 +380,43 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       return;
     }
 
-    // 2) DOM mutations. Fresh balls get no preset position — the fcose
-    //    re-run below pulls them into the simulation (randomize:false keeps
-    //    existing balls where they are). A re-entering ball (watcher flicker
-    //    removed and re-added it) is not fresh: the archive hands its old
-    //    spot straight back (Code-review 2026-08-29).
+    // 2) DOM mutations. A re-entering ball (watcher flicker removed and
+    //    re-added it) is not fresh: the archive hands its old spot straight
+    //    back (Code-review 2026-08-29). A genuinely fresh ball gets a SEED
+    //    beside its existing neighbors instead of a blank (0,0): fcose then
+    //    fine-tunes from a sane spot rather than yanking it across the canvas.
     const saved = currentLayout();
+    // 新球种子落点 (Code-review 2026-08-29): 两阶段——先在 batch 之前收种子,
+    // 此时同批新球尚未入 cy,「已存在邻居」自然只含老球,新球之间互不耦合。
+    // 邻居 = currentEdges(已是目标态)中 touch 它且对端元素 nonempty 的边;
+    // 无任何已存在邻居(全新孤立球)→ 不设种子,交给 fcose/孤儿坞。种子 =
+    // 邻居质心 + FNV-1a(path) 确定性偏移(角度 0–359°,半径 30–70px,避开
+    // 球径 ~20–40px)。存档有位置的球永远存档优先。
+    const seeds = new Map<string, { x: number; y: number }>();
+    for (const n of delta.addedNodes) {
+      if (saved.has(n.id)) continue;
+      let sumX = 0;
+      let sumY = 0;
+      let count = 0;
+      for (const e of currentEdges.values()) {
+        const otherId = e.from === n.id ? e.to : e.to === n.id ? e.from : null;
+        if (otherId === null) continue;
+        const el = cy.getElementById(otherId);
+        if (el.empty()) continue; // 同批新球尚未入 cy,不算已存在邻居
+        const p = el.position();
+        sumX += p.x;
+        sumY += p.y;
+        count++;
+      }
+      if (count === 0) continue;
+      const hash = fnv1a(n.path);
+      const angle = ((hash % 360) * Math.PI) / 180;
+      const radius = 30 + ((hash >>> 8) % 40);
+      seeds.set(n.id, {
+        x: sumX / count + Math.cos(angle) * radius,
+        y: sumY / count + Math.sin(angle) * radius
+      });
+    }
     let removedFocused = false;
     cy.batch(() => {
       for (const e of delta.removedEdges) {
@@ -386,6 +430,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         const def = nodeElement(n);
         const spot = saved.get(n.id);
         if (spot !== undefined) def.position = { x: spot.x, y: spot.y };
+        else {
+          const seed = seeds.get(n.id);
+          if (seed !== undefined) def.position = { x: seed.x, y: seed.y };
+        }
         cy.add(def);
       }
       for (const e of delta.addedEdges) {
