@@ -30,7 +30,7 @@ export interface CyPalette {
   nodeBorderColor: string;
   /** Focus ring / checking ring / pulse overlay color. */
   accent: string;
-  /** AI 评审环三色（underlay 通道）：绿 全 confident / 黄 有 unsure / 红 有 error。 */
+  /** AI 评审环三色（border 通道）：绿 全 confident / 黄 有 unsure / 红 有 error。 */
   review: { confident: string; unsure: string; error: string };
   dimNode: number;
   dimEdge: number;
@@ -133,13 +133,13 @@ export const THEME = {
     light: { color: '#B42318', borderWidth: 3 }
   },
   /**
-   * Code-review 2026-08-29: AI 评审环走 underlay 通道（球底下画一圈更大的
-   * 圆，节点本体遮住圆心，露出的是外圈环带）——border 通道留给 checking
-   * 亮边 / type-error 环 / 聚焦环，overlay 通道留给脉冲，互不覆盖。
+   * Code-review 2026-08-29: AI 评审环。最初走 underlay 通道，实测渲染的是
+   * 圆角方形而非正圆，改为 border 通道 —— 环随节点是正圆。声明顺序在
+   * type-error 环之后（评审结论赢、type-error 让位）、聚焦环之前；checking
+   * 亮边与 overlay 脉冲各占各的通道，互不覆盖。
    */
   reviewRing: {
-    padding: 5,
-    opacity: 0.9
+    width: 3
   },
   /** Verdict #1 fcose parameters (randomize:false preserves positions for tickets 04/05). */
   fcose: {

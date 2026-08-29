@@ -379,14 +379,21 @@ describe('AI 评审环 data channel (code-review 2026-08-29)', () => {
     expect(dataOf('a.ts', 'reviewVerdict')).toBe('unsure');
   });
 
-  it('installs the three review-ring rules on the underlay channel', () => {
-    expect(h.styles[0]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ selector: 'node[reviewVerdict = "confident"]' }),
-        expect.objectContaining({ selector: 'node[reviewVerdict = "unsure"]' }),
-        expect.objectContaining({ selector: 'node[reviewVerdict = "error"]' })
-      ])
-    );
+  it('installs the review-ring rules on the border channel, after type-error and before focus', () => {
+    const styles = h.styles[0] as Array<{ selector: string }>;
+    const indexOf = (sel: string): number => styles.findIndex((r) => r.selector === sel);
+    const typeErrorAt = indexOf('node[typeErrorCount > 0]');
+    const focusedAt = indexOf('node.focused');
+    expect(typeErrorAt).toBeGreaterThan(-1);
+    expect(focusedAt).toBeGreaterThan(typeErrorAt);
+    // Later rules win (graph-view buildStylesheet): the verdict ring must
+    // outrank the type-error ring (type-error yields) yet lose to the
+    // transient focus ring.
+    for (const verdict of ['confident', 'unsure', 'error']) {
+      const at = indexOf(`node[reviewVerdict = "${verdict}"]`);
+      expect(at).toBeGreaterThan(typeErrorAt);
+      expect(at).toBeLessThan(focusedAt);
+    }
   });
 });
 

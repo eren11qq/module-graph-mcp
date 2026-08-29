@@ -4,7 +4,7 @@ import type { AiReview } from '../shared/types.js';
 
 /**
  * AI 评审环判定纯函数（code-review 2026-08-29）：最差 verdict 定环色，
- * error > unsure > confident；仅 done 参与判定。graph-view 的 underlay
+ * error > unsure > confident；仅 done 参与判定。graph-view 的 border 通道
  * 规则与 main.ts 的图例行共用这一份判定。
  */
 

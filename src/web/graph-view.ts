@@ -517,18 +517,19 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     style: { 'background-color': p.states[state] }
   }));
 
-  // Code-review 2026-08-29: AI 评审环 — underlay channel（独立于 border 的
-  // checking/type-error/focus 环与 overlay 的脉冲）。checking 中无环：
-  // begin_review 会把 data 复位成 ''。
+  // Code-review 2026-08-29: AI 评审环 — border 通道。underlay 实测渲染的
+  // 是圆角方形而非正圆，改走 border 后环随节点是正圆；声明位置在 type-error
+  // 环之后（评审结论赢、type-error 让位），focused 环仍在最后。checking 中
+  // 无环：begin_review 会把 data 复位成 ''。
   const reviewRingRules: cytoscape.StylesheetStyle[] = (
     ['confident', 'unsure', 'error'] as const
   ).map((verdict) => ({
     selector: `node[reviewVerdict = "${verdict}"]`,
-    style: nodeStyle({
-      'underlay-color': p.review[verdict],
-      'underlay-opacity': THEME.reviewRing.opacity,
-      'underlay-padding': THEME.reviewRing.padding
-    } as EdgeStylePatch)
+    style: {
+      'border-width': THEME.reviewRing.width,
+      'border-color': p.review[verdict],
+      'border-opacity': 1
+    }
   }));
 
   return [
@@ -556,7 +557,6 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       } as EdgeStylePatch)
     },
     ...stateRules,
-    ...reviewRingRules,
     {
       selector: 'edge',
       style: edgeStyle({
@@ -607,6 +607,9 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'border-opacity': 1
       }
     },
+    // 评审环声明在 type-error 之后：被评审的球以评审结论为主视觉，
+    // type-error 环让位（信息仍在详情面板与源码行）。
+    ...reviewRingRules,
     {
       // 入场编排: nodes mount invisible and fade in once, on first load.
       selector: 'node.pre',
