@@ -65,7 +65,9 @@
 | `createStatusbar`（statusbar.ts） | `setCounts` / `setBand` / `flashEvent`；`bandWeights` / `passRatePct` 纯函数 | 左计数（节点/边/循环）、中四色覆盖率带、右事件 ticker | 96 |
 | `createDetailPanel` / `createSourceView` | 工厂 + 注入 `SourceLoader` port；`DetailContext` 由 model 的 `neighbors(id)` 喂养 | 详情面板（meta 行 AI 检查徽章 + AI 评审三色行）、语法高亮、错误行标记、超限截断提示 | 248+192 |
 | `frame-guards` | `isGraphSnapshot` / `isGraphDelta` / `isModuleNode` | 不可信 WS 帧的类型守卫（畸形帧整帧丢弃，保留上一好帧） | 44 |
-| `main.ts` | —— | **浏览器组合根**：REST 首渲染、WS 客户端、帧 → GraphModel → view 的分发、主题切换、图例与评审环行、断线 3s 重连（无自有图状态） | 404 |
+| `createFrameSink`（frame-sink.ts） | `apply(event: GraphEvent)`（五类帧全吃 + frame-guards 畸形帧整帧丢弃）/ `refreshDerived()`（视图状态与主题变更的非帧派生刷新）/ `setFocus(node)`——deps 注入 model/view/statusbar/legend/detail/scanNotice/`filters()` | **帧编排唯一归属**（2026-08-29 架构评审候选 #2）：fold → view → 派生 UI（statusbar 计数 / 覆盖带 / 图例 / 聚焦面板）的固定顺序；曾三份手抄 + `renderLegend` 六调用点（a236598 真 bug）收敛为一处；**microtask 合帧**——N 帧 burst 每批一次派生刷新、状态计数单遍一次、ticker flash 保持同步；聚焦面板诚实性（delta/node_update 跟进、节点移除清空一次）；入场仅首次快照播放 | 216 |
+| `createLegend`（legend.ts） | `createLegend(container, {onToggleState, onToggleReviewed}) → {render(counts)}`——counts 含 states/reviews 计数与 hiddenStates/hideReviewed；toggle 经 hooks 上报，不拥有状态 | dumb 渲染：4 状态行 + AI 评审环行（三色计数）+ 依赖边/循环行、off 类、键盘激活——DOM 结构与原 main.ts `renderLegend` 一致 | 108 |
+| `main.ts` | —— | **浏览器组合根**：REST 首渲染与 WS 帧共用 `FrameSink.apply` 单一 seam、WS 连接/断线 3s 重连、主题切换、视图控件绑定；过滤旋钮（hiddenStates / hideReviewed）所有权留此，sink 渲染时经 `filters()` 读取。帧编排、图例与入场已迁 `FrameSink` / `legend`（无自有图状态、无帧编排） | 214 |
 
 ---
 
@@ -99,6 +101,7 @@
 - `readSourceFile`：1 个函数背后是整套安全策略；Interface 把拒绝顺序（400→403→404→415）与超限截断语义（truncated + UTF-8 边界修复）写成契约。
 - `CoverageMapper`：1 个 `refresh` 背后是容错解析 + 路径归一化 + 命名约定索引。
 - `ReviewLifecycle`：3 个动词背后是定时器、身份令牌、verdict 清洗与事件顺序；interface 上只见 typed outcome，MCP 回复格式与路径校验都留在 mcp.ts。deletion test：删掉它，四条不变量在三个文件里重现。
+- `FrameSink`：3 个方法背后是五类帧的编排、microtask 合帧与畸形帧守卫。deletion test：删掉它，六步手抄在三处重现，a236598 类 bug 无 interface 可钉。
 
 **中**：`FileWatcher`（4 项配置 + 2 方法换掉整个 chokidar 世界）、`StatePipeline`、`http`、`mcp`。`createGraphView` 收窄到 9 方法后仍隐藏全部 cytoscape 渲染管线——Leverage 极高。
 
@@ -151,6 +154,8 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 | `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟（唯一 spawn 套件） |
 | `http-security.test.ts` / `source-endpoint.test.ts` | startHttpServer / readSourceFile |
 | `graph-model.test.ts` | GraphModel 三种帧 fold + 邻接（浏览器唯一图状态） |
+| `frame-sink.test.ts` | FrameSink：帧进 → 编排出（每批一次派生刷新 / 畸形帧丢弃 / 聚焦诚实性 / ticker 与 notice） |
+| `legend.test.ts` | Legend 渲染面（行结构 / off 类 / toggle hooks） |
 | `graph-filters.test.ts` / `graph-view.test.ts` / `web-render.test.ts`（构建产物 + findBackEdges 环检测 oracle + frame guards）/ `code-view.test.ts` / `ai-review.test.ts` | web 内部 seam 与 createGraphView |
 
 规则（replace, don't layer）：在模块 Interface 上写行为断言，不在实现内部探状态；引擎删除时其专属测试同删，Interface 测试存活于内部重构。
