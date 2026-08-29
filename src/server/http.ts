@@ -229,5 +229,12 @@ function serveSource(
     return;
   }
   sendHead(resp, 200, { 'content-type': 'application/json; charset=utf-8' });
-  resp.end(JSON.stringify({ path: result.path, sizeBytes: result.sizeBytes, content: result.content }));
+  resp.end(
+    JSON.stringify({
+      path: result.path,
+      sizeBytes: result.sizeBytes,
+      content: result.content,
+      truncated: result.truncated === true
+    })
+  );
 }

@@ -113,7 +113,20 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(body.id).toBe('index.ts');
     expect(body.outgoingDependencies).toEqual(['core/app.ts']);
     expect(body.incomingDependents).toEqual([]);
-    expect(body.source).toEqual({ path: 'index.ts', sizeBytes: SOURCE_TEXT.length, content: SOURCE_TEXT });
+    expect(body.source).toEqual({
+      path: 'index.ts',
+      sizeBytes: SOURCE_TEXT.length,
+      content: SOURCE_TEXT,
+      truncated: false
+    });
+  });
+
+  it('get_module_details surfaces the truncated flag for oversize files', () => {
+    const tools = buildTools(fakeGraph(), {
+      readSourceFile: () => ({ ok: true, path: 'big.ts', content: 'head…', sizeBytes: 600 * 1024, truncated: true })
+    });
+    const body = payload(tools.get_module_details.execute({ path: 'index.ts' }));
+    expect(body.source).toEqual({ path: 'big.ts', sizeBytes: 600 * 1024, content: 'head…', truncated: true });
   });
 
   it('a ./-prefixed path resolves to the plain module id', () => {

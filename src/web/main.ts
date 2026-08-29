@@ -30,14 +30,14 @@ let focusedId: string | null = null;
 const detailPanel = createDetailPanel(detailContainer, loadSource);
 
 /** Ticket 09: restricted source fetch for the detail panel's code view. */
-async function loadSource(path: string): Promise<{ content: string }> {
+async function loadSource(path: string): Promise<{ content: string; truncated?: boolean }> {
   const res = await fetch(`/api/source?path=${encodeURIComponent(path)}`);
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
   }
-  const body = (await res.json()) as { content: string };
-  return { content: body.content };
+  const body = (await res.json()) as { content: string; truncated?: boolean };
+  return { content: body.content, truncated: body.truncated };
 }
 
 function showDetail(node: ModuleNode): void {

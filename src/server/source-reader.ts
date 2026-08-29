@@ -12,8 +12,10 @@ import { resolve, sep } from 'node:path';
  *   403  null byte, absolute path, `..` segment, non-whitelisted extension,
  *        resolved path escaping the root, symlink escape
  *   404  missing file
- *   413  oversize
  *   415  binary payload (NUL byte sniff)
+ *
+ * Oversize files are NOT denied (code-review 2026-08-29): the decoded head
+ * is served with truncated:true so the dashboard can still open big files.
  */
 
 export const SOURCE_ENDPOINT_EXTENSIONS = new Set([
@@ -27,20 +29,47 @@ export interface SourceReadOk {
   /** normalized root-relative POSIX path */
   path: string;
   content: string;
+  /** true file size on disk, even when `content` was clipped */
   sizeBytes: number;
+  /**
+   * True when the file exceeded MAX_SOURCE_BYTES and `content` only holds
+   * the decoded head (code-review 2026-08-29).
+   */
+  truncated: boolean;
 }
 
 export interface SourceReadDenied {
   ok: false;
-  status: 400 | 403 | 404 | 413 | 415;
+  status: 400 | 403 | 404 | 415;
   reason: string;
   detail: string;
 }
 
 export type SourceReadResult = SourceReadOk | SourceReadDenied;
 
-export function readSourceFile(rootPath: string, requested: string): SourceReadResult {
-  const deny = (status: SourceReadDenied['status'], reason: string, detail: string): SourceReadDenied => ({
+/**
+ * Largest `end ≤ maxBytes` such that buffer[0..end) ends on a UTF-8 sequence
+ * boundary — the tail is never a partial multi-byte character (code-review
+ * 2026-08-29 truncation support). Invalid lead bytes are left to the
+ * decoder's replacement fallback, as for the untruncated path.
+ */
+function utf8HeadEnd(buffer: Buffer, maxBytes: number): number {
+  let end = Math.min(maxBytes, buffer.length);
+  if (end === 0) return 0;
+  let lead = end - 1;
+  while (lead > 0 && (buffer[lead]! & 0xc0) === 0x80) lead--;
+  const b = buffer[lead]!;
+  const need =
+    (b & 0x80) === 0x00 ? 1
+    : (b & 0xe0) === 0xc0 ? 2
+    : (b & 0xf0) === 0xe0 ? 3
+    : (b & 0xf8) === 0xf0 ? 4
+    : 1;
+  if (end - lead < need) end = lead; // the tail sequence is cut — drop it
+  return end;
+}
+
+export function readSourceFile(rootPath: string, requested: string): SourceReadResult {  const deny = (status: SourceReadDenied['status'], reason: string, detail: string): SourceReadDenied => ({
     ok: false,
     status,
     reason,
@@ -103,14 +132,21 @@ export function readSourceFile(rootPath: string, requested: string): SourceReadR
   }
 
   const size = statSync(real).size;
-  if (size > MAX_SOURCE_BYTES) {
-    return deny(413, `file too large (${size} bytes > ${MAX_SOURCE_BYTES})`, posix.slice(0, 120));
-  }
 
   const buffer = readFileSync(real);
   if (buffer.includes(0)) {
     return deny(415, 'binary content rejected', posix.slice(0, 120));
   }
 
-  return { ok: true, path: segments.join('/'), content: buffer.toString('utf8'), sizeBytes: size };
+  // Code-review 2026-08-29: oversize no longer denies with 413 — the first
+  // MAX_SOURCE_BYTES bytes are served with truncated:true (sizeBytes stays
+  // the true size). The cut is repaired to a UTF-8 sequence boundary so a
+  // multi-byte character (or an astral char's surrogate pair) never decodes
+  // to U+FFFD at the tail.
+  const truncated = size > MAX_SOURCE_BYTES;
+  const content = truncated
+    ? buffer.subarray(0, utf8HeadEnd(buffer, MAX_SOURCE_BYTES)).toString('utf8')
+    : buffer.toString('utf8');
+
+  return { ok: true, path: segments.join('/'), content, sizeBytes: size, truncated };
 }

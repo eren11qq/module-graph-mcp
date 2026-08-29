@@ -291,7 +291,12 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           incomingDependents: incoming,
           source:
             source.ok
-              ? { path: source.path, sizeBytes: source.sizeBytes, content: source.content }
+              ? {
+                  path: source.path,
+                  sizeBytes: source.sizeBytes,
+                  content: source.content,
+                  truncated: source.truncated === true
+                }
               : { error: `${source.reason} (${source.detail})` }
         });
       }

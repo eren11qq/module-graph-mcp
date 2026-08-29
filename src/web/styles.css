@@ -214,6 +214,7 @@ body {
 
 .code-loading { padding: 8px 10px; color: var(--muted); font-size: 12px; }
 .code-error-note { padding: 8px 10px; color: var(--type-error); font-size: 12px; }
+.code-truncated-note { padding: 8px 10px; color: var(--muted); font-size: 12px; font-style: italic; }
 
 /* ---------------- 状态栏 + 覆盖率比例带(签名元素) ---------------- */
 #statusbar {

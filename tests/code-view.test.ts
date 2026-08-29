@@ -61,6 +61,25 @@ describe('source view plaintext fallback (P0-3)', () => {
     await expect(view.show(node({ path: 'gone.txt' }))).resolves.toBeUndefined();
     expect(container.querySelector('.code-error-note')?.textContent).toContain('ENOENT');
   });
+
+  it('renders a truncation note when the server clipped an oversize file', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({ content: 'const a = 1;', truncated: true }));
+
+    await view.show(node());
+
+    expect(container.querySelector('.code-truncated-note')?.textContent).toContain('已截断');
+    expect(container.querySelector('.cl')).not.toBeNull(); // rows still render
+  });
+
+  it('no truncation note for a normal load', async () => {
+    const container = document.createElement('div');
+    const view = createSourceView(container, async () => ({ content: 'const a = 1;' }));
+
+    await view.show(node());
+
+    expect(container.querySelector('.code-truncated-note')).toBeNull();
+  });
 });
 
 describe('AI verdict rows (ticket 12)', () => {

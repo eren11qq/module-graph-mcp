@@ -39,7 +39,7 @@
 | `CoverageMapper`（coverage.ts） | `refresh(files) → {states, reportMtimeMs, reportFound}`；纯函数：`parseCoverageSummaryJson` / `deriveTestState` / `buildTestTargetIndex` | istanbul json-summary 容错解析、报告 key → 根相对路径归一化、命名约定测试索引、四色判定 | 317 |
 | `typecheck.ts` | `runTypecheck(root) → TypecheckResult`（五种状态：`ok/errors/timeout/unavailable/parse-failed`，**从不 throw**）；纯函数 `parseTscOutput` | 子进程 spawn、超时 SIGTERM→SIGKILL 宽限、诊断解析与按文件分组、tsc 探测 | 267 |
 | `gitignore` | `parseIgnoreRule(line)` / `loadGitignore(rootAbs)` | 最小 glob（`*` `**` `?`、锚定、目录限定、取反）、last-match-wins、不可读 .gitignore 降级为空规则集 | ~110 |
-| `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok / denied{status 400/403/404/413/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、413、二进制嗅探 | 116 |
+| `readSourceFile`（source-reader.ts） | `→ SourceReadResult`（ok{content, truncated} / denied{status 400/403/404/415, reason, detail}），拒绝顺序写死在 Interface | 全部安全策略：null 字节、绝对路径、`..`、扩展名白名单、resolve 逃逸、symlink 逃逸、二进制嗅探；超限不再 413，按字节截断（`utf8HeadEnd` 修复到 UTF-8 序列边界，truncated 标记 + sizeBytes 保真） | 116 |
 | `startHttpServer` + `WsHub` | `→ {url, port, hub}`；`hub.broadcast(event)` / `closeAll()` / `size` | 静态文件 + traversal 守卫、CSP/nosniff、Host 白名单（防 DNS rebinding）、WS Origin 校验（防 CSWSH）、端口被占递增重试、WS 握手快照 | 233 |
 | `McpStdioServer` + `buildTools` | `serve()`；8 工具：`get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、verdict 清洗（每行最后一条 / 500 上限 / 200·500 截断；`update_review` 分批合并进 pending、同样新条胜）、checking 超时回落（`armCheckingTimer`：begin/update 都要重挂，以最新 checking 对象为身份令牌，否则 update 换新对象会静默解除旧定时器） | 608 |
 | `path-conventions` | `SOURCE_EXTENSIONS` / `LANGUAGE_BY_EXTENSION` / `EXCLUDED_DIRECTORIES` | 约定常量单一事实源（曾有四份扩展名副本、三份排除集） | 22 |
@@ -95,7 +95,7 @@
 - `IncrementalGraph`：8 个方法背后是 637 行——词法、缓存、原子性、delta、cached snapshot。deletion test：删掉它，事件→delta 的全部复杂度在 live-reload 里重现。全仓库最深。
 - `createGraphModel`：9 个方法背后是浏览器端唯一的图状态；三种帧的 fold 与邻接查询集中一处，data-in/data-out 直测。删除它，两份副本与漂移风险立即重现。
 - `typecheck`：1 个函数背后是 267 行进程管理 + 解析 + 五种降级模式，Interface 上"从不 throw"是关键错误模式契约。
-- `readSourceFile`：1 个函数背后是整套安全策略；Interface 把拒绝顺序（400→403→404→413→415）写成契约。
+- `readSourceFile`：1 个函数背后是整套安全策略；Interface 把拒绝顺序（400→403→404→415）与超限截断语义（truncated + UTF-8 边界修复）写成契约。
 - `CoverageMapper`：1 个 `refresh` 背后是容错解析 + 路径归一化 + 命名约定索引。
 
 **中**：`FileWatcher`（4 项配置 + 2 方法换掉整个 chokidar 世界）、`StatePipeline`、`http`、`mcp`。`createGraphView` 收窄到 9 方法后仍隐藏全部 cytoscape 渲染管线——Leverage 极高。

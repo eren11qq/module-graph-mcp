@@ -92,7 +92,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 | 工具 | 说明 |
 |---|---|
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
-| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文、备注 |
+| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（>512KB 截断并标注 `truncated`）、备注 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `report_note` | 给模块写自由备注（≤2000 字符；空串清除） |
 | `begin_review` | 标记模块进入 AI 检查：球开始脉冲、面板显示「检查中」；与 `end_review` 配对使用 |

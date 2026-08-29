@@ -51,6 +51,8 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 
 export interface SourceLoadResult {
   content: string;
+  /** Server clipped an oversize file (code-review 2026-08-29). */
+  truncated?: boolean;
 }
 
 export type SourceLoader = (path: string) => Promise<SourceLoadResult>;
@@ -105,10 +107,9 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
     loading.textContent = '加载源码…';
     container.append(loading);
 
-    let content: string;
+    let result: SourceLoadResult;
     try {
-      const result = await load(node.path);
-      content = result.content;
+      result = await load(node.path);
     } catch (err) {
       container.replaceChildren();
       const note = document.createElement('div');
@@ -121,6 +122,8 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
 
     // Stale response (the panel moved on meanwhile) — drop it.
     if (latestPath !== node.path) return;
+
+    const content = result.content;
 
     const lines = content.split('\n');
     const errorLines = new Set(node.typeErrors.filter((e) => e.line >= 1).map((e) => e.line));
@@ -172,6 +175,14 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
 
       row.append(ln, body);
       container.append(row);
+    }
+
+    // Oversize file (code-review 2026-08-29): the server sent only the head.
+    if (result.truncated === true) {
+      const note = document.createElement('div');
+      note.className = 'code-truncated-note';
+      note.textContent = '源码过长，已截断显示；完整内容请直接查看文件。';
+      container.append(note);
     }
 
     loadedKey = key;

@@ -7,9 +7,10 @@ import { getFreePort } from './helpers/net.js';
 
 /**
  * Ticket 09 security acceptance for GET /api/source: the endpoint reads ONLY
- * whitelisted text files inside the watched root; traversal, symlink escape,
- * binary payloads and oversize files are all denied — each denial is also
- * reported to the security-event log.
+ * whitelisted text files inside the watched root; traversal, symlink escape
+ * and binary payloads are denied — each denial is also reported to the
+ * security-event log. Oversize files are NOT denied (code-review 2026-08-29):
+ * they are served truncated with the true size.
  */
 
 let root = '';
@@ -105,9 +106,43 @@ describe('GET /api/source security envelope (Ticket 09)', () => {
     expect(status).toBe(415);
   });
 
-  it('denies oversize files with 413', async () => {
-    const { status } = await source('big.ts');
-    expect(status).toBe(413);
+  it('serves oversize files truncated (no 413) with the true size', async () => {
+    const { status, body } = await source('big.ts');
+    expect(status).toBe(200);
+    const b = body as { content: string; truncated: boolean; sizeBytes: number };
+    expect(b.truncated).toBe(true);
+    expect(b.sizeBytes).toBeGreaterThan(512 * 1024);
+    expect(b.content.startsWith('export const big = ')).toBe(true);
+    expect(b.content.length).toBeLessThanOrEqual(512 * 1024);
+  });
+
+  it('small files report truncated:false', async () => {
+    const { body } = await source('src/ok.ts');
+    expect((body as { truncated: boolean }).truncated).toBe(false);
+  });
+
+  it('truncation never splits a multi-byte character into U+FFFD', async () => {
+    // 300k CJK chars = 900KB of UTF-8 — over the cap, every char 3 bytes.
+    await writeFile(join(root, 'cjk.ts'), `export const cjk = '${'中'.repeat(300_000)}';\n`, 'utf8');
+    const { status, body } = await source('cjk.ts');
+    expect(status).toBe(200);
+    const b = body as { content: string; truncated: boolean };
+    expect(b.truncated).toBe(true);
+    expect(b.content.includes('\uFFFD')).toBe(false);
+    expect(b.content.endsWith('中')).toBe(true);
+  });
+
+  it('trims a dangling high surrogate at the cut', async () => {
+    // Exactly one ASCII char before the 512K-char cut, then an astral char:
+    // the raw cut would end on the pair's high surrogate.
+    const head = 'a'.repeat(512 * 1024 - 1);
+    await writeFile(join(root, 'surrogate.ts'), `${head}𝕏 tail padding to cross the byte cap\n`, 'utf8');
+    const { status, body } = await source('surrogate.ts');
+    expect(status).toBe(200);
+    const b = body as { content: string; truncated: boolean };
+    expect(b.truncated).toBe(true);
+    expect(b.content.includes('\uFFFD')).toBe(false);
+    expect(b.content.endsWith('a')).toBe(true);
   });
 
   it('answers 404 for missing files inside the root', async () => {
