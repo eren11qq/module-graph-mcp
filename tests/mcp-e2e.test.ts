@@ -52,15 +52,17 @@ describe('MCP stdio end-to-end (Ticket 01)', () => {
     child.stdin.write(`${JSON.stringify(obj)}\n`);
   }
 
-  async function nextReply(): Promise<Record<string, any>> {
+  // Replies leave in COMPLETION order, not request order: tools/call is
+  // dispatched async (the baseline gate may hold it) while ping answers
+  // synchronously. JSON-RPC correlates by id, so match by id.
+  async function waitForReply(id: number): Promise<Record<string, any>> {
     for (let i = 0; i < 100; i++) {
-      if (replies.length > consumed) return replies[consumed++] as Record<string, any>;
+      const at = replies.findIndex((r) => (r as { id?: unknown }).id === id);
+      if (at >= 0) return replies.splice(at, 1)[0] as Record<string, any>;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('timed out waiting for MCP reply');
+    throw new Error(`timed out waiting for MCP reply ${id}`);
   }
-
-  let consumed = 0;
 
   it('completes initialize -> tools/list -> tools/call -> ping handshake', async () => {
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
@@ -69,29 +71,25 @@ describe('MCP stdio end-to-end (Ticket 01)', () => {
     send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_module_graph', arguments: {} } });
     send({ jsonrpc: '2.0', id: 4, method: 'ping' });
 
-    const init = await nextReply();
-    expect(init.id).toBe(1);
+    const init = await waitForReply(1);
     expect(init.result.serverInfo.name).toBe('module-graph-mcp');
     expect(typeof init.result.protocolVersion).toBe('string');
 
-    const list = await nextReply();
-    expect(list.id).toBe(2);
+    const list = await waitForReply(2);
     const names = list.result.tools.map((t: { name: string }) => t.name);
     expect(names).toContain('get_module_graph');
     for (const t of list.result.tools as Array<{ name: string; description?: string }>) {
       expect(typeof t.description, `tool ${t.name} needs a description`).toBe('string');
     }
 
-    const call = await nextReply();
-    expect(call.id).toBe(3);
+    const call = await waitForReply(3);
     expect(call.error).toBeUndefined();
     const payload = JSON.parse(call.result.content[0].text);
     expect(payload.nodes).toEqual([]);
     expect(payload.edges).toEqual([]);
     expect(basename(payload.rootPath)).toBe('empty');
 
-    const pong = await nextReply();
-    expect(pong.id).toBe(4);
+    const pong = await waitForReply(4);
     expect(pong.result).toEqual({});
   });
 
