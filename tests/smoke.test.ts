@@ -59,7 +59,9 @@ describe('startHttpServer port fallback (Ticket 01)', () => {
     } finally {
       for (const b of blockers) b.close();
     }
-  });
+    // Code-review 2026-08-29: 全量并发负载下本用例超时过一次(默认 20s),
+    // 按交接裁定把用例超时提到 40s,属测试鲁棒性调整。
+  }, 40000);
 });
 
 describe('http handler (Ticket 01)', () => {
