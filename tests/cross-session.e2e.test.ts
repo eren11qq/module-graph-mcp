@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdtemp } from 'node:fs/promises';
 import net from 'node:net';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { getFreePort } from './helpers/net.js';
@@ -11,6 +13,8 @@ import type { GraphEvent } from '../src/shared/types.js';
  * The second instance must (a) stay headless — the first instance's tab is
  * the one on screen — and (b) relay its tool-driven events to the first
  * instance's dashboard, so one page shows every session's AI activity.
+ * Popup policy: NOBODY pops at startup; the armed primary pops on its first
+ * activity (a tool call of its own, or the first relayed event).
  */
 
 const ROOT = resolve('test-fixtures/sample-app');
@@ -40,12 +44,14 @@ interface Instance {
   waitUntilStderr(needle: string, timeoutMs?: number): Promise<void>;
 }
 
-function spawnInstance(port: number): Instance {
+function spawnInstance(port: number, root: string = ROOT): Instance {
   const child = spawn(
     process.execPath,
-    ['dist/server/index.js', '--root', ROOT, '--port', String(port)],
+    ['dist/server/index.js', '--root', root, '--port', String(port)],
     // env suppresses the browser open for the PRIMARY (which owns its
     // preferred port); the SECONDARY is kept headless by the dedup itself.
+    // The suppressed openBrowser still logs, so tests can observe exactly
+    // WHEN the popup would have fired.
     { env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' }, stdio: ['pipe', 'pipe', 'pipe'] }
   );
 
@@ -152,8 +158,11 @@ afterAll(() => {
 });
 
 describe('two sessions, one dashboard (cross-session relay)', () => {
-  it('the primary logged the env-suppressed browser open, the secondary logged the dedup', async () => {
-    await primary.waitUntilStderr('browser auto-open suppressed');
+  it('startup is silent: the primary arms instead of popping, the secondary goes headless', async () => {
+    await primary.waitUntilStderr('auto-open armed');
+    // The heart of the popup policy: restoring every project at app open
+    // must not pop a single tab until a session actually does something.
+    expect(primary.stderr).not.toContain('browser auto-open suppressed');
     expect(secondary.stderr).toContain(`same-root instance already serves this dashboard at http://127.0.0.1:${primaryPort}`);
   }, 15000);
 
@@ -174,6 +183,12 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     const ev = (await collected.waitFor('module_activity')) as { id: string; activity: string };
     expect(ev.id).toBe('core/app.ts');
     expect(ev.activity).toBe('viewing');
+
+    // The relay was the primary's FIRST activity: the armed primary pops
+    // here even though its own session never called a tool. Under the env
+    // suppression the attempt shows up as this log line.
+    await primary.waitUntilStderr('dashboard auto-open (relayed activity)');
+    expect(primary.stderr).toContain('browser auto-open suppressed');
   }, 30000);
 
   it('a begin_review on the secondary pulses on the primary (node_update relay)', async () => {
@@ -190,4 +205,44 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     expect(ev.node.id).toBe('core/app.ts');
     expect(ev.node.aiReview?.status).toBe('checking');
   }, 30000);
+});
+
+/**
+ * Popup policy, the plain case: ONE project, ONE armed instance. Nothing
+ * opens at startup; the instance's first tools/call — for a real agent that
+ * is get_dashboard_info, called once per session per CLAUDE.md — fires the
+ * popup. A throwaway root keeps this instance foreign to the shared-root
+ * pair above, so the band walk can never demote it to headless.
+ */
+describe('one project, first tool call pops (armed instance)', () => {
+  let solo: Instance;
+
+  beforeAll(async () => {
+    const soloRoot = await mkdtemp(join(tmpdir(), 'mg-solo-'));
+    solo = spawnInstance(await getFreePort(), soloRoot);
+    await solo.waitUntilStderr('auto-open armed');
+  }, 20000);
+
+  afterAll(() => {
+    solo?.child.kill();
+  });
+
+  it('stays silent at startup and pops on its first tools/call', async () => {
+    expect(solo.stderr).not.toContain('browser auto-open suppressed');
+
+    solo.send({ jsonrpc: '2.0', id: 700, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+    await solo.waitForReply(700);
+    solo.send({
+      jsonrpc: '2.0',
+      id: 701,
+      method: 'tools/call',
+      params: { name: 'get_dashboard_info', arguments: {} }
+    });
+    await solo.waitForReply(701);
+
+    await solo.waitUntilStderr('dashboard auto-open (first tool call)');
+    // MODULE_GRAPH_NO_OPEN=1 turns the attempt into this log line instead of
+    // a real browser window — the trigger path is what the test pins down.
+    expect(solo.stderr).toContain('browser auto-open suppressed');
+  }, 15000);
 });

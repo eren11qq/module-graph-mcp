@@ -27,7 +27,7 @@ npm run build          # tsc 编译服务端 + vite 打包前端到 dist/server/
 node dist/server/index.js --root ./test-fixtures/sample-app
 ```
 
-启动后自动打开浏览器（默认 `http://127.0.0.1:24282`，端口被占自动 +1）。**同仓库去重**：首选端口已被本工具的**同一仓库**实例占住时（MCP 每个会话各启一个进程），新会话保持无头、不弹页；不同仓库或探测不到同根实例时照常弹页。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 即可。要监视自己的项目，把 `--root` 指向该目录。
+启动**不弹浏览器**——桌面端（如 ZCode）打开时会为每个项目拉起一个 server 进程，弹窗时机后移到「项目首次被使用」：该项目会话的**第一次 MCP 工具调用**（agent 约定先调 `get_dashboard_info`），或收到同根实例的第一条转发事件时，才自动打开 dashboard（默认 `http://127.0.0.1:24282`，端口被占自动 +1）。**同仓库一个窗口**：被占端口按「端口带扫描」找同根实例——找到则本进程保持无头、永不弹页，其工具事件转发到主实例页面；整个端口带都是异根/空闲时本进程 armed（首次活动即弹）。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 加 `--open` 即可。要监视自己的项目，把 `--root` 指向该目录。
 
 **测试状态判定**：主判定读 `coverage/coverage-summary.json`（vitest/jest 覆盖率报告，**存在即通过——MVP 不设覆盖率阈值**；agent 通过 `report_test_run` 上报失败运行后，报告内文件转红）；没有覆盖率数据时按命名约定兜底——存在同名 `*.test.ts(x)` 视为「有测试未跑」，否则「未测」。
 
@@ -37,7 +37,7 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 |---|---|
 | `--root <dir>` | 监视的项目根目录（默认当前目录；必须是已存在的目录） |
 | `--port <n>` | dashboard 端口（默认 24282；被占用自动递增） |
-| `--open` | 强制自动打开浏览器（即使同仓库已有实例在跑也弹新页） |
+| `--open` | 启动时立即弹页（无视同仓库去重；不带它则按上面的弹窗策略等首次活动） |
 | `--no-open` | 从不自动打开浏览器（CI / 测试环境用；优先级高于 `--open`） |
 | `MODULE_GRAPH_NO_OPEN=1` | 同 `--no-open` 的环境变量形式 |
 
@@ -123,7 +123,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 }
 ```
 
-- **不传 `--root`**：服务端回退到子进程 cwd。浏览器自动打开按**同仓库去重**：同一仓库只有第一个实例弹页（每个 MCP 会话各启一个进程，后续会话静默，其 AI 活动转发到第一页）；跨多个会话只需要盯一个 dashboard 页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
+- **不传 `--root`**：服务端回退到子进程 cwd。**打开 ZCode 不弹页**——每个项目一个进程照常启动，但只有该项目会话**首次调用 MCP 工具**（见下一条约定）或第一条同根转发事件到达时才弹浏览器；同一仓库跨会话共用一个窗口：后续会话静默（无头），其 AI 活动转发到第一页，且其 `get_dashboard_info` 直接返回主实例的链接，agent 交给用户的永远是那一页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
 - agent 侧约定：会话内先调 `get_dashboard_info` 核实 `rootPath` 与 dashboard 链接；若监视的树不对，在该项目的 `<repo>/.zcode/config.json` 里用同名的 workspace 级条目（`--root` 传绝对路径）覆盖。
 - 基线扫描期间握手**不会**被阻塞：`get_dashboard_info` / `get_module_graph` 即时应答并带 `scanning: true`；依赖图内容的工具（begin_review / get_module_details 等）自动等基线落定（上限 20s）再作答。
 

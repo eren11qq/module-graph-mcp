@@ -7,7 +7,7 @@ import { createGraphModel } from './graph-model.js';
 import { createGraphView } from './graph-view.js';
 import { createLegend } from './legend.js';
 import { createStatusbar } from './statusbar.js';
-import { CHROME, clampTuning, defaultLayoutTuning, TUNING_RANGES, setTheme as setActiveTheme, type LayoutTuning, type ThemeKey } from './theme.js';
+import { CHROME, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
 
 // ---------------------------------------------------------------------------
 // Section 3 mount points (the only DOM the render path touches)
@@ -140,69 +140,6 @@ document.addEventListener('keydown', (evt) => {
 
 document.getElementById('btn-reset')?.addEventListener('click', () => view.resetView());
 document.getElementById('btn-reset-layout')?.addEventListener('click', () => view.resetLayout());
-
-// ---------------------------------------------------------------------------
-// 四力滑杆 (Code-review 2026-08-29): gravity / nodeRepulsion /
-// edgeElasticity / idealEdgeLength. main 持有状态并写 localStorage;`input`
-// 只刷新读数,松手 (`change`) 才重排 —— 重排永远从当前位置出发、仅由用户
-// 主动触发,可玩性不破坏布局稳定性。
-// ---------------------------------------------------------------------------
-
-const TUNING_KEYS = ['gravity', 'nodeRepulsion', 'edgeElasticity', 'idealEdgeLength'] as const;
-
-const tuneControls = new Map<(typeof TUNING_KEYS)[number], { input: HTMLInputElement; out: HTMLOutputElement }>();
-for (const key of TUNING_KEYS) {
-  const input = document.getElementById(`tune-${key}`) as HTMLInputElement | null;
-  const out = document.getElementById(`tune-${key}-val`) as HTMLOutputElement | null;
-  if (input === null || out === null) continue;
-  const range = TUNING_RANGES[key];
-  input.min = String(range.min);
-  input.max = String(range.max);
-  input.step = String(range.step);
-  tuneControls.set(key, { input, out });
-}
-
-function storedTuning(): LayoutTuning {
-  try {
-    const raw = localStorage.getItem(CHROME.layoutTuningStorageKey);
-    return raw === null ? defaultLayoutTuning() : clampTuning(JSON.parse(raw));
-  } catch {
-    return defaultLayoutTuning();
-  }
-}
-
-function formatTuningValue(key: (typeof TUNING_KEYS)[number], value: number): string {
-  // 整数量纲(斥力/边长)显示整数,0–1 量纲(引力/弹性)固定两位小数。
-  return key === 'nodeRepulsion' || key === 'idealEdgeLength' ? String(Math.round(value)) : value.toFixed(2);
-}
-
-function reflectTuning(t: LayoutTuning): void {
-  for (const [key, { input, out }] of tuneControls) {
-    input.value = String(t[key]);
-    out.textContent = formatTuningValue(key, t[key]);
-  }
-}
-
-let tuning = storedTuning();
-reflectTuning(tuning);
-// Boot-time restore (empty graph → applyLayout 早退,等 snapshot 到来即生效)。
-view.setLayoutTuning(tuning);
-
-for (const [key, { input, out }] of tuneControls) {
-  input.addEventListener('input', () => {
-    out.textContent = formatTuningValue(key, Number(input.value));
-  });
-  input.addEventListener('change', () => {
-    tuning = { ...tuning, [key]: Number(input.value) };
-    reflectTuning(tuning);
-    view.setLayoutTuning(tuning);
-    try {
-      localStorage.setItem(CHROME.layoutTuningStorageKey, JSON.stringify(tuning));
-    } catch {
-      /* private mode: 滑杆值只在内存存活 */
-    }
-  });
-}
 
 // ---------------------------------------------------------------------------
 // View controls (ticket 11): search box, 只看未测 filter, directory collapse

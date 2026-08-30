@@ -131,3 +131,64 @@ describe('MCP stdio robustness (P1-2)', () => {
     expect(replies[1]!.result).toBeDefined();
   });
 });
+
+/**
+ * Popup policy (code-review 2026-08-29): the first KNOWN tools/call is the
+ * signal that a session is actually working on this project — the wired hook
+ * opens the dashboard. Handshake traffic (initialize, tools/list) and unknown
+ * tool garbage must not count, and the hook fires exactly once per process.
+ */
+describe('onFirstToolCall (popup policy)', () => {
+  function startWithHook(): {
+    input: EventEmitter;
+    replies: Array<Record<string, any>>;
+    callsRef: { calls: number };
+    serving: Promise<void>;
+  } {
+    const input = new EventEmitter();
+    const replies: Array<Record<string, any>> = [];
+    const callsRef = { calls: 0 };
+    const output = {
+      write: (s: string) => {
+        replies.push(JSON.parse(s));
+        return true;
+      }
+    } as unknown as NodeJS.WritableStream;
+    const graph: GraphSnapshotSource = {
+      snapshot: () => ({ rootPath: '/proj', generatedAt: 1, nodes: [], edges: [] }),
+      setNote: () => false,
+      setReview: () => false
+    };
+    const server = new McpStdioServer(input as unknown as NodeJS.ReadableStream, output, () => {}, graph, {
+      onFirstToolCall: () => {
+        callsRef.calls += 1;
+      }
+    });
+    return { input, replies, callsRef, serving: server.serve() };
+  }
+
+  const send = (input: EventEmitter, msg: Record<string, unknown>): void => {
+    input.emit('data', Buffer.from(`${JSON.stringify(msg)}\n`, 'utf8'));
+  };
+
+  it('fires exactly once, on the first known tool call; handshake and unknown tools do not count', async () => {
+    const { input, replies, callsRef, serving } = startWithHook();
+
+    send(input, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+    send(input, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    send(input, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    send(input, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: '__proto__' } });
+    send(input, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_dashboard_info', arguments: {} } });
+    send(input, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_untested', arguments: {} } });
+
+    // Five replies land: initialize(1), tools/list(2), unknown-tool error(3),
+    // and the two tool calls (4, 5). The notification never replies.
+    await waitForReplies(replies, 5);
+    const byId = new Map(replies.map((r) => [r.id, r]));
+    expect(byId.get(3)!.error).toEqual({ code: -32602, message: 'Unknown tool: __proto__' });
+    expect(byId.get(4)!.result).toBeDefined();
+    expect(byId.get(5)!.result).toBeDefined();
+    expect(callsRef.calls).toBe(1);
+    void serving;
+  });
+});

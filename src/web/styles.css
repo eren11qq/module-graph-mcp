@@ -38,6 +38,7 @@ body {
   display: flex; align-items: center; gap: 14px; padding: 0 14px;
   background: var(--panel-top); border-bottom: 1px solid var(--line);
   backdrop-filter: var(--blur, none);
+  box-shadow: var(--glass-hi), var(--glass-lo), var(--glass-drop);
   z-index: 20;
 }
 .brand {
@@ -49,13 +50,25 @@ body {
 
 /* 票 11 控件(搜索/只看未测/目录折叠/重置)融进顶栏,原型视觉语言 */
 .tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.tools input[type="search"] {
-  background: var(--seg-track); color: var(--ink);
-  border: 1px solid transparent; border-radius: var(--r-seg);
-  padding: 4px 10px; font-size: 11.5px; width: 170px; font-family: var(--font-ui);
+/* 搜索框:Uiverse 输入样式(圆角/左内图标/外圈过渡),颜色走主题 token */
+.search-group { position: relative; display: flex; align-items: center; line-height: 28px; }
+.search-group .search-icon {
+  position: absolute; left: .8rem; width: .85rem; height: .85rem;
+  color: var(--muted); pointer-events: none; z-index: 1;
 }
-.tools input[type="search"]:focus { outline: none; border-color: var(--accent); }
-.tools input[type="search"]::placeholder { color: var(--muted); }
+#search-box {
+  font-family: var(--font-ui); font-size: 11.5px;
+  width: 190px; height: 30px; padding: 0 10px 0 2.4rem;
+  border: 0; border-radius: 12px; background: var(--search-bg); outline: none;
+  color: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--search-ring), var(--search-drop);
+  transition: all .25s cubic-bezier(.19, 1, .22, 1);
+  cursor: text; z-index: 0;
+}
+#search-box::placeholder { color: var(--muted); }
+#search-box:hover { box-shadow: 0 0 0 2.5px var(--search-ring-hover), var(--search-drop); }
+#search-box:active { transform: scale(.95); }
+#search-box:focus { box-shadow: 0 0 0 2px var(--search-ring-focus), var(--search-drop); }
 
 .tool-toggle {
   border: none; background: transparent; color: var(--muted); cursor: pointer;
@@ -67,7 +80,7 @@ body {
 .tool-toggle:active { transform: scale(.97); }
 .tool-toggle.active {
   background: var(--seg-on); color: var(--seg-on-ink); font-weight: 600;
-  box-shadow: var(--seg-on-shadow);
+  box-shadow: var(--seg-on-shadow), var(--seg-glow);
 }
 .tool-toggle:focus-visible, .detail-link:focus-visible, .legend-row:focus-visible {
   outline: 1px solid var(--accent); outline-offset: 1px;
@@ -128,24 +141,29 @@ body {
 .legend-row.review-row .cnt { margin-left: 2px; }
 .legend-row.review-row .name { margin-left: auto; color: var(--muted); }
 
-/* ---------------- 布局力滑杆 (Code-review 2026-08-29) ----------------
-   原生 range + accent-color:双主题各跟随自己的 --accent,无需自绘轨道。
-   放在 #dock-left 独立卡片里(不能进 #legend 容器——它每次
-   refreshDerived 都 replaceChildren 重建)。 */
-.tuning-row {
-  display: flex; align-items: center; gap: 8px; margin: 7px 0;
+/* 状态过滤卡片头部:四枚状态色圆点(替代文字标题,呼应画布球色板) */
+.legend-dots { display: flex; gap: 6px; padding: 2px 1px 10px; }
+.legend-dots span { width: 11px; height: 11px; border-radius: 50%; }
+.legend-dots span:nth-child(1) { background: var(--state-pass); }
+.legend-dots span:nth-child(2) { background: var(--state-fail); }
+.legend-dots span:nth-child(3) { background: var(--state-skip); }
+.legend-dots span:nth-child(4) { background: var(--state-none); }
+
+/* 状态行:Uiverse 选项卡质感 —— 行体保持面板素色,状态色只落在两头
+   (左侧色点 + 右侧实心圆);off = 圆点变空心、整行变淡。
+   行级 --state 由 legend.ts 注入。 */
+.legend-row[data-state] {
+  gap: 8px; padding: 8px 10px; margin: 5px 0; border-radius: 10px;
+  transition: opacity .3s;
 }
-.tuning-row label {
-  font-size: 11px; color: var(--muted); white-space: nowrap; flex: none; width: 4.5em;
+.legend-row[data-state] .indicator {
+  width: 13px; height: 13px; border-radius: 50%; flex: none;
+  border: 2px solid var(--state); background: var(--state);
+  transition: background .3s, border-color .3s;
 }
-.tuning-row input[type="range"] {
-  flex: 1; min-width: 0; height: 14px; cursor: pointer; accent-color: var(--accent);
-}
-.tuning-row output {
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink);
-  font-variant-numeric: tabular-nums; width: 44px; text-align: right; flex: none;
-}
-#btn-reset-layout { margin-top: 4px; }
+.legend-row[data-state].off { opacity: .5; }
+.legend-row[data-state].off .indicator { background: transparent; border-color: var(--faint); }
+.legend-row[data-state].off .name { text-decoration: none; }
 
 /* ---------------- 详情面板 ---------------- */
 .detail-name { font-weight: 600; letter-spacing: -.008em; word-break: break-all; font-size: 13.5px; }
@@ -241,6 +259,7 @@ body {
   display: flex; align-items: center; gap: 16px; padding: 0 12px;
   background: var(--panel-top); border-top: 1px solid var(--line);
   backdrop-filter: var(--blur, none);
+  box-shadow: var(--glass-hi), var(--glass-lo), var(--glass-drop);
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .02em; color: var(--muted);
   z-index: 20;
 }
@@ -314,6 +333,12 @@ body {
   --dock-left-w: 224px; --dock-right-w: 380px;
   --seg-track: rgba(120, 140, 180, .16); --seg-on: rgba(255, 255, 255, .14);
   --seg-on-ink: #E7EEF9; --seg-on-shadow: 0 1px 3px rgba(0, 0, 0, .4);
+  --seg-glow: 0 0 14px rgba(76, 194, 255, .35);
+  --glass-hi: inset 1px 1px 4px rgba(255, 255, 255, .10), inset 0 1px 0 rgba(255, 255, 255, .06);
+  --glass-lo: inset -1px -1px 6px rgba(0, 0, 0, .30);
+  --glass-drop: 0 12px 40px rgba(0, 0, 0, .45);
+  --search-bg: #131A2B; --search-ring: #2B3A5C; --search-ring-hover: #35486F;
+  --search-ring-focus: #4CC2FF; --search-drop: 0 0 25px -17px #000;
   --code-bg: rgba(5, 10, 20, .55);
   --vpass-bg: rgba(0, 195, 137, .10); --vunsure-bg: rgba(255, 210, 77, .10); --verror-bg: rgba(255, 122, 69, .13);
   --row-hover: rgba(76, 194, 255, .08);
@@ -326,16 +351,14 @@ body {
   background: radial-gradient(1200px 720px at 50% 38%, #111D38 0%, #0A0F1C 60%, #060A13 100%);
 }
 [data-theme="dark"] .band span { box-shadow: 0 0 10px rgba(76, 194, 255, .25); }
-/* 暗色:顶栏/状态栏为悬浮圆角玻璃条 */
+/* 暗色:顶栏/状态栏为悬浮圆角玻璃条(玻璃内侧高光/暗影走 --glass-* token) */
 [data-theme="dark"] #topbar {
   top: 10px; left: 12px; right: 12px; height: 46px;
   border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .06);
 }
 [data-theme="dark"] #statusbar {
   left: 12px; right: 12px; bottom: 10px; height: 32px;
   border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 [data-theme="dark"] #dock-left, [data-theme="dark"] #dock-right { top: 70px; }
 
@@ -361,6 +384,12 @@ body {
   --dock-left-w: 224px; --dock-right-w: 380px;
   --seg-track: rgba(120, 110, 90, .12); --seg-on: #FFFFFF;
   --seg-on-ink: #26221C; --seg-on-shadow: 0 1px 3px rgba(88, 74, 44, .2);
+  --seg-glow: 0 0 12px rgba(38, 34, 28, .14);
+  --glass-hi: inset 1px 1px 4px rgba(255, 255, 255, .90);
+  --glass-lo: inset -1px -1px 6px rgba(88, 74, 44, .07);
+  --glass-drop: 0 8px 24px rgba(88, 74, 44, .10);
+  --search-bg: #FFFFFF; --search-ring: #E6E0D2; --search-ring-hover: #D4CCB8;
+  --search-ring-focus: #26221C; --search-drop: 0 0 25px -17px rgba(88, 74, 44, .35);
   --code-bg: #FAF8F1;
   --vpass-bg: rgba(0, 158, 115, .08); --vunsure-bg: rgba(180, 83, 9, .09); --verror-bg: rgba(213, 94, 0, .10);
   --row-hover: rgba(38, 34, 28, .05);

@@ -86,6 +86,15 @@ export interface McpToolDeps {
    */
   httpInfo?(): { url: string; port: number; rootPath: string; version: string };
   /**
+   * Popup policy (code-review 2026-08-29): the first tools/call of a session
+   * is the signal that this project is actually being worked on — the wired
+   * callback opens the dashboard (fired once per process, before the tool
+   * runs). Handshake-time methods deliberately do not count: initialize and
+   * tools/list already happen when a desktop client restores every project
+   * at app open, so counting them would pop N tabs at launch.
+   */
+  onFirstToolCall?(): void;
+  /**
    * False while the startup baseline scan is still running (wired by
    * index.ts). get_module_graph annotates its reply so an agent reading the
    * graph during the scan knows the node list is partial, not empty.
@@ -544,6 +553,7 @@ export class McpStdioServer {
   private buffer = '';
   private readonly tools: Record<string, ToolDef>;
   private readonly deps: McpToolDeps;
+  private firstToolCallFired = false;
 
   constructor(
     private readonly input: NodeJS.ReadableStream,
@@ -666,6 +676,12 @@ export class McpStdioServer {
   }
 
   private async callTool(id: string | number, name: string, tool: ToolDef, args: Record<string, unknown>): Promise<void> {
+    // Only reached for known tools (unknown names error out in handleLine),
+    // so a flood of garbage calls never counts as session activity.
+    if (!this.firstToolCallFired) {
+      this.firstToolCallFired = true;
+      this.deps.onFirstToolCall?.();
+    }
     try {
       await this.awaitBaseline(name);
       this.reply(id, tool.execute(args));

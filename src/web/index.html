@@ -14,9 +14,16 @@
   <header id="topbar" class="overlay">
     <div class="brand"><span class="logo"></span>模块图谱<span class="sub">MODULE GRAPH</span></div>
     <div class="tools">
-      <input type="search" id="search-box" placeholder="搜索：路径 / 文件名" aria-label="搜索模块" />
+      <div class="search-group">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle>
+          <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
+        </svg>
+        <input type="search" id="search-box" placeholder="搜索：路径 / 文件名" aria-label="搜索模块" />
+      </div>
       <button type="button" id="btn-untested-only" class="tool-toggle" title="只显示未测模块（灰球）">只看未测</button>
       <button type="button" id="btn-collapse" class="tool-toggle" title="同目录文件 ≥ 3 个时折叠为一个目录球；点目录球展开该目录">目录折叠</button>
+      <button type="button" id="btn-reset-layout" class="tool-toggle" title="清空布局存档并从头重排">重置布局</button>
       <button type="button" id="btn-reset" class="tool-toggle" title="缩放/平移复位到全图">重置视图</button>
     </div>
     <div class="spacer"></div>
@@ -25,36 +32,11 @@
   </header>
 
   <aside id="dock-left" class="overlay">
-    <div class="card">
-      <h2>状态过滤</h2>
+    <div class="card filter-card">
+      <div class="legend-dots" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
       <div id="legend"></div>
-    </div>
-    <div class="card" id="tuning-card">
-      <h2>布局力</h2>
-      <!-- 四力滑杆 (Code-review 2026-08-29): 语义借 Obsidian,过程不借 ——
-           每次重排都从当前位置出发,仅由用户松手(change)触发。范围与步长
-           由 main.ts 按 THEME.TUNING_RANGES 注入。 -->
-      <div class="tuning-row">
-        <label for="tune-gravity">中心引力</label>
-        <input type="range" id="tune-gravity" aria-label="中心引力" />
-        <output id="tune-gravity-val"></output>
-      </div>
-      <div class="tuning-row">
-        <label for="tune-nodeRepulsion">球间斥力</label>
-        <input type="range" id="tune-nodeRepulsion" aria-label="球间斥力" />
-        <output id="tune-nodeRepulsion-val"></output>
-      </div>
-      <div class="tuning-row">
-        <label for="tune-edgeElasticity">连接弹性</label>
-        <input type="range" id="tune-edgeElasticity" aria-label="连接弹性" />
-        <output id="tune-edgeElasticity-val"></output>
-      </div>
-      <div class="tuning-row">
-        <label for="tune-idealEdgeLength">理想边长</label>
-        <input type="range" id="tune-idealEdgeLength" aria-label="理想边长" />
-        <output id="tune-idealEdgeLength-val"></output>
-      </div>
-      <button type="button" id="btn-reset-layout" class="detail-link" title="清空布局存档并从头重排">重置布局</button>
     </div>
   </aside>
 

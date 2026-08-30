@@ -59,5 +59,6 @@ user's dashboard:
 ## 其它约定
 
 - 人类可读日志走 stderr，stdout 属于 MCP JSON-RPC 通道。
+- 弹窗策略：server 启动**不弹浏览器**；某项目的会话首次调用 MCP 工具（通常是每会话第一调的 `get_dashboard_info`）或同根 relay 事件到达时才弹。同一仓库跨会话共用一个窗口：副实例无头转发，其 `get_dashboard_info` 直接返回主实例链接。
 - 构建 / 测试：`npm run build`（先 build 再 `npm test`，e2e 会 spawn dist 产物）、`npm test`、`npm run lint`。
 - 设计文档：`docs/MODULE-DESIGN.md`（Standards 轴度量基准，接口表以它为准）；工单在 `.scratch/module-graph-mcp/issues/`。

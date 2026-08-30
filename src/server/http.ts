@@ -79,14 +79,20 @@ export function startHttpServer(opts: {
   getSnapshot?: () => GraphSnapshot;
   /** Ticket 09: receives one line per denied /api/source request (security log). */
   onSecurityEvent?: (msg: string) => void;
+  /**
+   * Popup policy (code-review 2026-08-29): invoked after a relayed event from
+   * a same-root secondary is accepted — the armed primary counts the relay as
+   * this project's first activity and pops its dashboard tab.
+   */
+  onRelayAccepted?: () => void;
 }): Promise<{ url: string; port: number; server: ReturnType<typeof createServer>; hub: WsHub }> {
-  const { preferredPort, maxTries = 20, publicDir, info, getSnapshot, onSecurityEvent } = opts;
+  const { preferredPort, maxTries = 20, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted } = opts;
 
   return new Promise((res, rej) => {
     let attempt = preferredPort;
 
   const app = createServer((req, resp) =>
-    handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, () => attempt, (event) => hub.broadcast(event))
+    handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted, () => attempt, (event) => hub.broadcast(event))
   );
 
     // Websocket endpoint shares the same port (plan §架构). Upgrades are limited
@@ -140,6 +146,7 @@ function handle(
   info: HttpInfo,
   getSnapshot: (() => GraphSnapshot) | undefined,
   onSecurityEvent: ((msg: string) => void) | undefined,
+  onRelayAccepted: (() => void) | undefined,
   boundPort: () => number,
   broadcast: (event: GraphEvent) => void
 ): void {
@@ -155,7 +162,7 @@ function handle(
   // instance posts its tool-driven events here so the one dashboard tab the
   // user keeps open shows every session's AI activity.
   if (pathname === '/internal/broadcast') {
-    serveInternalBroadcast(req, resp, broadcast);
+    serveInternalBroadcast(req, resp, broadcast, onRelayAccepted);
     return;
   }
 
@@ -286,7 +293,8 @@ function isLoopbackPeer(remote: string | undefined): boolean {
 function serveInternalBroadcast(
   req: IncomingMessage,
   resp: ServerResponse,
-  broadcast: (event: GraphEvent) => void
+  broadcast: (event: GraphEvent) => void,
+  onRelayAccepted?: () => void
 ): void {
   if (req.method !== 'POST') {
     sendHead(resp, 405, { 'content-type': 'text/plain; charset=utf-8' });
@@ -333,6 +341,7 @@ function serveInternalBroadcast(
       return;
     }
     broadcast(parsed);
+    onRelayAccepted?.();
     sendHead(resp, 204);
     resp.end();
   });

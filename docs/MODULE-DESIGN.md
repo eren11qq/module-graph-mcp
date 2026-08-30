@@ -44,7 +44,7 @@
 | `McpStdioServer` + `buildTools` | `serve()`；9 工具：`get_dashboard_info` / `get_module_graph` / `get_module_details` / `list_untested` / `report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run`；`buildTools(graph: GraphSnapshotSource, {broadcast, readSourceFile, reportTestRun, httpInfo, isBaselineDone}) → Record<string, ToolDef>`——`GraphSnapshotSource` 是 tools 需要的最小图接口（engine 结构性满足，测试用字面量 fake），源码读取经注入的 port | 换行分隔 JSON-RPC 2.0、10MB 消息上限、工具分发、**错误结果自解释**（`suggestNodeIds`：猜出 5 个最相近 id）、AI 评审三工具经 `ReviewLifecycle` 委派（工具体只剩参数校验 + reply 整形，回复字节级不变）、**基线闸门**（内容依赖型工具有界等基线，自述型工具即时应答带 scanning 注记）；`get_module_details` 每次读取广播 `module_activity`（探索可见，2026-08-29） | 711 |
 | `ReviewLifecycle`（review-lifecycle.ts） | `begin(id, path)` / `update(id, path, rawVerdicts) → outcome` / `end(id, rawVerdicts, rawSummary)`——typed outcome，不认识 MCP 回复格式；`AI_VERDICTS` / `REVIEW_CHECKING_TIMEOUT_MS` 是它导出的接口词汇 | begin/end 配对纪律、checking 超时回落（身份令牌 + update 重挂——update 换新 checking 对象会静默解除旧定时器，故每次重绑）、verdict 清洗与分批合并（每行最后一条 / 500 上限 / 200·500 截断）、`node_update` → `review_timeout` 广播顺序——四条曾以注释散在工具体、定时器闭包、引擎别名与 dashboard 假设里的不变量收拢为私有实现（2026-08-29 架构评审候选 #1） | 176 |
 | `path-conventions` | `SOURCE_EXTENSIONS` / `LANGUAGE_BY_EXTENSION` / `EXCLUDED_DIRECTORIES` | 约定常量单一事实源（曾有四份扩展名副本、三份排除集） | 22 |
-| `index.ts` | CLI 参数（缺 `--root` 回退 cwd；`--open` / `--no-open`）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深；MCP 传输先于基线扫描启动（插件模式握手不能等扫描），基线状态经 `isBaselineDone` deps 供给闸门与 scanning 注记；**同仓库去重**（探测首选端口持有者的 `/api/info` rootPath → `shouldAutoOpen` 决定是否弹页；同根 secondary 经 `makeForwarder` 把工具事件 POST 到主实例 `/internal/broadcast`） | 181 |
+| `index.ts` | CLI 参数（缺 `--root` 回退 cwd；`--open` / `--no-open`）+ 进程装配 + 关停顺序（stdin 关 → stop watcher → closeAll → exit） | **组合根**——唯一知道所有模块的地方，刻意不深；MCP 传输先于基线扫描启动（插件模式握手不能等扫描），基线状态经 `isBaselineDone` deps 供给闸门与 scanning 注记；**弹窗策略**（启动绝不弹页，只 armed：首次活动——本进程首个已知 `tools/call`（mcp.ts `onFirstToolCall`）或同根 relay 到达（http.ts `onRelayAccepted`）——才 `openBrowser`；**同仓库去重走端口带扫描** `findSameRootInstance`：bumped 实例从首选端口起逐个探测 `/api/info`（跳过自身端口、单探测 800ms / 总量 3s 有界），扫到同根即无头并经 `makeForwarder` 把工具事件 POST 到主实例 `/internal/broadcast`，`httpInfo` 为无头实例返回主实例 URL；抢到首选端口者恒为主实例、不做扫描也不降级（否则同根双启动会同归于静）；`shouldAutoOpen` 只是 armed 纯决策） | 253 |
 
 ### 共享
 
@@ -158,8 +158,8 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 | `typecheck.test.ts` | parseTscOutput / runTypecheck |
 | `mcp-tools.test.ts` | buildTools 直测（fake graph source + 注入 readSourceFile；错误文案按行为断言；checking 超时只留两枚工具级接线钉） |
 | `review-lifecycle.test.ts` | ReviewLifecycle interface（超时窗口 / update 重挂 / 身份令牌 / 事件顺序直测） |
-| `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟 |
-| `cross-session.e2e.test.ts` | 双实例同根 e2e：secondary 无头（去重日志）+ `module_activity` / `begin_review` 的 `node_update` 跨实例转发（spawn 套件之二） |
+| `mcp-stdio.test.ts` / `mcp-e2e.test.ts` | stdio transport 韧性 / 进程级握手冒烟；前者含 `onFirstToolCall` 触发纪律（首个已知 tools/call 一次，握手与未知工具不计） |
+| `cross-session.e2e.test.ts` | 双实例同根 e2e：启动静默 + 主实例 armed、secondary 无头（去重日志）、relay 到达触发主实例弹窗（env 抑制为日志可观察）+ `module_activity` / `begin_review` 的 `node_update` 跨实例转发；末段单实例首次 tools/call 弹窗（临时根隔离，spawn 套件之二） |
 | `open-browser.test.ts` / `internal-relay.test.ts` | `shouldAutoOpen` 全分支 / `/internal/broadcast` 白名单 + 回环 + 413 |
 | `http-security.test.ts` / `source-endpoint.test.ts` | startHttpServer / readSourceFile |
 | `graph-model.test.ts` | GraphModel 三种帧 fold + 邻接（浏览器唯一图状态） |

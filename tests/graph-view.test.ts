@@ -810,52 +810,25 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
   });
 });
 
-describe('四力滑杆 tuning channel (Code-review 2026-08-29)', () => {
+describe('固定布局力 (2026-08-30 用户裁定: 四力不可调,滑杆通道已拆除)', () => {
   const lastLayout = (): Record<string, unknown> =>
     h.layouts[h.layouts.length - 1] as Record<string, unknown>;
 
-  it('the first solve pins the THEME baseline (gravity/edgeElasticity included)', () => {
+  it('every solve pins the fixed THEME.fcose constants', () => {
     const { view } = mountView();
     view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
+    view.resetLayout();
     expect(lastLayout()).toEqual(
       expect.objectContaining({
         name: 'fcose',
-        gravity: 0.25,
-        nodeRepulsion: 10500,
+        gravity: 0.32,
+        nodeRepulsion: 13500,
         edgeElasticity: 0.45,
         idealEdgeLength: 78,
         nodeSeparation: 120,
         randomize: false
       })
     );
-  });
-
-  it('setLayoutTuning overrides the four forces and re-solves', () => {
-    const { view } = mountView();
-    view.setSnapshot(snapshotWith([node('a.ts')]));
-    const solves = h.layouts.length;
-
-    view.setLayoutTuning({ gravity: 0.5, nodeRepulsion: 20000, edgeElasticity: 0.8, idealEdgeLength: 120 });
-
-    expect(h.layouts.length).toBe(solves + 1); // user-initiated re-solve happened
-    expect(lastLayout()).toEqual(
-      expect.objectContaining({
-        gravity: 0.5,
-        nodeRepulsion: 20000,
-        edgeElasticity: 0.8,
-        idealEdgeLength: 120,
-        // Pinned options survive the override.
-        nodeSeparation: 120,
-        randomize: false
-      })
-    );
-  });
-
-  it('tuning survives a re-render (the override layer is view state)', () => {
-    const { view } = mountView();
-    view.setLayoutTuning({ gravity: 0.9, nodeRepulsion: 30000, edgeElasticity: 0.6, idealEdgeLength: 100 });
-    view.setSnapshot(snapshotWith([node('a.ts')]));
-    expect(lastLayout()).toEqual(expect.objectContaining({ gravity: 0.9, nodeRepulsion: 30000 }));
   });
 });
 

@@ -47,6 +47,8 @@ export function createLegend(container: HTMLElement, hooks: LegendHooks): Legend
       row.dataset.state = state;
       row.setAttribute('role', 'button');
       row.tabIndex = 0;
+      // 行级状态色:选项卡的底色、描边、右侧圆点都引用它(见 styles.css .legend-row[data-state])
+      row.style.setProperty('--state', stateColor(state));
 
       const swatch = document.createElement('span');
       swatch.className = 'dot';
@@ -57,9 +59,11 @@ export function createLegend(container: HTMLElement, hooks: LegendHooks): Legend
       const cnt = document.createElement('span');
       cnt.className = 'cnt';
       cnt.textContent = String(counts.states[state]);
+      const indicator = document.createElement('span');
+      indicator.className = 'indicator';
 
       activate(row, () => hooks.onToggleState(state));
-      row.append(swatch, label, cnt);
+      row.append(swatch, label, cnt, indicator);
       container.append(row);
     }
 

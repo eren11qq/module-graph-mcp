@@ -13,29 +13,31 @@ export interface AutoOpenDecision {
   /** True when the preferred port was busy and this instance bound a later one. */
   portBumped: boolean;
   /**
-   * rootPath reported by whoever owns the preferred port; null when the probe
-   * failed or the port is held by something that is not a module-graph server.
+   * True when the port-band walk found another live instance watching the
+   * SAME root — this instance is that project's secondary and must stay
+   * headless. `false` also covers the preferred-port holder: it is the root's
+   * primary by construction (a same-root instance can only ever sit on a
+   * later, bumped port).
    */
-  primaryRoot: string | null;
-  /** This instance's realpath'd watched root. */
-  rootPath: string;
+  sameRootHolder: boolean;
 }
 
 /**
  * Auto-open policy (code-review 2026-08-29): an MCP client spawns one server
- * process per session, so opening unconditionally produced one browser tab
- * (plus a console flash on Windows) per new session. Now only the FIRST
- * instance of a given root opens the dashboard; a second session on the same
- * root stays headless and forwards its activity to the first instance's page
- * instead. `--open` overrides the dedup, `--no-open` overrides everything.
+ * process per session, and a desktop client spawns one per project at app
+ * open — popping at startup produced N tabs before the user touched anything.
+ * So the decision computed here is only ARMED at startup; index.ts executes
+ * it on the first real session activity (first tool call, or first relayed
+ * event from a same-root secondary). Within one root exactly one instance
+ * arms: the one that owns its preferred port, or the bumped instance when the
+ * band scan finds no same-root holder. `--open` overrides the dedup,
+ * `--no-open` overrides everything.
  */
 export function shouldAutoOpen(d: AutoOpenDecision): boolean {
   if (d.noOpen) return false;
   if (d.forceOpen) return true;
   if (!d.portBumped) return true;
-  // A bumped port with no identifiable same-root primary means the port is
-  // free real estate (foreign process or probe failure) — open our own tab.
-  return d.primaryRoot !== d.rootPath;
+  return !d.sameRootHolder;
 }
 
 /**
