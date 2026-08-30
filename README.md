@@ -39,6 +39,7 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 | `--port <n>` | dashboard 端口（默认 24282；被占用自动递增） |
 | `--open` | 启动时立即弹页（无视同仓库去重；不带它则按上面的弹窗策略等首次活动） |
 | `--no-open` | 从不自动打开浏览器（CI / 测试环境用；优先级高于 `--open`） |
+| `--version` | 打印版本号后退出（不启动服务） |
 | `MODULE_GRAPH_NO_OPEN=1` | 同 `--no-open` 的环境变量形式 |
 
 所有人类可读日志走 **stderr**——stdout 属于 MCP JSON-RPC 协议通道。服务只绑定 `127.0.0.1`，是本地单机工具。

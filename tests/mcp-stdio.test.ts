@@ -9,8 +9,8 @@ import { McpStdioServer, type GraphSnapshotSource } from '../src/server/mcp.js';
  *    decoding (StringDecoder) instead of corrupting into U+FFFD garbage;
  *  - prototype keys (__proto__ / constructor) as tool names must answer
  *    Unknown tool, not Internal error;
- *  - unbounded garbage without a newline must reject serve() instead of
- *    buffering forever.
+ *  - oversized lines and newline-less floods are dropped with at most one
+ *    -32600 per episode — the process survives and keeps answering (G4).
  */
 
 function startServer(): {
@@ -84,11 +84,41 @@ describe('MCP stdio robustness (P1-2)', () => {
     }
   });
 
-  it('rejects serve() when buffered input grows past the 10 MB stdio cap', async () => {
+  it('survives an over-limit line: one -32600, then keeps answering', async () => {
+    const { input, replies, serving } = startServer();
+
+    input.emit('data', Buffer.concat([Buffer.alloc(11 * 1024 * 1024, 0x61), Buffer.from('\n')]));
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`));
+
+    await waitForReplies(replies, 2);
+    expect(replies[0]!.id).toBeNull();
+    expect(replies[0]!.error).toMatchObject({ code: -32600 });
+    expect(replies[1]!.id).toBe(1);
+    expect(replies[1]!.result).toEqual({});
+    expect(replies).toHaveLength(2);
+    void serving;
+  });
+
+  it('survives a newline-less flood and resumes once a newline arrives', async () => {
+    const { input, replies, serving } = startServer();
+
+    const flood = Buffer.alloc(2 * 1024 * 1024, 0x61);
+    for (let i = 0; i < 6; i++) input.emit('data', flood);
+    input.emit('data', Buffer.from('end of flood\n'));
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`));
+
+    await waitForReplies(replies, 2);
+    expect(replies[0]!.error).toMatchObject({ code: -32600 });
+    expect(replies[1]!.result).toEqual({});
+    expect(replies).toHaveLength(2);
+    void serving;
+  });
+
+  it('resolves serve() cleanly on stdin EOF', async () => {
     const { input, serving } = startServer();
 
-    input.emit('data', Buffer.alloc(10 * 1024 * 1024 + 1, 0x61));
-    await expect(serving).rejects.toThrow(/stdio limit/);
+    input.emit('end');
+    await expect(serving).resolves.toBeUndefined();
   });
 
   it('holds content-dependent calls until the baseline lands; self-describing ones answer immediately', async () => {
@@ -189,6 +219,69 @@ describe('onFirstToolCall (popup policy)', () => {
     expect(byId.get(4)!.result).toBeDefined();
     expect(byId.get(5)!.result).toBeDefined();
     expect(callsRef.calls).toBe(1);
+    void serving;
+  });
+});
+
+/**
+ * Protocol MUSTs (G3): the initialize reply must never echo a protocol
+ * version the server cannot speak, and an unparseable line gets exactly one
+ * -32700 with id null instead of silence.
+ */
+describe('stdio protocol conformance (G3)', () => {
+  it('answers unsupported / missing protocol versions with its own, and echoes a supported one', async () => {
+    const { input, replies, serving } = startServer();
+
+    const init = (id: number, protocolVersion?: string): void => {
+      const params = protocolVersion === undefined ? {} : { protocolVersion };
+      input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'initialize', params })}\n`));
+    };
+    init(1, '1999-01-01');
+    init(2, '2025-06-18');
+    init(3);
+
+    await waitForReplies(replies, 3);
+    expect(replies[0]!.result.protocolVersion).toBe('2025-06-18');
+    expect(replies[1]!.result.protocolVersion).toBe('2025-06-18');
+    expect(replies[2]!.result.protocolVersion).toBe('2025-06-18');
+    void serving;
+  });
+
+  it('treats null / non-string protocolVersion and a missing params object as unspecified', async () => {
+    const { input, replies, serving } = startServer();
+
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: null } })}\n`));
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: 12345 } })}\n`));
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'initialize' })}\n`));
+
+    await waitForReplies(replies, 3);
+    expect(replies[0]!.result.protocolVersion).toBe('2025-06-18');
+    expect(replies[1]!.result.protocolVersion).toBe('2025-06-18');
+    expect(replies[2]!.result.protocolVersion).toBe('2025-06-18');
+    void serving;
+  });
+
+  it('replies with exactly one -32700 parse error (id null) for an unparseable line', async () => {
+    const { input, replies, serving } = startServer();
+
+    input.emit('data', Buffer.from('this is not json\n'));
+
+    await waitForReplies(replies, 1);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ jsonrpc: '2.0', id: null, error: { code: -32700 } });
+    void serving;
+  });
+
+  it('survives a bare JSON null line (valid JSON, not a request) and keeps serving', async () => {
+    const { input, replies, serving } = startServer();
+
+    input.emit('data', Buffer.from('null\n'));
+    input.emit('data', Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`));
+
+    await waitForReplies(replies, 2);
+    expect(replies[0]!.id).toBeNull();
+    expect(replies[0]!.error).toMatchObject({ code: -32600 });
+    expect(replies[1]!.result).toEqual({});
     void serving;
   });
 });

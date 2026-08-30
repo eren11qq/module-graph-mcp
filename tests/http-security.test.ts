@@ -68,6 +68,17 @@ function wsProbe(socketUrl: string, headers: Record<string, string>): Promise<'o
   });
 }
 
+function post(path: string, headers: Record<string, string>, body: string): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const req = request(`${url}${path}`, { method: 'POST', headers }, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 beforeAll(async () => {
   await start();
 });
@@ -113,6 +124,13 @@ describe('http security envelope (P0-1)', () => {
 
   it('accepts WebSocket upgrades with the dashboard origin', async () => {
     await expect(wsProbe(wsUrl, { origin: url })).resolves.toBe('open');
+  });
+
+  it('rejects cross-site POSTs to /internal/broadcast by Origin (drive-by relay)', async () => {
+    const body = JSON.stringify({ type: 'scan_error', message: 'forged' });
+    expect((await post('/internal/broadcast', { origin: 'http://evil.example' }, body)).status).toBe(403);
+    // The dashboard's own page (and the Origin-less Node-fetch relay) still gets through.
+    expect((await post('/internal/broadcast', { origin: url }, body)).status).toBe(204);
   });
 
   it('sends nosniff on API and static responses', async () => {

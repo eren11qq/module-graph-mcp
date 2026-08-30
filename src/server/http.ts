@@ -30,6 +30,17 @@ function hostAllowed(host: string | undefined, port: number): boolean {
   return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
 }
 
+/**
+ * Cross-site guard shared by the WS handshake and /internal/broadcast: a
+ * browser always attaches Origin, so a foreign one is a drive-by page; a
+ * missing Origin is a non-browser client (the Node-fetch relay), which
+ * cannot be a cross-site victim.
+ */
+function originAllowed(origin: string | undefined, port: number): boolean {
+  if (origin === undefined || origin === '') return true;
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+}
+
 export interface HttpInfo {
   rootPath: string;
   port: number;
@@ -97,14 +108,9 @@ export function startHttpServer(opts: {
 
     // Websocket endpoint shares the same port (plan §架构). Upgrades are limited
     // to /ws; browsers must present the dashboard's own origin (CSWSH guard).
-    // A missing Origin means a non-browser client, which cannot be a CSWSH victim.
     const wss = new WebSocketServer({
       noServer: true,
-      verifyClient: (info: { req: IncomingMessage }) => {
-        const origin = info.req.headers.origin;
-        if (origin === undefined || origin === '') return true;
-        return origin === `http://127.0.0.1:${attempt}` || origin === `http://localhost:${attempt}`;
-      }
+      verifyClient: (info: { req: IncomingMessage }) => originAllowed(info.req.headers.origin, attempt)
     });
     const hub = new WsHub(wss);
     app.on('upgrade', (req, socket, head) => {
@@ -162,7 +168,7 @@ function handle(
   // instance posts its tool-driven events here so the one dashboard tab the
   // user keeps open shows every session's AI activity.
   if (pathname === '/internal/broadcast') {
-    serveInternalBroadcast(req, resp, broadcast, onRelayAccepted);
+    serveInternalBroadcast(req, resp, broadcast, boundPort, onRelayAccepted);
     return;
   }
 
@@ -294,6 +300,7 @@ function serveInternalBroadcast(
   req: IncomingMessage,
   resp: ServerResponse,
   broadcast: (event: GraphEvent) => void,
+  boundPort: () => number,
   onRelayAccepted?: () => void
 ): void {
   if (req.method !== 'POST') {
@@ -306,6 +313,14 @@ function serveInternalBroadcast(
   if (!isLoopbackPeer(req.socket.remoteAddress)) {
     sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
     resp.end('forbidden');
+    return;
+  }
+  // A cross-site page can smuggle a text/plain POST past CORS (the request is
+  // sent even though its response is unreadable); Origin pins it to the
+  // dashboard's own page — same guard as the WS handshake (review 2026-08-30).
+  if (!originAllowed(req.headers.origin, boundPort())) {
+    sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
+    resp.end('forbidden origin');
     return;
   }
 

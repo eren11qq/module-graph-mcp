@@ -7,7 +7,7 @@
  *
  * IMPORTANT: stdout belongs to MCP. Every human-readable log goes to stderr.
  */
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncrementalGraph } from './incremental-graph.js';
@@ -15,9 +15,9 @@ import { McpStdioServer } from './mcp.js';
 import { startHttpServer } from './http.js';
 import { openBrowser, shouldAutoOpen } from './open-browser.js';
 import { startLiveReload } from './live-reload.js';
+import { VERSION } from './version.js';
 import type { GraphEvent } from '../shared/types.js';
 
-const VERSION = '0.1.0';
 const DEFAULT_PORT = 24282;
 /** How long ONE band-walk probe of a /api/info endpoint may take. */
 const PROBE_TIMEOUT_MS = 800;
@@ -47,8 +47,14 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       args.noOpen = true;
     } else if (a === '--open') {
       args.open = true;
+    } else if (a === '--version') {
+      // No MCP session is up yet, so writing to stdout is safe here.
+      // writeSync: stdout is async on macOS pipes, so process.exit right
+      // after process.stdout.write can truncate the line mid-flight.
+      writeSync(1, `${VERSION}\n`);
+      process.exit(0);
     } else {
-      fail(`Unknown argument: ${a}\nUsage: module-graph [--root <dir>] [--port <n>] [--open | --no-open]`);
+      fail(`Unknown argument: ${a}\nUsage: module-graph [--root <dir>] [--port <n>] [--open | --no-open] [--version]`);
     }
   }
   return args;
@@ -183,8 +189,9 @@ async function main(): Promise<void> {
   let relayTargetPort: number | null = null;
   let relayForward: ((event: GraphEvent) => void) | undefined;
 
-  if (open) {
-    // --open pops right now, whatever the dedup decides later.
+  if (open && !noOpen) {
+    // --open pops right now (--no-open still wins, as in shouldAutoOpen),
+    // whatever the dedup decides later.
     const openMsg = openBrowser(url);
     if (openMsg) log(openMsg);
   } else if (noOpen) {

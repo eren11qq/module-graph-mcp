@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { basename } from 'node:path';
 import { getFreePort } from './helpers/net.js';
 
@@ -137,5 +138,23 @@ describe('argument validation (Ticket 01)', () => {
     const code: number = await new Promise((resolve) => child.on('exit', resolve));
     expect(code).not.toBe(0);
     expect(stderr).toContain('--port must be an integer');
+  });
+});
+
+describe('--version (G5: single version source)', () => {
+  it('prints the package.json version to stdout and exits 0', async () => {
+    const require = createRequire(import.meta.url);
+    const { version } = require('../package.json') as { version: string };
+
+    const child = spawn(process.execPath, ['dist/server/index.js', '--version'], {
+      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' }
+    });
+    let stdout = '';
+    child.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString('utf8');
+    });
+    const code: number = await new Promise((resolve) => child.on('exit', resolve));
+    expect(code).toBe(0);
+    expect(stdout).toBe(`${version}\n`);
   });
 });

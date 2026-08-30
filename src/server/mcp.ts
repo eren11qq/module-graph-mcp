@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
 import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
+import { VERSION } from './version.js';
 import type { AiReview, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
 
 /**
@@ -27,12 +28,19 @@ export interface JsonRpcResponse {
 
 const PROTOCOL_VERSION = '2025-06-18';
 
+/**
+ * Only versions this server actually implements. A client asking for an
+ * unsupported version gets PROTOCOL_VERSION back — never an echo of a
+ * version we cannot speak.
+ */
+const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [PROTOCOL_VERSION];
+
 /** MCP stdio transport cap: messages larger than this are protocol garbage. */
 const MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
 
 const SERVER_INFO = {
   name: 'module-graph-mcp',
-  version: '0.1.0'
+  version: VERSION
 };
 
 interface ToolResult {
@@ -573,32 +581,58 @@ export class McpStdioServer {
       // delivers them split across chunks (plain toString() would corrupt
       // them into replacement characters and the JSON line would be lost).
       const decoder = new StringDecoder('utf8');
+      // Oversized input must never kill the process. An over-limit line (or
+      // newline-less flood) is dropped with at most ONE -32600 per episode;
+      // the episode ends when a healthy line goes through again.
+      let skipping = false;
+      let overLimitReplied = false;
+      const overLimit = (bytes: number): void => {
+        if (overLimitReplied) return;
+        overLimitReplied = true;
+        const mb = Math.floor(MAX_MESSAGE_BYTES / (1024 * 1024));
+        this.logger(`mcp: dropped stdio message of ${bytes} bytes (limit ${mb} MB)`);
+        this.errorReply(
+          null,
+          -32600,
+          `stdio message of ${bytes} bytes exceeds the ${mb} MB stdio limit — line dropped`
+        );
+      };
       const onData = (chunk: Buffer | string): void => {
         this.buffer += decoder.write(chunk);
+        if (skipping) {
+          const end = this.buffer.indexOf('\n');
+          if (end === -1) {
+            this.buffer = '';
+            return;
+          }
+          this.buffer = this.buffer.slice(end + 1);
+          skipping = false;
+        }
         let nl: number;
         while ((nl = this.buffer.indexOf('\n')) !== -1) {
           const line = this.buffer.slice(0, nl).trim();
           this.buffer = this.buffer.slice(nl + 1);
           if (line.length === 0) continue;
-          if (line.length > MAX_MESSAGE_BYTES) {
-            fail(`message of ${line.length} bytes exceeds the ${MAX_MESSAGE_BYTES}-byte stdio limit`);
-            return;
+          const bytes = Buffer.byteLength(line, 'utf8');
+          if (bytes > MAX_MESSAGE_BYTES) {
+            overLimit(bytes);
+            continue;
           }
+          overLimitReplied = false;
           this.handleLine(line);
         }
         // No newline in sight and the buffer keeps growing: garbage stream.
-        if (this.buffer.length > MAX_MESSAGE_BYTES) {
-          fail(`buffered input exceeds the ${MAX_MESSAGE_BYTES}-byte stdio limit without a newline`);
+        // Drop it and skip input until the next newline so the buffer cannot
+        // re-bloat.
+        const buffered = Buffer.byteLength(this.buffer, 'utf8');
+        if (buffered > MAX_MESSAGE_BYTES) {
+          overLimit(buffered);
+          this.buffer = '';
+          skipping = true;
         }
       };
       const onEnd = (): void => resolve();
       const onError = (err: Error): void => reject(err);
-      const fail = (message: string): void => {
-        this.input.off('data', onData);
-        this.input.off('end', onEnd);
-        this.input.off('error', onError);
-        reject(new Error(`mcp: ${message} — closing stdio transport`));
-      };
       this.input.on('data', onData);
       this.input.on('end', onEnd);
       this.input.on('error', onError);
@@ -611,6 +645,14 @@ export class McpStdioServer {
       msg = JSON.parse(line) as JsonRpcRequest;
     } catch {
       this.logger(`mcp: dropping unparseable line (${line.slice(0, 80)})`);
+      this.errorReply(null, -32700, 'Parse error: invalid JSON');
+      return;
+    }
+    // JSON.parse("null") yields null, and reading .id off it would throw
+    // inside this data handler — an uncaught kill. Reply as invalid request.
+    if (msg === null || typeof msg !== 'object') {
+      this.logger(`mcp: dropping non-object JSON line (${line.slice(0, 80)})`);
+      this.errorReply(null, -32600, 'Invalid Request: expected a JSON-RPC 2.0 message object');
       return;
     }
 
@@ -618,17 +660,19 @@ export class McpStdioServer {
 
     try {
       switch (msg.method) {
-        case 'initialize':
+        case 'initialize': {
           if (!hasId) return;
+          const requested = msg.params?.protocolVersion;
           this.reply(msg.id!, {
             protocolVersion:
-              typeof msg.params?.protocolVersion === 'string'
-                ? (msg.params.protocolVersion as string)
+              typeof requested === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+                ? requested
                 : PROTOCOL_VERSION,
             capabilities: { tools: {} },
             serverInfo: SERVER_INFO
           });
           return;
+        }
         case 'notifications/initialized':
           return; // notification: no reply
         case 'ping':
@@ -717,7 +761,7 @@ export class McpStdioServer {
     this.write({ jsonrpc: '2.0', id, result });
   }
 
-  private errorReply(id: string | number, code: number, message: string): void {
+  private errorReply(id: string | number | null, code: number, message: string): void {
     this.write({ jsonrpc: '2.0', id, error: { code, message } });
   }
 
