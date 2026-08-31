@@ -3,6 +3,8 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { readSourceFile } from './source-reader.js';
+import { buildHealthReport } from './health-report.js';
+import { renderReportPage } from './report-page.js';
 import type { GraphEvent, GraphSnapshot } from '../shared/types.js';
 
 const MIME: Record<string, string> = {
@@ -91,11 +93,11 @@ export function startHttpServer(opts: {
   /** Ticket 09: receives one line per denied /api/source request (security log). */
   onSecurityEvent?: (msg: string) => void;
   /**
-   * Popup policy (code-review 2026-08-29): invoked after a relayed event from
-   * a same-root secondary is accepted — the armed primary counts the relay as
-   * this project's first activity and pops its dashboard tab.
+   * Popup policy (file-granular): invoked after a relayed event from a
+   * same-root secondary is accepted — the armed primary pops for the file
+   * the event names (at most once per file).
    */
-  onRelayAccepted?: () => void;
+  onRelayAccepted?: (event: GraphEvent) => void;
 }): Promise<{ url: string; port: number; server: ReturnType<typeof createServer>; hub: WsHub }> {
   const { preferredPort, maxTries = 20, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted } = opts;
 
@@ -152,7 +154,7 @@ function handle(
   info: HttpInfo,
   getSnapshot: (() => GraphSnapshot) | undefined,
   onSecurityEvent: ((msg: string) => void) | undefined,
-  onRelayAccepted: (() => void) | undefined,
+  onRelayAccepted: ((event: GraphEvent) => void) | undefined,
   boundPort: () => number,
   broadcast: (event: GraphEvent) => void
 ): void {
@@ -192,6 +194,23 @@ function handle(
   if (pathname === '/api/source') {
     const requested = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('path') ?? '';
     serveSource(requested, resp, info, onSecurityEvent);
+    return;
+  }
+
+  // Trust-loop roadmap PR-4: the acceptance report page. Same guards as the
+  // dashboard shell (Host whitelist above, CSP + nosniff on the head), same
+  // 503 degradation as /api/graph; deliberately NOT part of the relay surface
+  // (isForwardableEvent whitelist untouched) — it is a read-only HTML view.
+  if (pathname === '/api/report') {
+    if (!getSnapshot) {
+      sendHead(resp, 503, { 'content-type': 'application/json; charset=utf-8' });
+      resp.end(JSON.stringify({ error: 'graph not ready' }));
+      return;
+    }
+    const focus = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('focus');
+    const html = renderReportPage(buildHealthReport(getSnapshot()), focus !== null && focus.length > 0 ? focus : null);
+    sendHead(resp, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': CSP });
+    resp.end(html);
     return;
   }
 
@@ -301,7 +320,7 @@ function serveInternalBroadcast(
   resp: ServerResponse,
   broadcast: (event: GraphEvent) => void,
   boundPort: () => number,
-  onRelayAccepted?: () => void
+  onRelayAccepted?: (event: GraphEvent) => void
 ): void {
   if (req.method !== 'POST') {
     sendHead(resp, 405, { 'content-type': 'text/plain; charset=utf-8' });
@@ -356,7 +375,7 @@ function serveInternalBroadcast(
       return;
     }
     broadcast(parsed);
-    onRelayAccepted?.();
+    onRelayAccepted?.(parsed);
     sendHead(resp, 204);
     resp.end();
   });

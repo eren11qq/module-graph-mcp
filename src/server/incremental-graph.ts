@@ -549,6 +549,16 @@ export class IncrementalGraph {
     return [...this.nodes.keys()].sort();
   }
 
+  /**
+   * Root-relative id for a watcher-reported path (absolute or relative), or
+   * null when the path lives outside the watched root. The engine stays the
+   * single owner of path normalisation — this only exposes the private
+   * toRel so the recent-changes record (live-reload) uses identical ids.
+   */
+  toRelId(path: string): string | null {
+    return this.toRel(path);
+  }
+
   private resolveAllEdges(): Map<string, Edge> {
     const edges = new Map<string, Edge>();
     for (const [from, rawSpecifiers] of this.specifiers) {

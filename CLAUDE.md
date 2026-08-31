@@ -2,7 +2,7 @@
 
 module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard + stdio MCP server**：浏览器实时渲染模块依赖图（球色 = 测试状态、红环 = 类型错误、评审环 = AI 检查结果），同一进程通过 stdio 提供 MCP 工具。
 
-## MCP 工具速览（9 个）
+## MCP 工具速览（10 个）
 
 | 工具 | 用途 |
 |---|---|
@@ -10,8 +10,9 @@ module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard +
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
 | `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（读取会让该球短暂亮起） |
 | `list_untested` | 所有「未测」模块 id + 计数 |
+| `get_health_report` | 确定性健康报告：固定整数权重表打分（高中心度=3、未测=2、类型错误=2、在环上=1、评审error=2，同分按 id 字典序），items 风险降序 + 中文简报 top 5 |
 | `report_note` | 给模块写备注（≤2000 字符；空串清除） |
-| `begin_review` | 标记模块进入 AI 检查（球开始脉冲） |
+| `begin_review` | 标记模块进入 AI 检查（球开始脉冲）；响应内嵌**评审 playbook**（三色 verdicts 定义 / update 分批节奏 / end 配对纪律，关键节被探针逐字断言） |
 | `update_review` | 检查进行中推送部分 verdicts（dashboard 逐行上屏；同样新条覆盖旧行） |
 | `end_review` | 提交逐行 verdicts，结束检查（三色上屏 + 评审环） |
 | `report_test_run` | 上报刚跑完的测试结果 `{ failed: boolean }` |
@@ -59,6 +60,7 @@ user's dashboard:
 ## 其它约定
 
 - 人类可读日志走 stderr，stdout 属于 MCP JSON-RPC 通道。
-- 弹窗策略：server 启动**不弹浏览器**；某项目的会话首次调用 MCP 工具（通常是每会话第一调的 `get_dashboard_info`）或同根 relay 事件到达时才弹。同一仓库跨会话共用一个窗口：副实例无头转发，其 `get_dashboard_info` 直接返回主实例链接。
+- 弹窗策略：server 启动**不弹浏览器**；agent 通过面向文件的 MCP 工具（`get_module_details` / `begin_review` / `update_review` / `end_review` / `report_note`）打开某文件、或同根 relay 事件指名该文件时才弹，**同一文件只弹一次**，没打开过的文件绝不弹（`get_dashboard_info` / `get_module_graph` 等无文件工具不触发）。同一仓库跨会话共用一个窗口：副实例无头转发，其 `get_dashboard_info` 直接返回主实例链接。
 - 构建 / 测试：`npm run build`（先 build 再 `npm test`，e2e 会 spawn dist 产物）、`npm test`。
+- evals 基准：`npm run evals`（同样先 build）——逐任务冷启动探针，不变量断言 + maxMs/maxBytes 硬门槛（响应体积超限即红，ADR 0001）；新增/修改 MCP 工具必须同步更新 `src/evals/tasks/` 的对应探针任务，注册表 ⇄ 磁盘双向对账（tests/evals-structure.test.ts）。
 - 设计文档：`docs/MODULE-DESIGN.md`（Standards 轴度量基准，接口表以它为准）；工单在 `.scratch/module-graph-mcp/issues/`。

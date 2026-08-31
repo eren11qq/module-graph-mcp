@@ -71,6 +71,24 @@ export interface GraphSnapshot {
   edges: Edge[];
 }
 
+/**
+ * GitNexus port: per-module graph statistics, part of the get_module_details
+ * RESPONSE ENVELOPE only. Deliberately NOT fields of ModuleNode — snapshot
+ * nodes are live objects shared with the engine, so derived stats pinned onto
+ * them would go stale the moment the graph moves. The details tool derives
+ * these fresh per call (memoized by generatedAt in src/server/impact.ts).
+ */
+export interface ModuleContextStats {
+  /** Importers (edges pointing at this module). */
+  inDegree: number;
+  /** Imports (edges leaving this module). */
+  outDegree: number;
+  /** true when the module sits on a dependency cycle. */
+  inCycle: boolean;
+  /** (in + out) / (2·(n−1)); 0 for degenerate graphs. */
+  centrality: number;
+}
+
 /** Wire messages pushed over /ws (see plan §WS protocol) */
 export type GraphEvent =
   | { type: 'snapshot'; snapshot: GraphSnapshot }

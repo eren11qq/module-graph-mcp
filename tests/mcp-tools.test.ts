@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildTools, type GraphSnapshotSource } from '../src/server/mcp.js';
-import type { AiReview, ModuleNode } from '../src/shared/types.js';
+import { createRecentChanges } from '../src/server/recent-changes.js';
+import type { AiReview, Edge, ModuleNode } from '../src/shared/types.js';
 
 /**
  * The MCP tool seam tested directly: buildTools over a fake graph source and
@@ -78,12 +79,15 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the nine tools with their input schemas', () => {
+  it('exposes the twelve tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
       'begin_review',
       'end_review',
+      'get_change_impact',
       'get_dashboard_info',
+      'get_health_report',
+      'get_impact',
       'get_module_details',
       'get_module_graph',
       'list_untested',
@@ -99,6 +103,7 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(tools.report_test_run!.inputSchema.required).toEqual(['failed']);
     expect(tools.get_dashboard_info!.inputSchema.properties).toEqual({});
     expect(tools.list_untested!.inputSchema.properties).toEqual({});
+    expect(tools.get_health_report!.inputSchema.properties).toEqual({});
   });
 
   it('get_module_graph returns the full snapshot', () => {
@@ -551,5 +556,154 @@ describe('begin_review checking timeout — tool-level wiring pins', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitNexus port: blast radius + change evidence chain + details context.
+// Pure graph math lives in tests/impact.test.ts / tests/recent-changes.test.ts;
+// these pin the tool seam (argument handling, envelope shape, risk rollup).
+// ---------------------------------------------------------------------------
+
+describe('get_impact — blast radius before editing (GitNexus port)', () => {
+  it('walks both directions by default with depth grouping', () => {
+    const { tools } = build(); // index → core/app → utils/logger
+    const body = payload(tools.get_impact.execute({ path: 'core/app.ts' }));
+    expect(body).toMatchObject({ ok: true, startId: 'core/app.ts', direction: 'both', maxDepth: 3, affectedCount: 2 });
+    expect(body.affected.map((n: { depth: number; id: string }) => [n.depth, n.id])).toEqual([
+      [1, 'index.ts'],
+      [1, 'utils/logger.ts']
+    ]);
+    for (const entry of body.affected) {
+      expect(entry).toHaveProperty('path');
+      expect(entry).toHaveProperty('testState');
+      expect(entry).toHaveProperty('typeErrorCount');
+    }
+  });
+
+  it('honors direction=upstream and maxDepth=1 truncation', () => {
+    const { tools } = build();
+    const up = payload(tools.get_impact.execute({ path: 'core/app.ts', direction: 'upstream' }));
+    expect(up.affected.map((n: { id: string }) => n.id)).toEqual(['index.ts']);
+
+    const shallow = payload(tools.get_impact.execute({ path: 'index.ts', direction: 'downstream', maxDepth: 1 }));
+    expect(shallow.affected.map((n: { id: string }) => n.id)).toEqual(['core/app.ts']);
+  });
+
+  it('reuses the not-found error and rejects an off-vocabulary direction', () => {
+    const { tools } = build();
+    const missing = tools.get_impact.execute({ path: 'app.tsx' });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('did you mean: core/app.ts');
+
+    const badDirection = tools.get_impact.execute({ path: 'index.ts', direction: 'sideways' });
+    expect(badDirection.isError).toBe(true);
+    expect(badDirection.content[0].text).toContain('direction must be one of');
+  });
+
+  it('an illegal maxDepth falls back to the default instead of erroring', () => {
+    const { tools } = build();
+    const body = payload(tools.get_impact.execute({ path: 'index.ts', maxDepth: 'nope' }));
+    expect(body.maxDepth).toBe(3);
+    expect(body.isError).toBeUndefined();
+  });
+});
+
+describe('get_change_impact — change evidence chain (GitNexus port)', () => {
+  function nodeWith(id: string, over: Partial<ModuleNode> = {}): ModuleNode {
+    return { id, path: id, language: 'ts', testState: 'untested', coveredBy: [], typeErrors: [], ...over };
+  }
+
+  function buildOver(nodes: ModuleNode[], edges: Edge[]) {
+    const graph: GraphSnapshotSource = {
+      snapshot: () => ({ rootPath: '/proj', generatedAt: 7, nodes, edges }),
+      setNote: () => false,
+      setReview: () => false
+    };
+    const recent = createRecentChanges();
+    return { recent, tools: buildTools(graph, { recentChanges: recent }) };
+  }
+
+  it('maps recorded ids to inGraph flags and scores only in-graph changes', () => {
+    const { recent, tools } = buildOver([nodeWith('core/app.ts')], []);
+    recent.record(['core/app.ts', 'gone.ts']);
+    const body = payload(tools.get_change_impact.execute({}));
+    expect(body.changes.map((c: { id: string; inGraph: boolean }) => [c.id, c.inGraph])).toEqual([
+      ['core/app.ts', true],
+      ['gone.ts', false]
+    ]);
+    // In-graph but edgeless: scored with an empty blast radius, still low.
+    expect(body.impacts).toEqual([
+      { changeId: 'core/app.ts', affectedCount: 0, affected: [], riskLevel: 'low', riskReasons: [] }
+    ]);
+    expect(body.overallRisk).toBe('low');
+    expect(typeof body.heuristics).toBe('string');
+    expect(body.heuristics.length).toBeGreaterThan(0);
+  });
+
+  it('low/medium/high roll up in order: size threshold and cycle dominance', () => {
+    // low: a small linear chain around the changed file.
+    const low = buildOver(
+      [nodeWith('hub.ts'), nodeWith('leaf1.ts'), nodeWith('leaf2.ts')],
+      [
+        { from: 'leaf1.ts', to: 'hub.ts' },
+        { from: 'hub.ts', to: 'leaf2.ts' }
+      ]
+    );
+    low.recent.record(['hub.ts']);
+    const lowBody = payload(low.tools.get_change_impact.execute({}));
+    expect(lowBody.impacts[0]).toMatchObject({ changeId: 'hub.ts', riskLevel: 'low', riskReasons: [] });
+    expect(lowBody.overallRisk).toBe('low');
+
+    // medium: > 10 affected nodes, none of them on a cycle or high-centrality.
+    // 16 nodes → the top-20% cut takes 4 slots; four isolated hub nodes in a
+    // private cycle eat every centrality slot, keeping the affected leaves out.
+    const kids = Array.from({ length: 11 }, (_, i) => nodeWith(`kid${i}.ts`));
+    const hubs = ['h1.ts', 'h2.ts', 'h3.ts', 'h4.ts'].map((id) => nodeWith(id));
+    const hubEdges: Edge[] = [];
+    for (const a of hubs) for (const b of hubs) if (a.id !== b.id) hubEdges.push({ from: a.id, to: b.id });
+    const medium = buildOver([nodeWith('root.ts'), ...kids, ...hubs], [
+      ...kids.map((k) => ({ from: 'root.ts', to: k.id })),
+      ...hubEdges
+    ]);
+    medium.recent.record(['root.ts']);
+    const mediumBody = payload(medium.tools.get_change_impact.execute({}));
+    expect(mediumBody.impacts[0]!.riskLevel).toBe('medium');
+    expect(mediumBody.impacts[0]!.riskReasons[0]).toContain('11');
+    expect(mediumBody.overallRisk).toBe('medium');
+
+    // high: the changed file reaches a node on a dependency cycle.
+    const high = buildOver(
+      [nodeWith('c1.ts'), nodeWith('c2.ts')],
+      [
+        { from: 'c1.ts', to: 'c2.ts' },
+        { from: 'c2.ts', to: 'c1.ts' }
+      ]
+    );
+    high.recent.record(['c1.ts']);
+    const highBody = payload(high.tools.get_change_impact.execute({}));
+    expect(highBody.impacts[0]!.riskLevel).toBe('high');
+    expect(highBody.impacts[0]!.riskReasons.join('\n')).toContain('依赖环上');
+    expect(highBody.overallRisk).toBe('high');
+  });
+
+  it('tolerates a deployment without the recent-changes pipeline', () => {
+    const graph = fakeGraph();
+    const tools = buildTools(graph, {});
+    const body = payload(tools.get_change_impact.execute({}));
+    expect(body).toMatchObject({ changes: [], impacts: [], overallRisk: 'low' });
+    expect(body.note).toContain('no recent-changes pipeline');
+  });
+});
+
+describe('get_module_details context stats (GitNexus port)', () => {
+  it('derives degree/cycle/centrality fresh per call from the envelope', () => {
+    const { tools } = build();
+    // Fixture: index → core/app → utils/logger, 3 nodes, 2 edges.
+    const app = payload(tools.get_module_details.execute({ path: 'core/app.ts' }));
+    expect(app.context).toEqual({ inDegree: 1, outDegree: 1, inCycle: false, centrality: 0.5 });
+
+    const index = payload(tools.get_module_details.execute({ path: 'index.ts' }));
+    expect(index.context).toEqual({ inDegree: 0, outDegree: 1, inCycle: false, centrality: 0.25 });
   });
 });

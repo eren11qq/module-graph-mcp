@@ -1,0 +1,10 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "mcp": {
+    "module-graph": {
+      "type": "local",
+      "command": ["node", "/home/dqq/module-graph-mcp/dist/server/index.js", "--root", "/home/dqq/module-graph-mcp"],
+      "enabled": true
+    }
+  }
+}

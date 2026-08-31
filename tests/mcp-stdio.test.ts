@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { McpStdioServer, type GraphSnapshotSource } from '../src/server/mcp.js';
+import type { ModuleNode } from '../src/shared/types.js';
 
 /**
  * P1-2 acceptance (stdio robustness), unit-level so chunk boundaries are
@@ -163,46 +164,55 @@ describe('MCP stdio robustness (P1-2)', () => {
 });
 
 /**
- * Popup policy (code-review 2026-08-29): the first KNOWN tools/call is the
- * signal that a session is actually working on this project — the wired hook
- * opens the dashboard. Handshake traffic (initialize, tools/list) and unknown
- * tool garbage must not count, and the hook fires exactly once per process.
+ * Popup policy (file-granular): the hook fires when a tool successfully
+ * OPENS a specific module — get_module_details, report_note, begin_review,
+ * update_review, end_review. Handshake traffic (initialize, tools/list),
+ * unknown-tool garbage, and file-less tools (get_dashboard_info,
+ * list_untested) must not fire it. Dedup per file lives in index.ts.
  */
-describe('onFirstToolCall (popup policy)', () => {
+describe('onFileActivity (popup policy)', () => {
   function startWithHook(): {
     input: EventEmitter;
     replies: Array<Record<string, any>>;
-    callsRef: { calls: number };
+    openedRef: { opened: string[] };
     serving: Promise<void>;
   } {
     const input = new EventEmitter();
     const replies: Array<Record<string, any>> = [];
-    const callsRef = { calls: 0 };
+    const openedRef: { opened: string[] } = { opened: [] };
     const output = {
       write: (s: string) => {
         replies.push(JSON.parse(s));
         return true;
       }
     } as unknown as NodeJS.WritableStream;
+    const node = (id: string): ModuleNode => ({
+      id,
+      path: id,
+      language: 'ts',
+      testState: 'untested',
+      coveredBy: [],
+      typeErrors: []
+    });
     const graph: GraphSnapshotSource = {
-      snapshot: () => ({ rootPath: '/proj', generatedAt: 1, nodes: [], edges: [] }),
+      snapshot: () => ({ rootPath: '/proj', generatedAt: 1, nodes: [node('a.ts'), node('b.ts')], edges: [] }),
       setNote: () => false,
       setReview: () => false
     };
     const server = new McpStdioServer(input as unknown as NodeJS.ReadableStream, output, () => {}, graph, {
-      onFirstToolCall: () => {
-        callsRef.calls += 1;
+      onFileActivity: (id) => {
+        openedRef.opened.push(id);
       }
     });
-    return { input, replies, callsRef, serving: server.serve() };
+    return { input, replies, openedRef, serving: server.serve() };
   }
 
   const send = (input: EventEmitter, msg: Record<string, unknown>): void => {
     input.emit('data', Buffer.from(`${JSON.stringify(msg)}\n`, 'utf8'));
   };
 
-  it('fires exactly once, on the first known tool call; handshake and unknown tools do not count', async () => {
-    const { input, replies, callsRef, serving } = startWithHook();
+  it('fires on every opened module; handshake, unknown tools and file-less tools do not count', async () => {
+    const { input, replies, openedRef, serving } = startWithHook();
 
     send(input, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
     send(input, { jsonrpc: '2.0', method: 'notifications/initialized' });
@@ -210,15 +220,30 @@ describe('onFirstToolCall (popup policy)', () => {
     send(input, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: '__proto__' } });
     send(input, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_dashboard_info', arguments: {} } });
     send(input, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_untested', arguments: {} } });
+    send(input, { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_module_details', arguments: { path: 'a.ts' } } });
+    send(input, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'get_module_details', arguments: { path: 'a.ts' } } });
+    send(input, { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'get_module_details', arguments: { path: 'b.ts' } } });
 
-    // Five replies land: initialize(1), tools/list(2), unknown-tool error(3),
-    // and the two tool calls (4, 5). The notification never replies.
-    await waitForReplies(replies, 5);
+    // Eight replies land: initialize(1), tools/list(2), unknown-tool error(3),
+    // and the five tool calls (4-8). The notification never replies.
+    await waitForReplies(replies, 8);
     const byId = new Map(replies.map((r) => [r.id, r]));
     expect(byId.get(3)!.error).toEqual({ code: -32602, message: 'Unknown tool: __proto__' });
-    expect(byId.get(4)!.result).toBeDefined();
-    expect(byId.get(5)!.result).toBeDefined();
-    expect(callsRef.calls).toBe(1);
+    for (const id of [4, 5, 6, 7, 8]) expect(byId.get(id)!.result).toBeDefined();
+    // Every successful file open reached the hook, in order; the popup dedup
+    // (a.ts once) is index.ts's per-file set, not this layer's concern.
+    expect(openedRef.opened).toEqual(['a.ts', 'a.ts', 'b.ts']);
+    void serving;
+  });
+
+  it('does not fire when the path does not resolve to a module', async () => {
+    const { input, replies, openedRef, serving } = startWithHook();
+
+    send(input, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_module_details', arguments: { path: 'missing.ts' } } });
+
+    await waitForReplies(replies, 1);
+    expect(replies[0]!.result.isError).toBe(true);
+    expect(openedRef.opened).toEqual([]);
     void serving;
   });
 });

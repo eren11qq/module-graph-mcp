@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,8 +13,9 @@ import type { GraphEvent } from '../src/shared/types.js';
  * The second instance must (a) stay headless — the first instance's tab is
  * the one on screen — and (b) relay its tool-driven events to the first
  * instance's dashboard, so one page shows every session's AI activity.
- * Popup policy: NOBODY pops at startup; the armed primary pops on its first
- * activity (a tool call of its own, or the first relayed event).
+ * Popup policy (file-granular): NOBODY pops at startup; the armed primary
+ * pops once per distinct file the agent opens (own tool call naming the
+ * file, or a relayed event naming it). Files never opened never pop.
  */
 
 const ROOT = resolve('test-fixtures/sample-app');
@@ -184,10 +185,11 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     expect(ev.id).toBe('core/app.ts');
     expect(ev.activity).toBe('viewing');
 
-    // The relay was the primary's FIRST activity: the armed primary pops
-    // here even though its own session never called a tool. Under the env
-    // suppression the attempt shows up as this log line.
-    await primary.waitUntilStderr('dashboard auto-open (relayed activity)');
+    // The relay was the primary's FIRST file activity: the armed primary pops
+    // here for the file the relayed event names, even though its own session
+    // never called a tool. Under the env suppression the attempt shows up as
+    // this log line.
+    await primary.waitUntilStderr('dashboard auto-open for core/app.ts (relayed activity)');
     expect(primary.stderr).toContain('browser auto-open suppressed');
   }, 30000);
 
@@ -208,17 +210,21 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
 });
 
 /**
- * Popup policy, the plain case: ONE project, ONE armed instance. Nothing
- * opens at startup; the instance's first tools/call — for a real agent that
- * is get_dashboard_info, called once per session per CLAUDE.md — fires the
- * popup. A throwaway root keeps this instance foreign to the shared-root
- * pair above, so the band walk can never demote it to headless.
+ * Popup policy (file-granular), the plain case: ONE project, ONE armed
+ * instance. Nothing opens at startup; a file-less tool (get_dashboard_info)
+ * does not pop either — the popup fires when the agent first OPENS a file
+ * via a file-targeted tool, and only once per that file. A throwaway root
+ * keeps this instance foreign to the shared-root pair above, so the band
+ * walk can never demote it to headless.
  */
-describe('one project, first tool call pops (armed instance)', () => {
+describe('one project, first opened file pops (armed instance)', () => {
   let solo: Instance;
 
   beforeAll(async () => {
     const soloRoot = await mkdtemp(join(tmpdir(), 'mg-solo-'));
+    // Written before spawn so the baseline scan knows the module the test
+    // opens later.
+    await writeFile(join(soloRoot, 'a.ts'), 'export const a = 1;\n');
     solo = spawnInstance(await getFreePort(), soloRoot);
     await solo.waitUntilStderr('auto-open armed');
   }, 20000);
@@ -227,22 +233,40 @@ describe('one project, first tool call pops (armed instance)', () => {
     solo?.child.kill();
   });
 
-  it('stays silent at startup and pops on its first tools/call', async () => {
+  it('stays silent until the agent opens a file, then pops once per file', async () => {
     expect(solo.stderr).not.toContain('browser auto-open suppressed');
 
     solo.send({ jsonrpc: '2.0', id: 700, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
     await solo.waitForReply(700);
-    solo.send({
-      jsonrpc: '2.0',
-      id: 701,
-      method: 'tools/call',
-      params: { name: 'get_dashboard_info', arguments: {} }
-    });
+    solo.send({ jsonrpc: '2.0', id: 701, method: 'tools/call', params: { name: 'get_dashboard_info', arguments: {} } });
     await solo.waitForReply(701);
 
-    await solo.waitUntilStderr('dashboard auto-open (first tool call)');
+    // File-less tools never trigger the popup.
+    expect(solo.stderr).not.toContain('dashboard auto-open for');
+
+    solo.send({
+      jsonrpc: '2.0',
+      id: 702,
+      method: 'tools/call',
+      params: { name: 'get_module_details', arguments: { path: 'a.ts' } }
+    });
+    await solo.waitForReply(702);
+
+    await solo.waitUntilStderr('dashboard auto-open for a.ts (file opened by agent)');
     // MODULE_GRAPH_NO_OPEN=1 turns the attempt into this log line instead of
     // a real browser window — the trigger path is what the test pins down.
     expect(solo.stderr).toContain('browser auto-open suppressed');
+
+    solo.send({
+      jsonrpc: '2.0',
+      id: 703,
+      method: 'tools/call',
+      params: { name: 'get_module_details', arguments: { path: 'a.ts' } }
+    });
+    await solo.waitForReply(703);
+
+    // Same file again: the per-file dedup keeps it at one popup.
+    const pops = solo.stderr.match(/dashboard auto-open for a\.ts/g) ?? [];
+    expect(pops).toHaveLength(1);
   }, 15000);
 });

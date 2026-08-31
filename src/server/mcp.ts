@@ -1,6 +1,18 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
 import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
+import { buildHealthReport } from './health-report.js';
+import {
+  computeImpact,
+  createGraphStats,
+  DEFAULT_IMPACT_DEPTH,
+  IMPACT_DIRECTIONS,
+  type GraphStats,
+  type ImpactDirection,
+  type ImpactNode
+} from './impact.js';
+import type { RecentChanges } from './recent-changes.js';
+import { applyTokenBudget } from './response-budget.js';
 import { VERSION } from './version.js';
 import type { AiReview, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
 
@@ -94,21 +106,59 @@ export interface McpToolDeps {
    */
   httpInfo?(): { url: string; port: number; rootPath: string; version: string };
   /**
-   * Popup policy (code-review 2026-08-29): the first tools/call of a session
-   * is the signal that this project is actually being worked on — the wired
-   * callback opens the dashboard (fired once per process, before the tool
-   * runs). Handshake-time methods deliberately do not count: initialize and
-   * tools/list already happen when a desktop client restores every project
-   * at app open, so counting them would pop N tabs at launch.
+   * Popup policy (file-granular): fired whenever a tool successfully opens a
+   * specific module — get_module_details, report_note, begin_review,
+   * update_review, end_review. index.ts owns the dedup: at most one popup
+   * per distinct file, and files the agent never opens never pop.
+   * Handshake-time methods and file-less tools (get_dashboard_info,
+   * get_module_graph, get_health_report, list_untested, report_test_run)
+   * deliberately do not fire, and neither do the analysis tools (get_impact,
+   * get_change_impact): analysis is not "opening a file", and a pre-edit
+   * blast-radius check is high-frequency — popping for it would noise the
+   * user's desktop.
    */
-  onFirstToolCall?(): void;
+  onFileActivity?(id: string): void;
   /**
    * False while the startup baseline scan is still running (wired by
    * index.ts). get_module_graph annotates its reply so an agent reading the
    * graph during the scan knows the node list is partial, not empty.
    */
   isBaselineDone?(): boolean;
+  /**
+   * GitNexus port: the recent-changes record fed by the live-reload
+   * pipeline; get_change_impact replays it as the change evidence chain.
+   * Absent (bare buildTools tests) → the tool reports an empty chain with a
+   * note instead of failing.
+   */
+  recentChanges?: RecentChanges;
+  /**
+   * GitNexus port: default response-token budget, parsed from
+   * MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS and validated LOUDLY in index.ts.
+   * A per-call `arguments._maxTokens` (positive integer) overrides it;
+   * neither set → replies pass through unbudgeted.
+   */
+  defaultMaxTokens?: number;
+  /**
+   * GitNexus port: read-only mode (MODULE_GRAPH_MCP_READ_ONLY=1, parsed in
+   * index.ts). buildTools skips registering the five mutation tools — so
+   * tools/list hides them — and the transport answers their tools/call with
+   * a dedicated audit-friendly error instead of "Unknown tool".
+   */
+  readOnly?: boolean;
 }
+
+/**
+ * The five mutation-class tools hidden in read-only mode. Inspection tools
+ * (get_impact / get_change_impact / get_health_report / …) stay visible: a
+ * read-only session can still explore, it just cannot write anything back.
+ */
+export const READ_ONLY_BLOCKED_TOOLS: readonly string[] = [
+  'report_note',
+  'begin_review',
+  'update_review',
+  'end_review',
+  'report_test_run'
+];
 
 /**
  * Suggest close node ids when a path argument does not match — the error
@@ -161,6 +211,30 @@ function notFoundResult(nodes: readonly ModuleNode[], rawPath: unknown): ToolRes
 // ---------------------------------------------------------------------------
 
 /**
+ * The review playbook, embedded verbatim in every begin_review reply
+ * (trust-loop roadmap PR-5): stable, assertion-friendly text that teaches
+ * the agent the three-color verdict vocabulary, the update cadence and the
+ * begin/end pairing rule. The section headers are part of the contract —
+ * the playbook-present evals probe asserts them byte-for-byte; edit only
+ * with the probe (and CLAUDE.md) in the same change.
+ */
+const REVIEW_PLAYBOOK = [
+  '## Review playbook',
+  '### Verdicts',
+  '- confident: the code is correct as-is; nothing to fix.',
+  '- unsure: a suspicion you cannot confirm — say what to check and why.',
+  '- error: a concrete defect — name the line and the failure it causes.',
+  '### Cadence',
+  '- begin_review marks the module checking; the dashboard ball pulses.',
+  '- update_review pushes partial verdicts in batches while you read; on the same line the new entry wins, so dashboard rows paint live.',
+  '- end_review lands the final verdicts (max 500 entries, last entry per line wins; message max 200 chars).',
+  '### Closure',
+  '- ALWAYS pair a begin_review with an end_review for the same path — an empty verdicts array means "reviewed, all clear".',
+  '- Include a one-line summary (max 500 chars) so the dashboard detail panel can show the conclusion.',
+  '- Verdicts are in-memory: a server restart or rescan clears them; re-report when needed.'
+].join('\n');
+
+/**
  * Shared argument handling of the two path-taking tools (get_module_details,
  * report_note): validate `path`, normalise to a root-relative POSIX id and
  * resolve the node, with the guiding error results on every failure path.
@@ -184,10 +258,51 @@ function resolveRequestedNode(
   return { node };
 }
 
+/**
+ * The change-impact risk rules, embedded in both the get_change_impact reply
+ * and its tool description (single source, like REVIEW_PLAYBOOK). Chinese by
+ * the project's presentation convention — the response fields stay English.
+ */
+const CHANGE_IMPACT_HEURISTICS =
+  '风险级启发式：波及节点任一在依赖环上，或属高中心度（度数 top-20%）→ high；受影响节点 > 10 → medium；否则 low。overallRisk 取各变更的最大级。变更记录仅存内存（上限 100 条，最新写入优先，超出逐出最旧），服务重启即清。';
+
+/** riskLevel vocabulary + total order for the overall rollup. */
+type RiskLevel = 'high' | 'medium' | 'low';
+const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+/** Plan-pinned threshold: more than this many affected nodes ⇒ medium. */
+const MEDIUM_RISK_AFFECTED_THRESHOLD = 10;
+
+/**
+ * Risk of one change, from the affected set plus the graph stats: any
+ * on-cycle or high-centrality node dominates (high), then the size
+ * threshold, then low. Reasons are presentation strings (Chinese).
+ */
+function assessChangeRisk(affected: readonly ImpactNode[], stats: GraphStats): { level: RiskLevel; reasons: string[] } {
+  const onCycle = affected.filter((n) => stats.inCycle.has(n.id));
+  const central = affected.filter((n) => stats.highCentrality.has(n.id));
+  if (onCycle.length > 0 || central.length > 0) {
+    return {
+      level: 'high',
+      reasons: [
+        ...onCycle.map((n) => `波及节点在依赖环上：${n.id}`),
+        ...central.map((n) => `波及节点属高中心度（度数 top-20%）：${n.id}`)
+      ]
+    };
+  }
+  if (affected.length > MEDIUM_RISK_AFFECTED_THRESHOLD) {
+    return { level: 'medium', reasons: [`受影响节点 ${affected.length} 个（> ${MEDIUM_RISK_AFFECTED_THRESHOLD}）`] };
+  }
+  return { level: 'low', reasons: [] };
+}
+
 export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): Record<string, ToolDef> {
   const readSource = deps.readSourceFile ?? readSourceFile;
   const lifecycle = createReviewLifecycle({ graph, broadcast: deps.broadcast });
-  return {
+  // Graph stats memo shared by get_module_details (context) and
+  // get_change_impact (risk heuristic): recomputed only when the snapshot's
+  // generatedAt moves. One factory instance per buildTools call = one graph.
+  const statsFor = createGraphStats(() => graph.snapshot());
+  const tools: Record<string, ToolDef> = {
     get_dashboard_info: {
       description:
         'Return dashboard connection info: the browser URL of the live module-graph dashboard, the watched repository root, and current node/edge counts. Call this once per session to verify the server watches the tree you are working in, and to hand the user the dashboard link.',
@@ -247,7 +362,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     get_module_details: {
       description:
-        'Return full details for ONE module: path, language, test state, coveredBy test files, type errors (line+code+message), last test run time, note, in/out edges, and the full source code text. Every read briefly lights that module ball on the dashboard, so the user can see which file you are looking at.',
+        'Return full details for ONE module: path, language, test state, coveredBy test files, type errors (line+code+message), last test run time, note, in/out edges, context stats (in/out degree, cycle membership, normalized centrality — derived fresh per call, never stale), and the full source code text. Every read briefly lights that module ball on the dashboard, so the user can see which file you are looking at.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -264,6 +379,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+        deps.onFileActivity?.(node.id);
 
         // Code-review 2026-08-29: exploration is now visible. A pure read used
         // to produce zero dashboard activity — the ball only ever pulsed for
@@ -274,6 +390,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const outgoing = snap.edges.filter((e) => e.from === node.id).map((e) => e.to);
         const incoming = snap.edges.filter((e) => e.to === node.id).map((e) => e.from);
         const source = readSource(snap.rootPath, node.id);
+        const stats = statsFor();
 
         return textToolResult({
           id: node.id,
@@ -287,6 +404,12 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           aiReview: node.aiReview ?? null,
           outgoingDependencies: outgoing,
           incomingDependents: incoming,
+          context: {
+            inDegree: stats.inDegree.get(node.id) ?? 0,
+            outDegree: stats.outDegree.get(node.id) ?? 0,
+            inCycle: stats.inCycle.has(node.id),
+            centrality: stats.centrality(node.id)
+          },
           source:
             source.ok
               ? {
@@ -344,6 +467,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+        deps.onFileActivity?.(node.id);
 
         if (typeof args.text !== 'string') {
           return {
@@ -386,12 +510,14 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+        deps.onFileActivity?.(node.id);
 
         const { checking } = lifecycle.begin(node.id, node.path);
         return textToolResult({
           ok: true,
           id: node.id,
-          aiReview: checking
+          aiReview: checking,
+          playbook: REVIEW_PLAYBOOK
         });
       }
     },
@@ -430,6 +556,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+        deps.onFileActivity?.(node.id);
 
         if (!Array.isArray(args.verdicts)) {
           return {
@@ -491,6 +618,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const found = resolveRequestedNode(args, snap);
         if ('failure' in found) return found.failure;
         const node = found.node;
+        deps.onFileActivity?.(node.id);
 
         if (!Array.isArray(args.verdicts)) {
           return {
@@ -535,8 +663,129 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         deps.reportTestRun(args.failed);
         return textToolResult({ ok: true, failed: args.failed, note: 'coverage remap triggered' });
       }
+    },
+
+    get_health_report: {
+      description:
+        'Return the deterministic health report for the watched graph: every module scored by a fixed integer weight table (high centrality=3, untested=2, type errors=2, on a dependency cycle=1, review error verdict=2; ties break by id). Items come risk-descending, plus a Chinese brief (top 5 + remaining count) and the weight table itself — same input always yields the same ranking.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      },
+      execute() {
+        return textToolResult(buildHealthReport(graph.snapshot()));
+      }
+    },
+
+    get_impact: {
+      description:
+        'BEFORE editing a file, see its blast radius: every module upstream (who imports it) and/or downstream (what it imports), grouped by BFS depth, each entry carrying the node test state and type-error count. Scope your change with it; nodes sitting on a dependency cycle or in the high-centrality top-20% deserve extra care (get_change_impact scores that per change after you edit). direction defaults to "both"; maxDepth defaults to 3 (hard cap 10, illegal values fall back to 3).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Module id: POSIX path relative to the watched root, e.g. "src/index.ts"'
+          },
+          direction: {
+            type: 'string',
+            enum: [...IMPACT_DIRECTIONS],
+            description: 'upstream = who imports it, downstream = what it imports, both (default) = union of both walks'
+          },
+          maxDepth: {
+            type: 'number',
+            description: 'BFS depth limit: default 3, hard cap 10, illegal values fall back to 3'
+          }
+        },
+        required: ['path'],
+        additionalProperties: false
+      },
+      execute(args) {
+        const snap = graph.snapshot();
+        const found = resolveRequestedNode(args, snap);
+        if ('failure' in found) return found.failure;
+
+        const direction = args.direction ?? 'both';
+        if (typeof direction !== 'string' || !IMPACT_DIRECTIONS.includes(direction as ImpactDirection)) {
+          return {
+            content: [
+              { type: 'text', text: 'direction must be one of "upstream", "downstream", "both" (omitted means both).' }
+            ],
+            isError: true
+          };
+        }
+
+        const impact = computeImpact(snap, found.node.id, {
+          direction: direction as ImpactDirection,
+          maxDepth: typeof args.maxDepth === 'number' ? args.maxDepth : undefined
+        });
+        // Unreachable via resolveRequestedNode (the node exists), kept total.
+        if (!impact.ok) return textToolResult(impact);
+        return textToolResult({ ...impact, affectedCount: impact.affected.length });
+      }
+    },
+
+    get_change_impact: {
+      description:
+        'AFTER editing, replay the change evidence chain: every file the watcher recorded as changed recently (id, changedAt, whether still in the graph), and per in-graph change the computed blast radius (both directions, depth 3) with a risk level. 风险级：波及在环上或高中心度节点 → high；受影响节点 > 10 → medium；否则 low。Call it right after saving files to double-check the scope of what you just touched — before running tests or reporting a review. Records are in-memory: a server restart clears them.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      },
+      execute() {
+        const snap = graph.snapshot();
+        if (deps.recentChanges === undefined) {
+          return textToolResult({
+            changes: [],
+            impacts: [],
+            overallRisk: 'low',
+            heuristics: CHANGE_IMPACT_HEURISTICS,
+            note: 'no recent-changes pipeline wired in this deployment'
+          });
+        }
+        const recorded = deps.recentChanges.list();
+        const ids = new Set(snap.nodes.map((n) => n.id));
+        const changes = recorded.map((c) => ({ id: c.id, changedAt: c.changedAt, inGraph: ids.has(c.id) }));
+
+        const stats = statsFor();
+        const impacts: Array<{
+          changeId: string;
+          affectedCount: number;
+          affected: ImpactNode[];
+          riskLevel: RiskLevel;
+          riskReasons: string[];
+        }> = [];
+        let overall: RiskLevel = 'low';
+        for (const c of recorded) {
+          if (!ids.has(c.id)) continue; // deleted or outside the graph: nothing to score
+          const impact = computeImpact(snap, c.id, { direction: 'both', maxDepth: DEFAULT_IMPACT_DEPTH });
+          if (!impact.ok) continue;
+          const risk = assessChangeRisk(impact.affected, stats);
+          impacts.push({
+            changeId: c.id,
+            affectedCount: impact.affected.length,
+            affected: impact.affected,
+            riskLevel: risk.level,
+            riskReasons: risk.reasons
+          });
+          if (RISK_ORDER[risk.level] > RISK_ORDER[overall]) overall = risk.level;
+        }
+        return textToolResult({ changes, impacts, overallRisk: overall, heuristics: CHANGE_IMPACT_HEURISTICS });
+      }
     }
   };
+
+  if (deps.readOnly === true) {
+    // Read-only mode: the mutation tools are NOT registered, so tools/list
+    // hides them naturally (the list is generated from this record); the
+    // transport still answers their tools/call with a dedicated audit error.
+    const visible = { ...tools };
+    for (const name of READ_ONLY_BLOCKED_TOOLS) delete visible[name];
+    return visible;
+  }
+  return tools;
 }
 
 export class McpStdioServer {
@@ -555,13 +804,18 @@ export class McpStdioServer {
     'report_note',
     'begin_review',
     'update_review',
-    'end_review'
+    'end_review',
+    'get_health_report',
+    'get_impact',
+    'get_change_impact'
   ]);
+
+  /** Mutation tools get a dedicated error (not "Unknown tool") in read-only mode. */
+  private static readonly READ_ONLY_BLOCKED = new Set(READ_ONLY_BLOCKED_TOOLS);
 
   private buffer = '';
   private readonly tools: Record<string, ToolDef>;
   private readonly deps: McpToolDeps;
-  private firstToolCallFired = false;
 
   constructor(
     private readonly input: NodeJS.ReadableStream,
@@ -697,6 +951,16 @@ export class McpStdioServer {
           // into an Internal error.
           const tool = typeof name === 'string' && Object.hasOwn(this.tools, name) ? this.tools[name] : undefined;
           if (!tool) {
+            if (this.deps.readOnly === true && McpStdioServer.READ_ONLY_BLOCKED.has(String(name))) {
+              // Audit-friendly: distinguishable from Unknown tool, names the
+              // mode and the env var that caused it.
+              this.errorReply(
+                msg.id!,
+                -32602,
+                `tool "${String(name)}" is unavailable in read-only mode (MODULE_GRAPH_MCP_READ_ONLY=1)`
+              );
+              return;
+            }
             this.errorReply(msg.id!, -32602, `Unknown tool: ${String(name)}`);
             return;
           }
@@ -720,12 +984,6 @@ export class McpStdioServer {
   }
 
   private async callTool(id: string | number, name: string, tool: ToolDef, args: Record<string, unknown>): Promise<void> {
-    // Only reached for known tools (unknown names error out in handleLine),
-    // so a flood of garbage calls never counts as session activity.
-    if (!this.firstToolCallFired) {
-      this.firstToolCallFired = true;
-      this.deps.onFirstToolCall?.();
-    }
     try {
       await this.awaitBaseline(name);
       this.reply(id, tool.execute(args));

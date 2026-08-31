@@ -23,15 +23,16 @@ export interface AutoOpenDecision {
 }
 
 /**
- * Auto-open policy (code-review 2026-08-29): an MCP client spawns one server
+ * Auto-open policy (file-granular): an MCP client spawns one server
  * process per session, and a desktop client spawns one per project at app
  * open — popping at startup produced N tabs before the user touched anything.
  * So the decision computed here is only ARMED at startup; index.ts executes
- * it on the first real session activity (first tool call, or first relayed
- * event from a same-root secondary). Within one root exactly one instance
- * arms: the one that owns its preferred port, or the bumped instance when the
- * band scan finds no same-root holder. `--open` overrides the dedup,
- * `--no-open` overrides everything.
+ * it per file: each distinct module the agent opens (file-targeted tool call,
+ * or a relayed event naming that file) pops the dashboard once, and files
+ * never opened never pop. Within one root exactly one instance arms: the one
+ * that owns its preferred port, or the bumped instance when the band scan
+ * finds no same-root holder. `--open` overrides the dedup, `--no-open`
+ * overrides everything.
  */
 export function shouldAutoOpen(d: AutoOpenDecision): boolean {
   if (d.noOpen) return false;

@@ -1,5 +1,6 @@
 import { IncrementalGraph, isEmptyDelta } from './incremental-graph.js';
 import { FileWatcher, DEFAULT_DEBOUNCE_MS, type WatchedChange } from './file-watcher.js';
+import { createRecentChanges, type RecentChanges } from './recent-changes.js';
 import { StatePipeline } from './state-pipeline.js';
 import type { TypecheckResult } from './typecheck.js';
 import type { WsHub } from './http.js';
@@ -33,6 +34,11 @@ export interface LiveReloadOptions {
   /** Test seam passed through to StatePipeline (defaults to real runTypecheck). */
   runTypecheckFn?: (rootPath: string) => Promise<TypecheckResult>;
   typecheckDelayMs?: number;
+  /**
+   * GitNexus port: the recent-changes record this pipeline feeds. Defaults to
+   * a fresh instance; tests inject one to assert what was recorded.
+   */
+  recentChanges?: RecentChanges;
 }
 
 export interface LiveReloadHandle {
@@ -49,10 +55,17 @@ export interface LiveReloadHandle {
    * remaps immediately. No-op when the state layers are disabled.
    */
   reportTestRun(failed: boolean): void;
+  /**
+   * GitNexus port: the bounded recent-changes record every watcher window
+   * feeds (raw event paths, recorded even when the graph delta is empty).
+   * get_change_impact replays it as the change evidence chain.
+   */
+  recentChanges: RecentChanges;
 }
 
 export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
   const graph = opts.graph ?? new IncrementalGraph(opts.rootPath);
+  const recentChanges = opts.recentChanges ?? createRecentChanges();
   let windowCount = 0;
   const statesEnabled = opts.states ?? true;
   const states = statesEnabled
@@ -75,6 +88,11 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
     windowCount++;
     try {
       const delta = await graph.applyEvents(changes);
+      // GitNexus port: record the RAW watcher paths, NOT the delta — a pure
+      // content edit of an already-known file produces an EMPTY GraphDelta
+      // yet is the most common "changed file" signal get_change_impact must
+      // see. Outside-root paths normalise to null and are skipped.
+      recentChanges.record(changes.map((c) => graph.toRelId(c.path)));
       if (!isEmptyDelta(delta)) {
         opts.hub.broadcast({ type: 'graph_delta', delta });
         opts.log(`delta        : +${delta.addedNodes.length}/-${delta.removedNodeIds.length} nodes, +${delta.addedEdges.length}/-${delta.removedEdges.length} edges → ${opts.hub.size} client${opts.hub.size === 1 ? '' : 's'} (window #${windowCount})`);
@@ -131,6 +149,7 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
     stop: () => watcher.stop(),
     reportTestRun: (failed: boolean): void => {
       states?.reportTestRun(failed);
-    }
+    },
+    recentChanges
   };
 }

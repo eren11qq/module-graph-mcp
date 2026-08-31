@@ -9,7 +9,8 @@
 - **节点详情**：点击锁球 → 测试状态 / 覆盖它的测试文件 / 类型错误列表（含行号）/ 入出边跳转 / 语法高亮源码（错误行标记）
 - **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、目录折叠（同目录 ≥3 个文件折叠为一个目录球，点目录球展开）
 - **MCP 查询**：agent 可拉全图、查单模块详情、列未测模块、写备注（备注实时出现在 dashboard 详情面板）
-- **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）+ 详情面板「AI 已检查」徽章；检查约 10 分钟无活动自动回落
+- **健康报告**：MCP `get_health_report` 工具与 `GET /api/report` 验收报告页——固定整数权重表打分（高中心度 / 未测 / 类型错误 / 在环上 / 评审 error），items 风险降序、同分按 id 字典序，中文简报 top 5；报告页支持 `?focus=<module-id>` 深链高亮（服务端拼装 HTML，无脚本无新依赖）
+- **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」（响应内嵌评审 playbook：三色 verdicts 定义、分批节奏与配对纪律）；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）+ 详情面板「AI 已检查」徽章；检查约 10 分钟无活动自动回落
 - **探索可见**：agent 每读一个模块（`get_module_details`），对应球以紫色「查看」脉冲亮 3 秒、ticker 闪「AI 正在查看 …」——浏览文件不再是黑箱
 - **多会话一页**：同仓库新会话不再重复弹浏览器页（也不会闪控制台黑框）；它的 AI 活动（查看脉冲 / 检查脉冲）自动转发到第一个 dashboard 页上
 - **测试运行上报**：agent 跑完测试调 `report_test_run` → 覆盖率报告内文件整批转红 / 回绿
@@ -27,7 +28,7 @@ npm run build          # tsc 编译服务端 + vite 打包前端到 dist/server/
 node dist/server/index.js --root ./test-fixtures/sample-app
 ```
 
-启动**不弹浏览器**——桌面端（如 ZCode）打开时会为每个项目拉起一个 server 进程，弹窗时机后移到「项目首次被使用」：该项目会话的**第一次 MCP 工具调用**（agent 约定先调 `get_dashboard_info`），或收到同根实例的第一条转发事件时，才自动打开 dashboard（默认 `http://127.0.0.1:24282`，端口被占自动 +1）。**同仓库一个窗口**：被占端口按「端口带扫描」找同根实例——找到则本进程保持无头、永不弹页，其工具事件转发到主实例页面；整个端口带都是异根/空闲时本进程 armed（首次活动即弹）。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 加 `--open` 即可。要监视自己的项目，把 `--root` 指向该目录。
+启动**不弹浏览器**——桌面端（如 ZCode）打开时会为每个项目拉起一个 server 进程，弹窗按**文件粒度**后移：agent 通过面向文件的 MCP 工具（`get_module_details` / `begin_review` / `update_review` / `end_review` / `report_note`）**打开某个文件**时，才为该文件自动打开 dashboard（默认 `http://127.0.0.1:24282`，端口被占自动 +1）；同一文件只弹一次，agent 没打开过的文件绝不弹（`get_dashboard_info` / `get_module_graph` 等无文件工具不触发）。**同仓库一个窗口**：被占端口按「端口带扫描」找同根实例——找到则本进程保持无头、永不弹页，其工具事件转发到主实例页面（转发事件指名的文件同样按文件粒度触发主实例弹窗）；整个端口带都是异根/空闲时本进程 armed。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 加 `--open` 即可。要监视自己的项目，把 `--root` 指向该目录。
 
 **测试状态判定**：主判定读 `coverage/coverage-summary.json`（vitest/jest 覆盖率报告，**存在即通过——MVP 不设覆盖率阈值**；agent 通过 `report_test_run` 上报失败运行后，报告内文件转红）；没有覆盖率数据时按命名约定兜底——存在同名 `*.test.ts(x)` 视为「有测试未跑」，否则「未测」。
 
@@ -124,7 +125,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 }
 ```
 
-- **不传 `--root`**：服务端回退到子进程 cwd。**打开 ZCode 不弹页**——每个项目一个进程照常启动，但只有该项目会话**首次调用 MCP 工具**（见下一条约定）或第一条同根转发事件到达时才弹浏览器；同一仓库跨会话共用一个窗口：后续会话静默（无头），其 AI 活动转发到第一页，且其 `get_dashboard_info` 直接返回主实例的链接，agent 交给用户的永远是那一页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
+- **不传 `--root`**：服务端回退到子进程 cwd。**打开 ZCode 不弹页**——每个项目一个进程照常启动，但只有该项目会话的 agent **首次打开某个文件**（面向文件的 MCP 工具）或第一条指名该文件的同根转发事件到达时才弹浏览器，同一文件只弹一次；同一仓库跨会话共用一个窗口：后续会话静默（无头），其 AI 活动转发到第一页，且其 `get_dashboard_info` 直接返回主实例的链接，agent 交给用户的永远是那一页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
 - agent 侧约定：会话内先调 `get_dashboard_info` 核实 `rootPath` 与 dashboard 链接；若监视的树不对，在该项目的 `<repo>/.zcode/config.json` 里用同名的 workspace 级条目（`--root` 传绝对路径）覆盖。
 - 基线扫描期间握手**不会**被阻塞：`get_dashboard_info` / `get_module_graph` 即时应答并带 `scanning: true`；依赖图内容的工具（begin_review / get_module_details 等）自动等基线落定（上限 20s）再作答。
 
@@ -140,5 +141,11 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 ```bash
 npm run build          # 构建产物在 dist/（运行时读取）
 npm test               # vitest 全量（冒烟 / e2e 测试会 spawn dist/server/index.js，改完 src 先 build）
+npm run evals          # evals probe 基准：逐任务冷启动 spawn dist 产物跑探针（也要求先 build）
 npm run typecheck:web  # 前端 tsconfig 单独检查
 ```
+
+### evals probe 基准
+
+`npm run evals` 对 `test-fixtures/sample-app` 逐任务**冷启动**一个真实 server 进程，先按不变量断言（节点/边清点、错误自解释、评审生命周期等），再按 `maxMs` / `maxBytes` 门槛判红——响应体积是硬契约（见 `docs/adr/0001-evals-maxbytes-ci-contract.md`），超限即 CI 挂，runner 始终记录 p50/p95（ms 与 bytes 两列）。任务注册表在 `src/evals/tasks/registry.ts`，与磁盘双向对账：游离的任务文件、幽灵清单条目都会红（`tests/evals-structure.test.ts`）。CI 在四步流水线的第四步跑它（`npm ci → build → test → evals`）。
+

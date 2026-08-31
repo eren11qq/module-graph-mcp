@@ -17,6 +17,7 @@
     "start": "node dist/server/index.js --root .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "evals": "node dist/evals/run.js",
     "prepublishOnly": "npm run build && npm test"
   },
   "engines": {

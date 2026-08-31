@@ -122,6 +122,22 @@ function makeForwarder(primaryPort: number): (event: GraphEvent) => void {
   };
 }
 
+/**
+ * The module a relayed event is about, or null when it names no file
+ * (scan_error). Only file-naming events can trigger the file-granular popup.
+ */
+function fileIdFromEvent(event: GraphEvent): string | null {
+  switch (event.type) {
+    case 'node_update':
+      return event.node.id;
+    case 'module_activity':
+    case 'review_timeout':
+      return event.id;
+    default:
+      return null;
+  }
+}
+
 async function main(): Promise<void> {
   const log = (msg: string): void => {
     process.stderr.write(`${msg}\n`);
@@ -148,10 +164,14 @@ async function main(): Promise<void> {
     info: { rootPath, port, version: VERSION },
     getSnapshot: () => graph.snapshot(),
     onSecurityEvent: log,
-    // Popup policy: an accepted relay from a same-root secondary is session
-    // activity too — it must pop the armed primary's tab even when the
-    // primary's own session has not called a tool yet.
-    onRelayAccepted: () => popOnFirstActivity('relayed activity')
+    // Popup policy (file-granular): a relayed event from a same-root
+    // secondary names the file its agent opened — the armed primary pops
+    // for that file (once per file), even when its own session has not
+    // called a tool yet.
+    onRelayAccepted: (event) => {
+      const fileId = fileIdFromEvent(event);
+      if (fileId !== null) popOnFileActivity(fileId, 'relayed activity');
+    }
   });
 
   log(`Module Graph dashboard v${VERSION}`);
@@ -159,12 +179,13 @@ async function main(): Promise<void> {
   log(`dashboard    : ${url}`);
   log(`note         : ports bumped automatically when busy (started at ${port})`);
 
-  // Popup policy: a server process starting is NOT activity — a desktop
-  // client spawns one process per project at app open, and popping here
-  // produced N tabs before the user touched anything. So nothing opens now;
-  // the logic below only ARMS an instance, and the popup fires on this
-  // project's first real session activity (first MCP tool call, or the first
-  // event a same-root secondary relays in).
+  // Popup policy (file-granular): a server process starting is NOT activity —
+  // a desktop client spawns one process per project at app open, and popping
+  // here produced N tabs before the user touched anything. So nothing opens
+  // now; the logic below only ARMS an instance, and the popup fires per file:
+  // each distinct module the agent opens (via a file-targeted MCP tool, or a
+  // relayed event from a same-root secondary naming that file) pops once.
+  // Files the agent never opens never pop.
   const portBumped = boundPort !== port;
   // Only a bumped instance needs the band walk: the preferred-port holder is
   // the root's primary by construction (a same-root instance can only ever
@@ -174,12 +195,14 @@ async function main(): Promise<void> {
     ? findSameRootInstance({ preferredPort: port, selfPort: boundPort, rootPath })
     : Promise.resolve(null);
 
-  let popped = false;
+  // File-granular popup dedup: each distinct file the agent opens pops the
+  // dashboard at most once; files never opened never pop.
+  const poppedFiles = new Set<string>();
   let armed = false;
-  const popOnFirstActivity = (reason: string): void => {
-    if (!armed || popped) return;
-    popped = true;
-    log(`dashboard auto-open (${reason})`);
+  const popOnFileActivity = (fileId: string, reason: string): void => {
+    if (!armed || poppedFiles.has(fileId)) return;
+    poppedFiles.add(fileId);
+    log(`dashboard auto-open for ${fileId} (${reason})`);
     const openMsg = openBrowser(url);
     if (openMsg) log(openMsg);
   };
@@ -205,7 +228,7 @@ async function main(): Promise<void> {
     if (noOpen || open) return;
     if (shouldAutoOpen({ noOpen, forceOpen: open, portBumped, sameRootHolder: holderPort !== null })) {
       armed = true;
-      log('auto-open armed: the dashboard opens on this project\'s first tool call');
+      log(`auto-open armed: the dashboard opens when this project's agent first opens a file`);
     } else {
       log(`same-root instance already serves this dashboard at http://127.0.0.1:${holderPort} — keeping this session headless (${url})`);
     }
@@ -238,13 +261,14 @@ async function main(): Promise<void> {
       relayForward?.(event);
     },
     reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed),
+    recentChanges: liveReload.recentChanges,
     httpInfo: () => {
       // A headless secondary hands the agent the PRIMARY's URL, so the link
       // given to the user is always the one tab that shows every session.
       const reportedPort = relayTargetPort ?? boundPort;
       return { url: `http://127.0.0.1:${reportedPort}`, port: reportedPort, rootPath, version: VERSION };
     },
-    onFirstToolCall: () => popOnFirstActivity('first tool call'),
+    onFileActivity: (fileId) => popOnFileActivity(fileId, 'file opened by agent'),
     isBaselineDone: () => baselineDone
   });
   await mcp.serve();
