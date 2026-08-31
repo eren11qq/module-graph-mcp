@@ -22,16 +22,42 @@ const EXPECTED_EDGES: Array<[string, string]> = [
   ['store/state.ts', 'core/emitter.ts']
 ];
 
-/** Probe ②: the full graph keeps the fixture's exact node/edge invariants. */
+/**
+ * Probe ②: the full graph keeps the fixture's exact node/edge invariants.
+ *
+ * P0-1 (交付审计): get_module_graph deliberately answers immediately with
+ * `scanning: true` while the baseline scan is still running (plugin-mode
+ * handshake must never wait), so a cold start under load can land on an
+ * empty graph. The probe therefore waits out the baseline with a bounded
+ * retry budget instead of asserting on the first reply; if the scan still
+ * has not settled when the budget is spent, the invariant checks below fail
+ * with the usual explicit message. maxMs is budgeted for that worst case
+ * (measured p50 ~130ms / p95 ~255ms when the baseline is warm, ADR 0001).
+ */
+const SCAN_RETRY_BUDGET_MS = 2500;
+const SCAN_RETRY_STEP_MS = 100;
+
 export const task: EvalTask = {
   id: 'module-graph-shape',
   description: 'get_module_graph returns exactly the sample-app 7-node/8-edge inventory (cycle pair included)',
-  maxMs: 500,
+  maxMs: 3000,
   maxBytes: 4000,
   async probe(client): Promise<ProbeResult> {
-    const res = await client.callTool('get_module_graph');
+    let res = await client.callTool('get_module_graph');
     check(!res.failed, `get_module_graph failed: ${res.rpcError?.message ?? res.text}`);
-    const p = res.payload as { nodes?: Array<{ id: string }>; edges?: Array<{ from: string; to: string }> };
+    let p = res.payload as {
+      scanning?: boolean;
+      nodes?: Array<{ id: string }>;
+      edges?: Array<{ from: string; to: string }>;
+    };
+    const settled = () => p.scanning !== true && (p.nodes ?? []).length === EXPECTED_NODE_IDS.length;
+    const deadline = Date.now() + SCAN_RETRY_BUDGET_MS;
+    while (!settled() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, SCAN_RETRY_STEP_MS));
+      res = await client.callTool('get_module_graph');
+      check(!res.failed, `get_module_graph failed on retry: ${res.rpcError?.message ?? res.text}`);
+      p = res.payload as typeof p;
+    }
     const nodeIds = (p.nodes ?? []).map((n) => n.id).sort();
     check(nodeIds.length === 7, `expected 7 nodes, got ${nodeIds.length}`);
     check(JSON.stringify(nodeIds) === JSON.stringify([...EXPECTED_NODE_IDS].sort()), `node ids drifted: ${nodeIds.join(', ')}`);
