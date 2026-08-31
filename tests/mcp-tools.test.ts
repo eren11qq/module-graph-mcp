@@ -79,10 +79,11 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
 }
 
 describe('buildTools over a fake graph (Ticket 10, direct)', () => {
-  it('exposes the twelve tools with their input schemas', () => {
+  it('exposes the fourteen tools with their input schemas', () => {
     const { tools } = build();
     expect(Object.keys(tools).sort()).toEqual([
       'begin_review',
+      'declare_edit_scope',
       'end_review',
       'get_change_impact',
       'get_dashboard_info',
@@ -91,6 +92,7 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
       'get_module_details',
       'get_module_graph',
       'list_untested',
+      'report_edits',
       'report_note',
       'report_test_run',
       'update_review'
@@ -100,6 +102,8 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(tools.begin_review!.inputSchema.required).toEqual(['path']);
     expect(tools.update_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
+    expect(tools.declare_edit_scope!.inputSchema.required).toBeUndefined(); // modules/files optional
+    expect(tools.report_edits!.inputSchema.required).toEqual(['files']);
     expect(tools.report_test_run!.inputSchema.required).toEqual(['failed']);
     expect(tools.get_dashboard_info!.inputSchema.properties).toEqual({});
     expect(tools.list_untested!.inputSchema.properties).toEqual({});

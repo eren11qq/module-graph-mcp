@@ -12,6 +12,7 @@
  * output, stderr is free for diagnostics.
  */
 
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawnClient, repoRoot } from './mcp-client.js';
 import { ALL_TASKS } from './tasks/registry.js';
@@ -29,8 +30,12 @@ interface TaskOutcome {
 const WATCHDOG_MS = 120_000;
 
 async function runTask(task: EvalTask, fixtureRoot: string): Promise<TaskOutcome> {
+  // 常驻 hermeticity: the review store writes <root>/.module-graph/reviews.json;
+  // probes must stay zero-shared (CONTEXT.md), so every task starts with a
+  // pristine fixture — task N's ended review must never leak into task N+1.
+  await rm(join(fixtureRoot, '.module-graph'), { recursive: true, force: true });
   const started = performance.now();
-  const client = await spawnClient(fixtureRoot);
+  const client = await spawnClient(fixtureRoot, task.spawnEnv ? { env: task.spawnEnv } : {});
   try {
     const watchdog = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => reject(new Error(`probe exceeded the ${WATCHDOG_MS}ms watchdog`)), WATCHDOG_MS);

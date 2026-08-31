@@ -40,10 +40,26 @@ export interface Statusbar {
   setBand(counts: Record<TestState, number>): void;
   /** Flash one line of text in the event ticker; dims back automatically. */
   flashEvent(text: string): void;
+  /**
+   * ADR 0002 §7.2: 常驻警示条（越界改动清单）；null 清除。与 ticker 的
+   * 一闪即逝不同——越界警示保持到下一次核对/清范围。
+   */
+  warn(text: string | null): void;
 }
 
 export function createStatusbar(els: StatusbarElements): Statusbar {
   let dimTimer: ReturnType<typeof setTimeout> | null = null;
+  let warningText: string | null = null;
+
+  function renderWarn(): void {
+    els.sbLeft.querySelector('.sb-warn')?.remove();
+    if (warningText === null || warningText === '') return;
+    const span = document.createElement('span');
+    span.className = 'sb-warn';
+    span.textContent = warningText;
+    span.title = warningText;
+    els.sbLeft.append(span);
+  }
 
   function setCounts(nodes: number, edges: number, cycles: number, rootPath: string): void {
     els.sbLeft.replaceChildren();
@@ -65,6 +81,7 @@ export function createStatusbar(els: StatusbarElements): Statusbar {
     root.textContent = `根 ${rootPath}`;
     root.title = rootPath;
     els.sbLeft.append(root);
+    renderWarn(); // setCounts 清空了 sb-left；警示条重新挂上。
   }
 
   function setBand(counts: Record<TestState, number>): void {
@@ -92,5 +109,13 @@ export function createStatusbar(els: StatusbarElements): Statusbar {
     dimTimer = setTimeout(() => els.evt.classList.add('dim'), CHROME.eventDimMs);
   }
 
-  return { setCounts, setBand, flashEvent };
+  return {
+    setCounts,
+    setBand,
+    flashEvent,
+    warn(text: string | null): void {
+      warningText = text;
+      renderWarn();
+    }
+  };
 }

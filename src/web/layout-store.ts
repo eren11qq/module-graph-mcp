@@ -11,7 +11,13 @@ import { CHROME } from './theme.js';
  * The archive is keyed by GraphSnapshot.rootPath (one browser may host several
  * repos), versioned so a format change invalidates silently, and degrades to
  * memory-only under private mode / quota errors (same posture as mg-theme).
+ *
+ * ADR 0002 §7.1: 按视图模式分档 — 模块视图的模板位与文件视图的 fcose 存档
+ * 分开记（rootPath + mode 双键）；「重置布局」两档全清。
  */
+
+/** 存档分档：文件视图（fcose 海报）| 模块视图（固定模板位）。 */
+export type LayoutMode = 'file' | 'module';
 
 export interface LayoutPoint {
   x: number;
@@ -19,22 +25,26 @@ export interface LayoutPoint {
 }
 
 export interface LayoutStore {
-  /** Archived positions for a root; empty map when nothing is on file. */
-  load(rootPath: string): Map<string, LayoutPoint>;
-  /** Replace one root's archive wholesale (drops entries for gone nodes). */
-  save(rootPath: string, positions: ReadonlyMap<string, LayoutPoint>): void;
+  /** Archived positions for a root + mode; empty map when nothing is on file. */
+  load(rootPath: string, mode: LayoutMode): Map<string, LayoutPoint>;
+  /** Replace one root+mode archive wholesale (drops entries for gone nodes). */
+  save(rootPath: string, positions: ReadonlyMap<string, LayoutPoint>, mode: LayoutMode): void;
   /** Upsert one ball — the drag-free path (drag = user intent = authoritative). */
-  update(rootPath: string, id: string, point: LayoutPoint): void;
-  /** Forget a root's archive (重置布局 re-solves from scratch). */
-  clear(rootPath: string): void;
+  update(rootPath: string, id: string, point: LayoutPoint, mode: LayoutMode): void;
+  /** Forget a root's archive(s). mode omitted = both modes (重置布局两档全清). */
+  clear(rootPath: string, mode?: LayoutMode): void;
 }
 
 interface ArchiveFile {
   v: number;
-  roots: Record<string, Record<string, LayoutPoint>>;
+  roots: Record<string, { file?: Record<string, LayoutPoint>; module?: Record<string, LayoutPoint> }>;
 }
 
-const ARCHIVE_VERSION = 1;
+// 2026-08-31 间距参数换代 (fcose 等空隙 idealEdgeLength + 四力重调):v 1→2,
+// 旧档一次性作废、按新参数从头重解(手摆球位随之重置一次,之后照常存档)。
+// 同日二次换代 (大球间距:尺寸感知 nodeRepulsion):v 2→3,再作废一次。
+// ADR 0002 模板模式 (按模式分档):v 3→4,旧单档档案整体作废。
+const ARCHIVE_VERSION = 4;
 
 function emptyArchive(): ArchiveFile {
   return { v: ARCHIVE_VERSION, roots: {} };
@@ -73,11 +83,13 @@ export function createLayoutStore(): LayoutStore {
   }
 
   return {
-    load(rootPath: string): Map<string, LayoutPoint> {
+    load(rootPath: string, mode: LayoutMode): Map<string, LayoutPoint> {
       const out = new Map<string, LayoutPoint>();
       const root = archive.roots[rootPath];
       if (root === undefined) return out;
-      for (const [id, p] of Object.entries(root)) {
+      const bucket = root[mode];
+      if (bucket === undefined) return out;
+      for (const [id, p] of Object.entries(bucket)) {
         // 逐点校验:手工编辑 localStorage 打出的NaN不该进渲染管线。
         if (typeof p?.x === 'number' && Number.isFinite(p.x) && typeof p?.y === 'number' && Number.isFinite(p.y)) {
           out.set(id, { x: p.x, y: p.y });
@@ -85,19 +97,27 @@ export function createLayoutStore(): LayoutStore {
       }
       return out;
     },
-    save(rootPath: string, positions: ReadonlyMap<string, LayoutPoint>): void {
-      const root: Record<string, LayoutPoint> = {};
-      for (const [id, p] of positions) root[id] = { x: p.x, y: p.y };
-      archive.roots[rootPath] = root;
-      persist();
-    },
-    update(rootPath: string, id: string, point: LayoutPoint): void {
+    save(rootPath: string, positions: ReadonlyMap<string, LayoutPoint>, mode: LayoutMode): void {
       const root = archive.roots[rootPath] ?? (archive.roots[rootPath] = {});
-      root[id] = { x: point.x, y: point.y };
+      const bucket: Record<string, LayoutPoint> = {};
+      for (const [id, p] of positions) bucket[id] = { x: p.x, y: p.y };
+      root[mode] = bucket;
       persist();
     },
-    clear(rootPath: string): void {
-      delete archive.roots[rootPath];
+    update(rootPath: string, id: string, point: LayoutPoint, mode: LayoutMode): void {
+      const root = archive.roots[rootPath] ?? (archive.roots[rootPath] = {});
+      const bucket = root[mode] ?? (root[mode] = {});
+      bucket[id] = { x: point.x, y: point.y };
+      persist();
+    },
+    clear(rootPath: string, mode?: LayoutMode): void {
+      const root = archive.roots[rootPath];
+      if (root === undefined) return;
+      if (mode === undefined) {
+        delete archive.roots[rootPath];
+      } else {
+        delete root[mode];
+      }
       persist();
     }
   };

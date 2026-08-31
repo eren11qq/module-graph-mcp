@@ -5,6 +5,7 @@ import { WebSocket } from 'ws';
 import { startHttpServer } from '../src/server/http.js';
 import { IncrementalGraph } from '../src/server/incremental-graph.js';
 import { startLiveReload, type LiveReloadHandle } from '../src/server/live-reload.js';
+import { createReviewStore } from '../src/server/review-store.js';
 import type { GraphEvent, GraphSnapshot } from '../src/shared/types.js';
 import { getFreePort } from './helpers/net.js';
 import { makeTempProject } from './helpers/temp-project.js';
@@ -34,7 +35,11 @@ function trackParses(graph: IncrementalGraph): void {
 /**
  * Wire the ticket-04/05 pipeline the same way src/server/index.ts does.
  */
-async function startTestPipeline(root: string, debounceMs = 60): Promise<{
+async function startTestPipeline(
+  root: string,
+  debounceMs = 60,
+  reviewStore?: ReturnType<typeof createReviewStore>
+): Promise<{
   url: string;
 
   initial: GraphSnapshot;
@@ -60,7 +65,8 @@ async function startTestPipeline(root: string, debounceMs = 60): Promise<{
     hub: started.hub,
     log: () => {},
     debounceMs,
-    graph
+    graph,
+    reviewStore
   });
   await live.ready;
   armed = true; // only count parses after the baseline scan
@@ -301,6 +307,70 @@ describe('live delta pipeline (Ticket 04/05)', () => {
       expect(incremental.edges).toEqual(reference.snapshot().edges);
     } finally {
       await teardown();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('persistent review store wiring (常驻)', () => {
+  it('done reviews are attached onto the graph before the baseline snapshot broadcast', async () => {
+    const root = await makeTempProject({
+      'src/a.ts': 'export const a = 1;\n',
+      'src/b.ts': 'export const b = 2;\n'
+    });
+    try {
+      // Simulate a previous session that completed a review: seed the store.
+      const seed = createReviewStore({ rootPath: root, log: () => {} });
+      seed.set('src/a.ts', { status: 'done', verdicts: [{ line: 1, verdict: 'confident' }] });
+
+      // Production wiring: the pipeline owns the same store instance.
+      const { initial, teardown } = await startTestPipeline(root, 60, seed);
+      try {
+        const a = initial.nodes.find((n) => n.id === 'src/a.ts');
+        expect(a?.aiReview).toEqual({ status: 'done', verdicts: [{ line: 1, verdict: 'confident' }] });
+        const b = initial.nodes.find((n) => n.id === 'src/b.ts');
+        expect(b?.aiReview).toBeUndefined();
+      } finally {
+        await teardown();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('unlinking a file prunes its persisted review (no resurrection on restart)', async () => {
+    const root = await makeTempProject({ 'src/a.ts': 'export const a = 1;\n' });
+    try {
+      const seed = createReviewStore({ rootPath: root, log: () => {} });
+      seed.set('src/a.ts', { status: 'done', verdicts: [] });
+
+      const { graph, teardown } = await startTestPipeline(root, 60, createReviewStore({ rootPath: root, log: () => {} }));
+      try {
+        await unlink(join(root, 'src/a.ts'));
+        // Wait for the watcher window to apply and prune.
+        const deadline = Date.now() + 8000;
+        while (graph.node('src/a.ts') !== undefined && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        expect(graph.node('src/a.ts')).toBeUndefined();
+
+        // A fresh store instance (cold restart) must find no trace.
+        const restarted = createReviewStore({ rootPath: root, log: () => {} });
+        const probe = { nodes: [] as string[], reviews: new Map<string, unknown>() };
+        const attach = restarted.attachInto({
+          node: (id) => (probe.nodes.includes(id) ? ({ id } as never) : undefined),
+          setReview: (id, review) => {
+            probe.reviews.set(id, review);
+            return true;
+          }
+        });
+        expect(attach).toBe(0);
+        expect(probe.reviews.size).toBe(0);
+      } finally {
+        await teardown();
+      }
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

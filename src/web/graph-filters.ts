@@ -1,26 +1,18 @@
 import type { Edge, ModuleNode, TestState } from '../shared/types.js';
-import { shortLabel, THEME } from './theme.js';
-import { TEST_STATES } from './test-states.js';
+import { moduleIdOf } from '../shared/module-table.js';
+import type { FunctionalModuleId } from '../shared/module-table.js';
+import { shortLabel } from './theme.js';
 
 /**
  * Ticket 11 view-state pure functions (seams 1–3) plus the composition the
  * graph-view render pipeline calls. No DOM, no cytoscape — everything here is
  * data-in/data-out and covered by tests/graph-filters.test.ts.
+ *
+ * ADR 0002 §7.1: directory collapse is RETIRED — the toolbar now switches
+ * 模块视图 | 文件视图; module grouping lives in module-view.ts (the render
+ * pipeline composes: applyViewState filters file balls, then the view mode
+ * decides how they are arranged).
  */
-
-/** Namespace prefix for synthesized directory-level node ids. */
-export const DIR_PREFIX = 'dir:';
-
-/** Directory a synthesized dir-ball id points at, or null for a file id. */
-export function dirBallDirOf(id: string): string | null {
-  return id.startsWith(DIR_PREFIX) ? id.slice(DIR_PREFIX.length) : null;
-}
-
-/** Posix directory of a module id ('' for root-level files). */
-function dirOf(id: string): string {
-  const i = id.lastIndexOf('/');
-  return i === -1 ? '' : id.slice(0, i);
-}
 
 /**
  * Seam 3: 只看未测 predicate — true exactly for the untested state (no
@@ -45,83 +37,13 @@ export function searchMatches(nodes: readonly ModuleNode[], query: string): Set<
   return out;
 }
 
-/**
- * Seam 1: replace every file inside collapsedDirs with one directory-level
- * node (id `dir:<dir>`), aggregating state by severity and unioning the
- * children's type errors. Edges are rewired to the directory nodes,
- * intra-directory edges vanish, collapsed-onto pairs are deduped.
- */
-export function collapseDirectories(
-  nodes: readonly ModuleNode[],
-  edges: readonly Edge[],
-  collapsedDirs: ReadonlySet<string>
-): { nodes: ModuleNode[]; edges: Edge[] } {
-  if (collapsedDirs.size === 0) return { nodes: [...nodes], edges: [...edges] };
+/** 视图模式：模块视图（默认，按功能类成堆 + 模块级边）| 文件视图。 */
+export type ViewMode = 'module' | 'file';
 
-  const endpointOf = (id: string): string => {
-    const dir = dirOf(id);
-    return dir !== '' && collapsedDirs.has(dir) ? DIR_PREFIX + dir : id;
-  };
-
-  const dirNodes = new Map<string, ModuleNode>();
-  const fileNodes: ModuleNode[] = [];
-  for (const n of nodes) {
-    const dir = dirOf(n.id);
-    if (dir === '' || !collapsedDirs.has(dir)) {
-      fileNodes.push(n);
-      continue;
-    }
-    let agg = dirNodes.get(DIR_PREFIX + dir);
-    if (!agg) {
-      agg = {
-        id: DIR_PREFIX + dir,
-        path: `${dir}/`,
-        language: 'ts',
-        testState: 'passing',
-        coveredBy: [],
-        typeErrors: []
-      };
-      dirNodes.set(agg.id, agg);
-    }
-    if (TEST_STATES[n.testState].severity > TEST_STATES[agg.testState].severity) agg.testState = n.testState;
-    agg.typeErrors.push(...n.typeErrors);
-  }
-
-  const outEdges = new Map<string, Edge>();
-  for (const e of edges) {
-    const from = endpointOf(e.from);
-    const to = endpointOf(e.to);
-    if (from === to) continue;
-    outEdges.set(`${from}->${to}`, { from, to });
-  }
-
-  return { nodes: [...fileNodes, ...dirNodes.values()], edges: [...outEdges.values()] };
-}
-
-/** Directories holding ≥ minFiles of the given nodes (root level never folds). */
-function collapsibleDirs(nodes: readonly ModuleNode[], minFiles: number): Set<string> {
-  const counts = new Map<string, number>();
-  for (const n of nodes) {
-    const dir = dirOf(n.id);
-    if (dir === '') continue;
-    counts.set(dir, (counts.get(dir) ?? 0) + 1);
-  }
-  const out = new Set<string>();
-  for (const [dir, count] of counts) if (count >= minFiles) out.add(dir);
-  return out;
-}
-
-function edgesWithin(edges: readonly Edge[], ids: ReadonlySet<string>): Edge[] {
-  return edges.filter((e) => ids.has(e.from) && ids.has(e.to));
-}
-
-/** Everything the render pipeline needs; expandedDirs only matters while collapse is on. */
+/** Everything the render pipeline needs. */
 export interface ViewState {
   query: string;
   untestedOnly: boolean;
-  collapseEnabled: boolean;
-  /** Directories the user manually expanded (tap on a dir ball). */
-  expandedDirs: ReadonlySet<string>;
   /**
    * Theme.html legend filter: states toggled off in the legend disappear from
    * the render list (empty set = everything visible).
@@ -129,18 +51,26 @@ export interface ViewState {
   hiddenStates: ReadonlySet<TestState>;
   /**
    * Code-review 2026-08-29 评审环图例行: true 隐藏所有已评审（aiReview done）
-   * 的节点——在目录折叠之前剔除，目录球只聚合剩余文件。
+   * 的节点。
    */
   hideReviewed: boolean;
+  /** 模块视图 | 文件视图（ADR 0002 §7.1），默认模块视图。 */
+  viewMode: ViewMode;
+  /** 文件视图聚焦的功能类（点某堆进入）；null = 全部文件（海报模式）。 */
+  focusedModule: FunctionalModuleId | null;
+}
+
+function edgesWithin(edges: readonly Edge[], ids: ReadonlySet<string>): Edge[] {
+  return edges.filter((e) => ids.has(e.from) && ids.has(e.to));
 }
 
 /**
- * The view pipeline: 图例状态过滤 → 只看未测 → 搜索 → directory collapse.
- * Later stages see earlier stages' survivors, so a search match inside a
- * collapsible directory reveals the file itself.
+ * The view pipeline: 图例状态过滤 → 只看未测 → hideReviewed → 文件视图聚焦
+ * → 搜索。Later stages see earlier stages' survivors.
  *
- * Pure data-in/data-out (no DOM, no cytoscape); the one repo constant it
- * reads is THEME.collapse.minFiles, the single-source collapse threshold.
+ * Pure data-in/data-out (no DOM, no cytoscape). Module-view grouping happens
+ * AFTER this filter in graph-view (module-view.ts), so a search match inside
+ * a pile reveals the file itself.
  */
 export function applyViewState(
   nodes: readonly ModuleNode[],
@@ -165,16 +95,21 @@ export function applyViewState(
     keptEdges = edgesWithin(keptEdges, new Set(keptNodes.map((n) => n.id)));
   }
 
+  if (view.viewMode === 'file' && view.focusedModule !== null) {
+    // 文件视图聚焦一个功能类：只留该功能类的小模块簇（表外文件无功能类，
+    // 聚焦时一并隐藏——它们只能靠搜索或清除聚焦露出）。
+    const ids = new Set<string>();
+    for (const n of keptNodes) {
+      if (moduleIdOf(n.id) === view.focusedModule) ids.add(n.id);
+    }
+    keptNodes = keptNodes.filter((n) => ids.has(n.id));
+    keptEdges = edgesWithin(keptEdges, ids);
+  }
+
   if (view.query.trim() !== '') {
     const matched = searchMatches(keptNodes, view.query);
     keptNodes = keptNodes.filter((n) => matched.has(n.id));
     keptEdges = edgesWithin(keptEdges, matched);
-  }
-
-  if (view.collapseEnabled) {
-    const collapsed = collapsibleDirs(keptNodes, THEME.collapse.minFiles);
-    for (const dir of view.expandedDirs) collapsed.delete(dir);
-    ({ nodes: keptNodes, edges: keptEdges } = collapseDirectories(keptNodes, keptEdges, collapsed));
   }
 
   return { nodes: keptNodes, edges: keptEdges };

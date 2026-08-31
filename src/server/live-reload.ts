@@ -4,6 +4,7 @@ import { createRecentChanges, type RecentChanges } from './recent-changes.js';
 import { StatePipeline } from './state-pipeline.js';
 import type { TypecheckResult } from './typecheck.js';
 import type { WsHub } from './http.js';
+import type { ReviewStore } from './review-store.js';
 /**
  * Ticket 04 + 05: live graph pipeline.
  *
@@ -33,6 +34,13 @@ export interface LiveReloadOptions {
   states?: boolean;
   /** Test seam passed through to StatePipeline (defaults to real runTypecheck). */
   runTypecheckFn?: (rootPath: string) => Promise<TypecheckResult>;
+  /**
+   * Persistent AI-review store（常驻）: done reviews are attached onto the
+   * graph right after the baseline scan (so the dashboard's first snapshot
+   * already carries them) and pruned when a file is unlinked. Absent →
+   * in-memory-only (tests / bare pipelines).
+   */
+  reviewStore?: ReviewStore;
   typecheckDelayMs?: number;
   /**
    * GitNexus port: the recent-changes record this pipeline feeds. Defaults to
@@ -88,6 +96,11 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
     windowCount++;
     try {
       const delta = await graph.applyEvents(changes);
+      // 常驻: an unlinked file takes its review with it (a deleted file's
+      // conclusion must not resurrect on the next restart).
+      if (delta.removedNodeIds.length > 0) {
+        opts.reviewStore?.remove(delta.removedNodeIds);
+      }
       // GitNexus port: record the RAW watcher paths, NOT the delta — a pure
       // content edit of an already-known file produces an EMPTY GraphDelta
       // yet is the most common "changed file" signal get_change_impact must
@@ -125,6 +138,14 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
   const ready = (async (): Promise<void> => {
     try {
       await graph.fullScan();
+      // 常驻: attach BEFORE the baseline snapshot is taken/broadcast — the
+      // cached snapshot shares live node objects, so the page's first frame
+      // already shows the restored review rings (a post-broadcast attach
+      // would render nothing until the next refresh).
+      const restored = opts.reviewStore?.attachInto(graph) ?? 0;
+      if (restored > 0) {
+        opts.log(`reviews      : restored ${restored} done review${restored === 1 ? '' : 's'} from .module-graph/reviews.json`);
+      }
       const snap = graph.snapshot();
       opts.log(`baseline     : ${snap.nodes.length} modules, ${snap.edges.length} edges (incremental engine)`);
       // Correct any page that connected before the baseline landed — its WS

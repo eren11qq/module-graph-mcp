@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CY_PALETTES, MOTION, activeThemeKey, cyPalette, setTheme, stateColor } from '../src/web/theme.js';
+import { CY_PALETTES, MOTION, THEME, activeThemeKey, cyPalette, diameterOf, setTheme, sizeAwareRepulsion, stateColor, uniformIdealEdgeLength } from '../src/web/theme.js';
 import { STATE_ORDER } from '../src/web/test-states.js';
 import type { ThemeKey } from '../src/web/theme.js';
 
@@ -76,6 +76,51 @@ describe('MOTION — checking 脉冲与物理参数', () => {
     expect(MOTION.driftMaxNodes).toBe(600);
     expect(MOTION.driftAmpMin).toBeGreaterThan(0);
     expect(MOTION.driftAmpMax).toBeGreaterThan(MOTION.driftAmpMin);
+  });
+});
+
+describe('uniformIdealEdgeLength — 等空隙裁定 (2026-08-31)', () => {
+  it('小球-小球: gap + 两端半径 (21 + 21 + 52)', () => {
+    expect(uniformIdealEdgeLength(52, 21, 21)).toBe(94);
+  });
+
+  it('小球-枢纽: 大球吃到自己的半径,空隙仍是一档 (21 + 65 + 52)', () => {
+    expect(uniformIdealEdgeLength(52, 21, 65)).toBe(138);
+  });
+
+  it('半径缺失(data 未写 → 0)夹到最小球半径,不留负空隙通道', () => {
+    // 最小真实球 deg=1:diameterOf(1)/2 = 10.6。
+    const minR = 10.6;
+    expect(uniformIdealEdgeLength(52, 0, 0)).toBeCloseTo(52 + 2 * minR);
+    expect(uniformIdealEdgeLength(52, Number.NaN, 21)).toBeCloseTo(52 + minR + 21);
+  });
+
+  it('spacingGap 单一事实源住在 THEME.layout,且守住漂移下限 ≥ 40', () => {
+    expect(THEME.layout.spacingGap).toBe(52);
+    expect(THEME.layout.spacingGap).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('sizeAwareRepulsion — 大球间距二次裁定 (2026-08-31)', () => {
+  const minR = diameterOf(1) / 2; // 10.6:最小真实球半径=夹紧基准
+
+  it('小球对斥力与旧常数一致 (boost = 1)', () => {
+    expect(sizeAwareRepulsion(20000, minR)).toBeCloseTo(20000, 5);
+  });
+
+  it('枢纽球 (d=65 → r=32.5) 按面积放大 ≈9×,大球与大球顶得出空隙', () => {
+    expect(sizeAwareRepulsion(20000, 32.5)).toBeCloseTo(20000 * (32.5 / minR) ** 2, 3);
+    expect(sizeAwareRepulsion(20000, 32.5)).toBeGreaterThan(20000 * 9);
+  });
+
+  it('放大顶格 16×:超大球不再继续抬,整体斥力有上界', () => {
+    expect(sizeAwareRepulsion(20000, minR * 5)).toBe(20000 * 16);
+  });
+
+  it('半径缺失/异常 (0、NaN、负) 夹到 minR → 恰为基准值', () => {
+    expect(sizeAwareRepulsion(20000, 0)).toBeCloseTo(20000, 5);
+    expect(sizeAwareRepulsion(20000, Number.NaN)).toBe(20000);
+    expect(sizeAwareRepulsion(20000, -50)).toBeCloseTo(20000, 5);
   });
 });
 

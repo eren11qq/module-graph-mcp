@@ -43,8 +43,10 @@ export interface ModuleNode {
   note?: string;
   /**
    * Ticket 12: AI review state reported via begin_review/end_review. Optional
-   * so older snapshots (and frame-guards) stay valid; in-memory only — a
-   * rescan rebuilds nodes without it and the agent re-reports.
+   * so older snapshots (and frame-guards) stay valid. Since 2026-09-01 the
+   * done conclusions persist on disk (<root>/.module-graph/reviews.json) and
+   * are re-attached after every baseline scan; checking states stay
+   * in-memory only.
    */
   aiReview?: AiReview;
 }
@@ -89,6 +91,27 @@ export interface ModuleContextStats {
   centrality: number;
 }
 
+/**
+ * ADR 0002 / MODULE-DESIGN §7.2: agent 开工前声明的改动边界（declare_
+ * edit_scope 的参数、edit_scope wire 事件的载荷）。modules = 功能模块 id
+ * （模块表），files = 显式文件（POSIX 根相对路径，表外文件只能走这里）。
+ */
+export interface EditScopeDecl {
+  modules: string[];
+  files: string[];
+}
+
+/**
+ * ADR 0002 / MODULE-DESIGN §7.2: 一次核对的结果（report_edits 之后广播的
+ * edit_verification 事件载荷）。edited = 系统认定的改动文件（上报 ∪ watcher
+ * 磁盘事实）；outOfScope = 范围外改动；unreported = watcher 看见但没上报的。
+ */
+export interface EditVerificationWire {
+  edited: string[];
+  outOfScope: string[];
+  unreported: string[];
+}
+
 /** Wire messages pushed over /ws (see plan §WS protocol) */
 export type GraphEvent =
   | { type: 'snapshot'; snapshot: GraphSnapshot }
@@ -108,4 +131,14 @@ export type GraphEvent =
    * for a few seconds; unlike node_update this carries no state, and pages
    * that miss it lose nothing.
    */
-  | { type: 'module_activity'; id: string; path: string; activity: 'viewing'; at: number };
+  | { type: 'module_activity'; id: string; path: string; activity: 'viewing'; at: number }
+  /**
+   * ADR 0002 / MODULE-DESIGN §7.2: declare_edit_scope 落地（scope null =
+   * 范围已清除）。页面据此给范围内文件画常驻紫环。
+   */
+  | { type: 'edit_scope'; scope: EditScopeDecl | null }
+  /**
+   * ADR 0002 / MODULE-DESIGN §7.2: report_edits 核对结果——已改整球变紫、
+   * 越界红角标 + 状态栏警示条；unreported 只在警示文案里点名。
+   */
+  | { type: 'edit_verification'; verification: EditVerificationWire };

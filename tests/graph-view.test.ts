@@ -38,6 +38,9 @@ function mountView(opts?: { store?: LayoutStore }): {
     tooltipEl: document.createElement('div'),
     ...opts
   });
+  // ADR 0002 §7.1: 产品默认是模块视图；遗留套件按文件视图（海报）跑，
+  // 模块视图行为由专门的 describe 显式测试。
+  view.setViewState({ viewMode: 'file' });
   return { onFocusChange, view, cy: h.instances[0]! };
 }
 
@@ -456,7 +459,7 @@ describe('AI 评审环 data channel (code-review 2026-08-29)', () => {
   });
 });
 
-describe('view controls: 只看未测 / 搜索 / 目录折叠 (ticket 11 seam 4)', () => {
+describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)', () => {
   // pkg holds 3 direct files (folds at THEME.collapse.minFiles = 3), solo
   // holds 2 (stays), main.ts is root-level (never folds).
   function controlFixture(): GraphSnapshot {
@@ -555,41 +558,6 @@ describe('view controls: 只看未测 / 搜索 / 目录折叠 (ticket 11 seam 4)
     view.setViewState({ query: '' });
     expect(visible('main.ts')).toBe(true);
     expect(visible('pkg/a.ts')).toBe(true);
-  });
-
-  it('collapse folds a ≥ minFiles dir into one ball with aggregated data and rewired edges', () => {
-    view.setSnapshot(controlFixture());
-    view.setViewState({ collapseEnabled: true });
-    expect(visible('dir:pkg')).toBe(true);
-    expect(visible('pkg/a.ts')).toBe(false);
-    expect(visible('solo/d.ts')).toBe(true);
-    expect(visible('main.ts')).toBe(true);
-    expect(dataOf('dir:pkg', 'path')).toBe('pkg/');
-    expect(dataOf('dir:pkg', 'label')).toBe('pkg');
-    expect(dataOf('dir:pkg', 'state')).toBe('failing');
-    expect(visible('main.ts->dir:pkg')).toBe(true);
-    expect(visible('dir:pkg->main.ts')).toBe(true);
-    expect(visible('pkg/a.ts->pkg/b.ts')).toBe(false);
-    expect(visible('solo/d.ts->solo/e.ts')).toBe(true);
-  });
-
-  it('tapping a dir ball expands just that directory and opens no detail panel', () => {
-    view.setSnapshot(controlFixture());
-    view.setViewState({ collapseEnabled: true });
-    onFocusChange.mockClear();
-    tap('dir:pkg');
-    expect(visible('pkg/a.ts')).toBe(true);
-    expect(visible('pkg/c.ts')).toBe(true);
-    expect(visible('dir:pkg')).toBe(false);
-    expect(onFocusChange).not.toHaveBeenCalled();
-  });
-
-  it('search reveals a matching file inside a collapsible directory', () => {
-    view.setSnapshot(controlFixture());
-    view.setViewState({ collapseEnabled: true });
-    view.setViewState({ query: 'pkg/a' });
-    expect(visible('pkg/a.ts')).toBe(true);
-    expect(visible('dir:pkg')).toBe(false);
   });
 
   it('filtering away the locked node clears the focus lock', () => {
@@ -721,15 +689,17 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     clear: ReturnType<typeof vi.fn>;
   } {
     const map = new Map(Object.entries(seed));
-    const load = vi.fn(() => new Map(map));
-    const save = vi.fn((_root: string, positions: ReadonlyMap<string, { x: number; y: number }>) => {
-      map.clear();
-      for (const [k, v] of positions) map.set(k, { ...v });
-    });
-    const update = vi.fn((_root: string, id: string, p: { x: number; y: number }) => {
+    const load = vi.fn((_root: string, _mode: 'file' | 'module') => new Map(map));
+    const save = vi.fn(
+      (_root: string, positions: ReadonlyMap<string, { x: number; y: number }>, _mode: 'file' | 'module') => {
+        map.clear();
+        for (const [k, v] of positions) map.set(k, { ...v });
+      }
+    );
+    const update = vi.fn((_root: string, id: string, p: { x: number; y: number }, _mode: 'file' | 'module') => {
       map.set(id, { ...p });
     });
-    const clear = vi.fn(() => map.clear());
+    const clear = vi.fn((_root: string, _mode?: 'file' | 'module') => map.clear());
     return { load, save, update, clear } as unknown as LayoutStore & {
       load: ReturnType<typeof vi.fn>;
       save: ReturnType<typeof vi.fn>;
@@ -764,8 +734,13 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     const { view } = mountView({ store });
     view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
     expect(store.save).toHaveBeenCalledTimes(1);
-    const [root, positions] = store.save.mock.calls[0] as [string, Map<string, { x: number; y: number }>];
+    const [root, positions, mode] = store.save.mock.calls[0] as [
+      string,
+      Map<string, { x: number; y: number }>,
+      'file' | 'module'
+    ];
     expect(root).toBe('/proj');
+    expect(mode).toBe('file'); // mountView runs the suite in file mode
     expect([...positions.keys()].sort()).toEqual(['a.ts', 'b.ts']);
   });
 
@@ -774,7 +749,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     const { view, cy } = mountView({ store });
     view.setSnapshot(snapshotWith([node('a.ts')]));
     cy.__fire('dragfree|node', { target: { id: () => 'a.ts', position: () => ({ x: 50, y: 60 }) } });
-    expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 });
+    expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 }, 'file');
   });
 
   it('filter toggles re-render from the archive and never overwrite it', () => {
@@ -821,14 +796,18 @@ describe('固定布局力 (2026-08-30 用户裁定: 四力不可调,滑杆通道
     expect(lastLayout()).toEqual(
       expect.objectContaining({
         name: 'fcose',
-        gravity: 0.32,
-        nodeRepulsion: 13500,
-        edgeElasticity: 0.45,
-        idealEdgeLength: 78,
-        nodeSeparation: 120,
+        gravity: 0.25,
+        edgeElasticity: 0.7,
+        nodeSeparation: 150,
         randomize: false
       })
     );
+    // 2026-08-31 等空隙裁定: idealEdgeLength 从常数 78 换代为函数形式
+    // (spacingGap + 两端半径,纯函数断言在 theme-palette.test.ts)。
+    expect(typeof lastLayout().idealEdgeLength).toBe('function');
+    // 同日二次裁定(大球间距): nodeRepulsion 换代为尺寸感知函数,
+    // base×min(16,(r/minR)²) 的纯函数断言在 theme-palette.test.ts。
+    expect(typeof lastLayout().nodeRepulsion).toBe('function');
   });
 });
 
@@ -917,5 +896,161 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
       removedEdges: []
     });
     expect(posOf(cy, 'c.ts')).toEqual({ x: 500, y: 500 });
+  });
+});
+
+describe('ADR 0002 模板模式: 模块视图 + 改动标记', () => {
+  // Module-table paths so groupByModule has real work to do; package.json
+  // is out of table (never renders in module view).
+  function moduleFixture(): GraphSnapshot {
+    return snapshotWith(
+      [
+        node('src/server/mcp.ts'),
+        node('src/server/index.ts'),
+        node('src/server/incremental-graph.ts'),
+        node('src/web/main.ts'),
+        node('src/shared/types.ts'),
+        node('package.json')
+      ],
+      [
+        { from: 'src/server/mcp.ts', to: 'src/server/index.ts' }, // intra-module
+        { from: 'src/server/mcp.ts', to: 'src/shared/types.ts' }, // cross-module
+        { from: 'src/shared/types.ts', to: 'src/server/mcp.ts' }, // cross-module back → module cycle
+        { from: 'src/web/main.ts', to: 'src/shared/types.ts' }, // cross-module
+        { from: 'src/web/main.ts', to: 'package.json' } // out-of-table target
+      ]
+    );
+  }
+
+  let onFocusChange: ReturnType<typeof vi.fn>;
+  let view: ReturnType<typeof createGraphView>;
+  let cy: FakeCy;
+
+  beforeEach(() => {
+    ({ onFocusChange, view, cy } = mountView());
+    view.setViewState({ viewMode: 'module' }); // 显式回到产品默认视图
+  });
+
+  const tap = (id: string): void => {
+    cy.__fire('tap|node', { target: { id: () => id } });
+  };
+  type EleHandle = { nonempty(): boolean; data(key?: string): unknown; hasClass(name: string): boolean };
+  const ele = (id: string): EleHandle =>
+    (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
+  const visible = (id: string): boolean => ele(id).nonempty();
+  const dataOf = (id: string, key: string): unknown => ele(id).data(key);
+
+  it('默认视图就是模块视图: 表内文件成堆、表外文件不渲染', () => {
+    // mountView 为遗留套件强制文件模式——这里手工建 view 验证产品默认。
+    h.instances.length = 0;
+    const fresh = createGraphView(document.createElement('div'), {
+      onFocusChange: vi.fn(),
+      tooltipEl: document.createElement('div')
+    });
+    const c = h.instances[0]!;
+    fresh.setSnapshot(moduleFixture());
+    const e = (id: string): EleHandle =>
+      (c as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
+    expect(e('pile:mcp-service').nonempty()).toBe(true);
+    expect(e('pile:dashboard').nonempty()).toBe(true);
+    expect(e('pile:graph-engine').nonempty()).toBe(true);
+    expect(e('package.json').nonempty()).toBe(false); // 表外
+    expect(e('pile:mcp-service').data('label')).toBe('MCP 服务 · 2');
+    expect(e('pile:graph-engine').data('label')).toBe('依赖图引擎 · 1');
+  });
+
+  it('模块级边: 跨模块聚合重连、同模块与表外边消失、跨模块环保留', () => {
+    view.setSnapshot(moduleFixture());
+    expect(visible('pile:mcp-service->pile:shared-contract')).toBe(true);
+    expect(visible('pile:dashboard->pile:shared-contract')).toBe(true);
+    expect(visible('src/server/mcp.ts->src/server/index.ts')).toBe(false); // intra
+    expect(visible('src/web/main.ts->package.json')).toBe(false); // 表外端点
+    // 模块级环: mcp-service ↔ shared-contract 的文件边在抽象图上仍是环。
+    // DFS 从 mcp-service 出发，shared→mcp 是回边。
+    expect(ele('pile:shared-contract->pile:mcp-service').hasClass('cycle')).toBe(true);
+    expect(ele('pile:mcp-service->pile:shared-contract').hasClass('cycle')).toBe(false);
+  });
+
+  it('点堆题注 → 文件视图聚焦该功能类; 表内文件球消失到只剩该堆', () => {
+    view.setSnapshot(moduleFixture());
+    onFocusChange.mockClear();
+    tap('pile:mcp-service');
+    expect(visible('src/server/mcp.ts')).toBe(true);
+    expect(visible('src/server/index.ts')).toBe(true);
+    expect(visible('src/web/main.ts')).toBe(false);
+    expect(visible('src/shared/types.ts')).toBe(false);
+    expect(visible('pile:mcp-service')).toBe(false); // 题注只存在于模块视图
+    expect(onFocusChange).not.toHaveBeenCalled(); // 点题注不开详情
+  });
+
+  it('模块视图里点文件球 → 进入其功能类的文件视图并打开详情', () => {
+    view.setSnapshot(moduleFixture());
+    tap('src/web/main.ts');
+    expect(visible('src/web/main.ts')).toBe(true);
+    expect(visible('src/server/mcp.ts')).toBe(false); // 聚焦 dashboard
+    expect(onFocusChange).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'src/web/main.ts' }));
+  });
+
+  it('文件视图聚焦态下点空白 → 回到全部文件（海报模式）', () => {
+    view.setSnapshot(moduleFixture());
+    tap('pile:graph-engine');
+    expect(visible('src/server/incremental-graph.ts')).toBe(true);
+    expect(visible('src/web/main.ts')).toBe(false);
+    cy.__fire('tap', { target: cy });
+    expect(visible('src/web/main.ts')).toBe(true);
+    expect(visible('src/server/incremental-graph.ts')).toBe(true);
+  });
+
+  it('改动标记: 范围紫环 / 已改紫 / 越界红角标（三条独立 class 通道）', () => {
+    view.setSnapshot(moduleFixture());
+    // 文件视图（海报）下跑标记：表外文件 package.json 只在文件视图渲染。
+    view.setViewState({ viewMode: 'file' });
+    view.setEditScope({ modules: ['mcp-service'], files: ['package.json'] });
+    expect(ele('src/server/mcp.ts').hasClass('in-scope')).toBe(true);
+    expect(ele('src/server/index.ts').hasClass('in-scope')).toBe(true);
+    expect(ele('package.json').hasClass('in-scope')).toBe(true); // 显式点名
+    expect(ele('src/web/main.ts').hasClass('in-scope')).toBe(false);
+
+    view.setEditVerification({
+      edited: ['src/server/mcp.ts', 'src/web/main.ts', 'package.json'],
+      outOfScope: ['src/web/main.ts'],
+      unreported: []
+    });
+    expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(true);
+    expect(ele('src/server/mcp.ts').hasClass('out-of-scope')).toBe(false);
+    expect(ele('src/web/main.ts').hasClass('edited')).toBe(true);
+    expect(ele('src/web/main.ts').hasClass('out-of-scope')).toBe(true);
+    expect(String(ele('src/web/main.ts').data('label'))).toContain('⛔'); // 红角标文案
+    expect(ele('package.json').hasClass('edited')).toBe(true);
+  });
+
+  it('新范围 = 新基线: setEditScope 清掉已改/越界标记', () => {
+    view.setSnapshot(moduleFixture());
+    view.setEditScope({ modules: ['mcp-service'], files: [] });
+    view.setEditVerification({ edited: ['src/server/mcp.ts'], outOfScope: ['src/web/main.ts'], unreported: [] });
+    expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(true);
+    expect(ele('src/web/main.ts').hasClass('out-of-scope')).toBe(true);
+    view.setEditScope({ modules: ['graph-engine'], files: [] });
+    expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(false);
+    expect(ele('src/web/main.ts').hasClass('out-of-scope')).toBe(false);
+    expect(ele('src/server/incremental-graph.ts').hasClass('in-scope')).toBe(true);
+  });
+
+  it('模块视图存档按 module 模式分档: 存档位置优先于网格', () => {
+    const store: LayoutStore = {
+      load: () => new Map([['src/server/mcp.ts', { x: 111, y: 222 }]]),
+      save: () => undefined,
+      update: () => undefined,
+      clear: () => undefined
+    };
+    const fresh = mountView({ store });
+    fresh.view.setViewState({ viewMode: 'module' });
+    fresh.view.setSnapshot(moduleFixture());
+    const c = fresh.cy;
+    const p = (id: string): { x: number; y: number } =>
+      (c as unknown as { getElementById(id: string): { position(): { x: number; y: number } } }).getElementById(id).position();
+    expect(p('src/server/mcp.ts')).toEqual({ x: 111, y: 222 }); // 存档优先
+    // 无存档的球落到堆内网格（确定性）。
+    expect(p('src/web/main.ts')).toEqual({ x: -430, y: -108 });
   });
 });

@@ -13,8 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { IncrementalGraph } from './incremental-graph.js';
 import { McpStdioServer } from './mcp.js';
 import { startHttpServer } from './http.js';
-import { openBrowser, shouldAutoOpen } from './open-browser.js';
+import { openBrowser, shouldAutoOpen, shouldPopFile } from './open-browser.js';
 import { startLiveReload } from './live-reload.js';
+import { createReviewStore } from './review-store.js';
 import { VERSION } from './version.js';
 import type { GraphEvent } from '../shared/types.js';
 
@@ -31,6 +32,31 @@ interface ParsedArgs {
   port: number;
   noOpen: boolean;
   open: boolean;
+}
+
+/**
+ * GitNexus port: guardrail environment, validated LOUDLY (stderr + exit 1,
+ * same discipline as a bad --port) — a typo'd value must never silently
+ * change behavior. Returns read-only mode and the default token budget.
+ */
+function parseGuardrailEnv(): { readOnly: boolean; defaultMaxTokens: number | undefined } {
+  const rawReadOnly = process.env.MODULE_GRAPH_MCP_READ_ONLY;
+  let readOnly = false;
+  if (rawReadOnly !== undefined && rawReadOnly !== '0') {
+    if (rawReadOnly === '1') readOnly = true;
+    else fail(`MODULE_GRAPH_MCP_READ_ONLY must be unset, "0" or "1", got "${rawReadOnly}"`);
+  }
+
+  const rawBudget = process.env.MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS;
+  let defaultMaxTokens: number | undefined;
+  if (rawBudget !== undefined) {
+    const parsed = Number(rawBudget);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      fail(`MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS must be a positive integer, got "${rawBudget}"`);
+    }
+    defaultMaxTokens = parsed;
+  }
+  return { readOnly, defaultMaxTokens };
 }
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -144,6 +170,7 @@ async function main(): Promise<void> {
   };
 
   const { root, port, noOpen, open } = parseArgs(process.argv);
+  const { readOnly, defaultMaxTokens } = parseGuardrailEnv();
 
   if (root.length === 0 || !existsSync(root) || !statSync(root).isDirectory()) {
     fail(`--root must be an existing directory, got "${root}"`);
@@ -154,6 +181,11 @@ async function main(): Promise<void> {
   // startup baseline (fullScan inside startLiveReload), every watcher window
   // afterwards, and every reader (HTTP / WS handshake / MCP tools).
   const graph = new IncrementalGraph(rootPath);
+
+  // 常驻: completed end_review verdicts persist to <root>/.module-graph/
+  // reviews.json. live-reload attaches them after the baseline scan and
+  // prunes them on unlink; end_review lands them via the MCP deps below.
+  const reviewStore = createReviewStore({ rootPath, log });
 
   const here = dirname(fileURLToPath(import.meta.url));
   const publicDir = join(here, 'public');
@@ -196,15 +228,27 @@ async function main(): Promise<void> {
     : Promise.resolve(null);
 
   // File-granular popup dedup: each distinct file the agent opens pops the
-  // dashboard at most once; files never opened never pop.
+  // dashboard at most once; files never opened never pop. While a dashboard
+  // tab is already connected, no further pop happens — the rhythm is "one tab
+  // per idle stretch", not "one tab per file the agent reads".
   const poppedFiles = new Set<string>();
   let armed = false;
   const popOnFileActivity = (fileId: string, reason: string): void => {
-    if (!armed || poppedFiles.has(fileId)) return;
-    poppedFiles.add(fileId);
-    log(`dashboard auto-open for ${fileId} (${reason})`);
-    const openMsg = openBrowser(url);
-    if (openMsg) log(openMsg);
+    const decision = {
+      armed,
+      alreadyPopped: poppedFiles.has(fileId),
+      pageConnected: hub.hasOpenClient()
+    };
+    if (shouldPopFile(decision)) {
+      poppedFiles.add(fileId);
+      log(`dashboard auto-open for ${fileId} (${reason})`);
+      const openMsg = openBrowser(url);
+      if (openMsg) log(openMsg);
+    } else if (decision.armed && !decision.alreadyPopped) {
+      // The only false term left is pageConnected. NOT recorded in
+      // poppedFiles: once the tab closes, later files can pop again.
+      log(`dashboard already open in a browser — skip auto-open for ${fileId}`);
+    }
   };
 
   // Where a same-root secondary's tool events go (and which URL a headless
@@ -238,7 +282,7 @@ async function main(): Promise<void> {
   // ready resolves once the baseline scan is done (or degraded — a failed
   // scan logs a warning and serves an empty graph until the next file event
   // rebuilds it) and the watcher is listening.
-  const liveReload = startLiveReload({ rootPath, hub, log, graph });
+  const liveReload = startLiveReload({ rootPath, hub, log, graph, reviewStore });
   // Plugin mode (code-review 2026-08-29): the MCP transport must come up
   // BEFORE the baseline scan finishes — an MCP client drops a server whose
   // handshake times out (30s default), and a big repository can scan longer
@@ -261,7 +305,6 @@ async function main(): Promise<void> {
       relayForward?.(event);
     },
     reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed),
-    recentChanges: liveReload.recentChanges,
     httpInfo: () => {
       // A headless secondary hands the agent the PRIMARY's URL, so the link
       // given to the user is always the one tab that shows every session.
@@ -269,7 +312,11 @@ async function main(): Promise<void> {
       return { url: `http://127.0.0.1:${reportedPort}`, port: reportedPort, rootPath, version: VERSION };
     },
     onFileActivity: (fileId) => popOnFileActivity(fileId, 'file opened by agent'),
-    isBaselineDone: () => baselineDone
+    isBaselineDone: () => baselineDone,
+    recentChanges: liveReload.recentChanges,
+    readOnly,
+    defaultMaxTokens,
+    reviewStore
   });
   await mcp.serve();
   log('stdin closed — shutting down');

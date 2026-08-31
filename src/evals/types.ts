@@ -53,6 +53,11 @@ export interface EvalTask {
   maxMs: number;
   /** Hard wire-size budget: summed reply bytes, bytes. */
   maxBytes: number;
+  /**
+   * Extra env vars for THIS probe's server spawn (GitNexus port step 6),
+   * e.g. MODULE_GRAPH_MCP_READ_ONLY=1 for the read-only-mode probe.
+   */
+  spawnEnv?: Record<string, string>;
   /** The probe: run against a fresh client; throw ProbeFailure to go red. */
   probe(client: McpClient, fixtureRoot: string): Promise<ProbeResult>;
 }

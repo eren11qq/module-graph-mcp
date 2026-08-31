@@ -44,6 +44,11 @@ export interface CyPalette {
    * 整体移除，区域感只靠题注 + 罗盘位置表达。颜色从地面 ink 派生。
    */
   plate: { label: string };
+  /**
+   * ADR 0002 §7.2 改动标记（border/background 通道）：范围内 = 紫环常驻
+   * 描边（与 viewing 紫脉冲——瞬时 3s——区分）；已改 = 整球紫填充。
+   */
+  scope: { ring: string; fill: string };
   /** 画布地面色（styles.css --bg 的 cy 侧镜像）：球标衬底的取色处。 */
   canvas: string;
   dimNode: number;
@@ -71,6 +76,7 @@ const DARK: CyPalette = {
   plate: {
     label: 'rgba(231,238,249,0.7)'
   },
+  scope: { ring: '#A78BFA', fill: '#5B3FA8' },
   canvas: '#0A0F1C',
   dimNode: 0.12,
   dimEdge: 0.05
@@ -94,6 +100,7 @@ const LIGHT: CyPalette = {
   plate: {
     label: 'rgba(38,34,28,0.66)'
   },
+  scope: { ring: '#7C3AED', fill: '#D8C7F5' },
   canvas: '#F6F4EF',
   dimNode: 0.12,
   dimEdge: 0.05
@@ -126,6 +133,15 @@ export function stateColor(state: TestState): string {
 export function reviewColor(verdict: 'confident' | 'unsure' | 'error'): string {
   return CY_PALETTES[activeTheme].review[verdict];
 }
+
+// 2026-08-31 等空隙裁定: 相邻球对的边到边目标空隙(px),唯一手调点。
+// 存档在 THEME.layout.spacingGap,fcoseIdealEdgeLength 从这里取值。
+// 约束: ≥ 40 —— 漂移最坏接近量 ≈ 10.2 会吃掉空隙(见 layout 注释)。
+const SPACING_GAP = 52;
+// 非邻接对斥力的基准值与尺寸放大顶格:大球按 (r/minR)² 吃面积,
+// 枢纽球(≈3×min)斥力 ×9+,大球与大球之间才顶得出 spacingGap 的空隙。
+const REPULSION_BASE = 20000;
+const REPULSION_SIZE_CAP = 16;
 
 export const THEME = {
   /** Verdict #4: uniform 1.5px neutral edges + triangle arrows; cycles dashed vermillion. */
@@ -170,13 +186,21 @@ export const THEME = {
    * tickets 04/05). 2026-08-29 区域化裁定后调松堆内密度: repulsion ×1.5 +
    * 理想边长 ×1.26 —— 球堆内更散,区域罗盘槽位不受影响(平移后处理兜底)。
    * 2026-08-30 用户裁定:四力不可调,滑杆通道整体拆除,这里是唯一事实源。
+   * 2026-08-31 等空隙裁定: idealEdgeLength 改为函数形式(布局存档同步升代)
+   * —— 相邻球边到边空隙一律 spacingGap(对角挤贴量按半径补偿,见
+   * uniformIdealEdgeLength);elasticity↑ gravity↓ —— 边缘链条不再被拉长。
+   * 2026-08-31 二次裁定(大球之间也要保持距离): fcose 的 spring/repulsion
+   * 都按包围盒边到边计量,nodeSeparation 只在 spectral 初始位参与、不限力 ——
+   * 非邻接大球对的空隙唯一可用通道是节点级 nodeRepulsion 函数:按 (r/minR)²
+   * 放大(顶格 16×),小球对维持基准、观感不变,枢纽对斥力 ×9+ 顶出空隙。
+   * 跨区线仍由 regionGapX/Y 罗盘槽位决定,不在等长化范围。
    */
   fcose: {
-    gravity: 0.32,
-    nodeRepulsion: 13500,
-    edgeElasticity: 0.45,
-    idealEdgeLength: 78,
-    nodeSeparation: 120,
+    gravity: 0.25,
+    nodeRepulsion: fcoseNodeRepulsion,
+    edgeElasticity: 0.7,
+    idealEdgeLength: fcoseIdealEdgeLength,
+    nodeSeparation: 150,
     packComponents: true,
     randomize: false
   },
@@ -197,6 +221,10 @@ export const THEME = {
    * Code-review 2026-08-29: ballGap 是同区域内相邻小球边到边的保底间距
    * (用户裁定 32):漂移最坏接近量 2×driftAmpMax×√2 ≈ 10.2 ≪ 32,静止与
    * 漂移中都留得出空隙;代价是区域包围盒变大、fit() 后整图略缩一档。
+   * Code-review 2026-08-31: spacingGap 是簇内力布局(堆内边)的边到边目标
+   * 空隙——fcose 函数式 idealEdgeLength = spacingGap + r1 + r2 的唯一手调
+   * 点。必须 ≥ 40:漂移最坏接近量同上 ≈ 10.2,太小会被漂移吃掉。与
+   * separateTouching(ballGap=32) 的保底推离是独立通道,正交不互替。
    */
   layout: {
     regionGapX: 120,
@@ -205,7 +233,8 @@ export const THEME = {
     dockCols: 3,
     dockSpacingX: 84,
     dockSpacingY: 84,
-    ballGap: 32
+    ballGap: 32,
+    spacingGap: SPACING_GAP
   },
   /**
    * 区域化海报 visual channels: tests 带的球整体缩一档、跨区线一律细+淡
@@ -285,6 +314,54 @@ export function prefersReducedMotion(): boolean {
 export function diameterOf(deg: number): number {
   const clamped = Math.max(1, deg);
   return 2 * (THEME.node.radiusBase + Math.sqrt(clamped) * THEME.node.radiusSqrtFactor);
+}
+
+// 2026-08-31 等空隙: 缺失/异常半径的夹紧下限 = 最小真实球(deg=1)的半径。
+// 定义在 THEME 之后 —— diameterOf 读取 THEME.node,THEME 求值期间不可调用。
+const MIN_BALL_RADIUS = diameterOf(1) / 2;
+
+/**
+ * 等空隙理想边长(纯函数): 相邻球边到边空隙一律 ≥ gap —— 理想边长
+ * = gap + r1 + r2(fcose 的 spring 已按包围盒边到边计量,半径项是对
+ * 对角布置下方框 clips 低估圆面间距的补偿,竖直/水平方向即富余档)。
+ * 半径缺失/非有限(0、NaN、负)一律夹到最小球半径。
+ */
+export function uniformIdealEdgeLength(gap: number, r1: number, r2: number): number {
+  const floorRadius = (r: number): number =>
+    Number.isFinite(r) ? Math.max(MIN_BALL_RADIUS, r) : MIN_BALL_RADIUS;
+  return gap + floorRadius(r1) + floorRadius(r2);
+}
+
+/**
+ * fcose 函数式 idealEdgeLength: 入参是 edge 对象,两端半径取自 nodeElement
+ * 写入的 data('diameter')/2(与 physics.ts 同源,勿重算公式)。孤立对(无边)
+ * 不受它管,由尺寸感知的 nodeRepulsion 兜底。
+ */
+function fcoseIdealEdgeLength(edge: cytoscape.EdgeSingular): number {
+  return uniformIdealEdgeLength(
+    SPACING_GAP,
+    Number(edge.source().data('diameter')) / 2,
+    Number(edge.target().data('diameter')) / 2
+  );
+}
+
+/**
+ * 尺寸感知斥力(纯函数): 大球与大球(邻接与否都算)之间要顶出空隙,斥力
+ * 必须随球面积走 —— base × min(cap, (r/minR)²)。半径 ≥ minR,缺失/非有限
+ * 夹到 minR(=×1,小球对观感与旧常数一致);枢纽球对(≈3×minR)≈ ×9。
+ */
+export function sizeAwareRepulsion(base: number, radius: number): number {
+  const r = Number.isFinite(radius) ? Math.max(MIN_BALL_RADIUS, radius) : MIN_BALL_RADIUS;
+  const boost = Math.min(REPULSION_SIZE_CAP, (r / MIN_BALL_RADIUS) ** 2);
+  return base * boost;
+}
+
+/**
+ * fcose 函数式 nodeRepulsion(节点级,成对取两端均值): 入参是 node 对象,
+ * 半径同样取 data('diameter')/2 单一口径。
+ */
+function fcoseNodeRepulsion(node: cytoscape.NodeSingular): number {
+  return sizeAwareRepulsion(REPULSION_BASE, Number(node.data('diameter')) / 2);
 }
 
 /** Basename without extension — the ball label; hover tooltip carries the full relative path.

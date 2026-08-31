@@ -48,7 +48,7 @@ body {
 .brand .logo { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); align-self: center; }
 .brand .sub { font-family: var(--font-mono); font-weight: 400; font-size: 9.5px; letter-spacing: .18em; color: var(--muted); }
 
-/* 票 11 控件(搜索/只看未测/目录折叠/重置)融进顶栏,原型视觉语言 */
+/* 票 11 控件(搜索/只看未测/视图切换/重置)融进顶栏,原型视觉语言 */
 .tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* 搜索框:Uiverse 输入样式(圆角/左内图标/外圈过渡),颜色走主题 token */
 .search-group { position: relative; display: flex; align-items: center; line-height: 28px; }
@@ -76,6 +76,8 @@ body {
   border-radius: var(--r-seg); white-space: nowrap;
   transition: transform 120ms ease-out, color 120ms ease-out, background 120ms ease-out;
 }
+.segmented { display: inline-flex; gap: 2px; }
+
 .tool-toggle:hover { color: var(--ink); }
 .tool-toggle:active { transform: scale(.97); }
 .tool-toggle.active {
@@ -268,6 +270,11 @@ body {
 #sb-left .cyc { color: var(--warn); }
 #sb-left .cyc b { color: var(--warn); }
 #sb-left .sb-root { color: var(--faint); overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+
+.sb-warn {
+  color: var(--state-fail); font-weight: 600; margin-left: 8px;
+  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .band-wrap { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 520px; }
 .band {
   flex: 1; display: flex; height: var(--band-h); border-radius: var(--band-r);

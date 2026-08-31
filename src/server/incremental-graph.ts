@@ -529,9 +529,9 @@ export class IncrementalGraph {
   /**
    * Ticket 12: attach/clear the AI review state on one node. Same aliasing
    * contract as setNote: the cached snapshot shares NODE objects, so the
-   * mutation is visible to existing readers immediately. In-memory only —
-   * fullScan/applyEvents rebuild nodes without a review and the agent
-   * re-reports (begin_review/end_review) as needed.
+   * mutation is visible to existing readers immediately. Done reviews are
+   * re-attached from the persistent store (.module-graph/reviews.json)
+   * after every fullScan; checking states stay in-memory only.
    */
   setReview(id: string, review: AiReview | undefined): boolean {
     return this.mutateNode(id, (node) => {

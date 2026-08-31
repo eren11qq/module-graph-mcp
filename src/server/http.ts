@@ -68,6 +68,18 @@ export class WsHub {
     }
   }
 
+  /**
+   * True while at least one dashboard socket is OPEN — the live page's
+   * presence. Same OPEN filter as broadcast; register already evicts sockets
+   * on close/error, so no extra cleanup is needed here.
+   */
+  hasOpenClient(): boolean {
+    for (const client of this.clients) {
+      if (client.readyState === client.OPEN) return true;
+    }
+    return false;
+  }
+
   /** Shutdown path: politely close every connected dashboard socket. */
   closeAll(): void {
     for (const client of this.clients) client.close();
@@ -289,7 +301,7 @@ function serveSource(
  * every instance watches the tree itself, so relaying deltas would double
  * flash every page; only tool-driven state needs the relay.
  */
-const FORWARDABLE_TYPES: ReadonlySet<string> = new Set(['node_update', 'module_activity', 'review_timeout', 'scan_error']);
+const FORWARDABLE_TYPES: ReadonlySet<string> = new Set(['node_update', 'module_activity', 'review_timeout', 'scan_error', 'edit_scope', 'edit_verification']);
 
 /** Light shape check — full client-side guards (frame-guards) still run on the page. */
 export function isForwardableEvent(value: unknown): value is GraphEvent {
@@ -305,6 +317,24 @@ export function isForwardableEvent(value: unknown): value is GraphEvent {
       return typeof ev.id === 'string';
     case 'scan_error':
       return typeof ev.message === 'string';
+    case 'edit_scope':
+      // ADR 0002 §7.2: scope 载荷 {modules, files} 或 null（清除）。
+      return (
+        ev.scope === null ||
+        (ev.scope !== null &&
+          typeof ev.scope === 'object' &&
+          Array.isArray((ev.scope as { modules?: unknown }).modules) &&
+          Array.isArray((ev.scope as { files?: unknown }).files))
+      );
+    case 'edit_verification':
+      // ADR 0002 §7.2: 核对载荷 {edited, outOfScope, unreported} 三个数组。
+      return (
+        ev.verification !== null &&
+        typeof ev.verification === 'object' &&
+        Array.isArray((ev.verification as { edited?: unknown }).edited) &&
+        Array.isArray((ev.verification as { outOfScope?: unknown }).outOfScope) &&
+        Array.isArray((ev.verification as { unreported?: unknown }).unreported)
+      );
     default:
       // FORWARDABLE_TYPES already filtered `type`, but TS sees a plain string.
       return false;

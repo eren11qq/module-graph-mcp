@@ -160,18 +160,27 @@ export interface SpawnedClient extends McpClient {
   port: number;
 }
 
+export interface SpawnClientOptions {
+  /**
+   * Extra env vars merged over process.env (MODULE_GRAPH_NO_OPEN stays
+   * forced). Used by the read-only-mode probe to boot the server with
+   * MODULE_GRAPH_MCP_READ_ONLY=1.
+   */
+  env?: Record<string, string>;
+}
+
 /**
  * Cold-start one server against `fixtureRoot`, complete the MCP handshake
  * and return a ready client. Every evals task spawns its own — isolation by
  * process, never shared state between probes.
  */
-export async function spawnClient(fixtureRoot: string): Promise<SpawnedClient> {
+export async function spawnClient(fixtureRoot: string, options: SpawnClientOptions = {}): Promise<SpawnedClient> {
   const port = await getFreePort();
   const child = spawn(
     process.execPath,
     [serverEntryPath(), '--root', fixtureRoot, '--port', String(port)],
     {
-      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' },
+      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1', ...options.env },
       stdio: ['pipe', 'pipe', 'pipe']
     }
   );

@@ -152,6 +152,13 @@ describe('isForwardableEvent (unit)', () => {
     expect(isForwardableEvent({ type: 'module_activity', id: 'a.ts', path: 'a.ts', activity: 'viewing', at: 1 })).toBe(true);
     expect(isForwardableEvent({ type: 'review_timeout', id: 'a.ts', path: 'a.ts' })).toBe(true);
     expect(isForwardableEvent({ type: 'scan_error', message: 'boom' })).toBe(true);
+    // ADR 0002 §7.2: 改动核对事件可跨实例转发（同仓库副会话 → 主 dashboard）。
+    expect(isForwardableEvent({ type: 'edit_scope', scope: { modules: ['dashboard'], files: [] } })).toBe(true);
+    expect(isForwardableEvent({ type: 'edit_scope', scope: null })).toBe(true);
+    expect(
+      isForwardableEvent({ type: 'edit_verification', verification: { edited: ['a.ts'], outOfScope: ['b.ts'], unreported: [] } })
+    ).toBe(true);
+    expect(isForwardableEvent({ type: 'edit_scope', scope: { modules: 'dashboard' } })).toBe(false); // 畸形载荷
     expect(isForwardableEvent({ type: 'snapshot', snapshot: {} })).toBe(false);
     expect(isForwardableEvent({ type: 'graph_delta', delta: {} })).toBe(false);
     expect(isForwardableEvent({ type: 'nope' })).toBe(false);

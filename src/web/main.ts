@@ -146,7 +146,8 @@ document.getElementById('btn-reset-layout')?.addEventListener('click', () => vie
 // ---------------------------------------------------------------------------
 
 const btnUntestedOnly = document.getElementById('btn-untested-only') as HTMLButtonElement;
-const btnCollapse = document.getElementById('btn-collapse') as HTMLButtonElement;
+const btnModuleView = document.getElementById('btn-module-view') as HTMLButtonElement;
+const btnFileView = document.getElementById('btn-file-view') as HTMLButtonElement;
 const searchBox = document.getElementById('search-box') as HTMLInputElement;
 
 function toggleBtn(btn: HTMLButtonElement, set: (on: boolean) => void): void {
@@ -162,8 +163,16 @@ function setViewState(patch: Parameters<typeof view.setViewState>[0]): void {
   sink?.refreshDerived();
 }
 
+/** 视图模式切换（ADR 0002 §7.1）：模块视图（默认）| 文件视图。 */
+function setViewMode(mode: 'module' | 'file'): void {
+  btnModuleView.classList.toggle('active', mode === 'module');
+  btnFileView.classList.toggle('active', mode === 'file');
+  setViewState({ viewMode: mode });
+}
+
 btnUntestedOnly.addEventListener('click', () => toggleBtn(btnUntestedOnly, (on) => setViewState({ untestedOnly: on })));
-btnCollapse.addEventListener('click', () => toggleBtn(btnCollapse, (on) => setViewState({ collapseEnabled: on })));
+btnModuleView.addEventListener('click', () => setViewMode('module'));
+btnFileView.addEventListener('click', () => setViewMode('file'));
 searchBox.addEventListener('input', () => setViewState({ query: searchBox.value }));
 
 // ---------------------------------------------------------------------------

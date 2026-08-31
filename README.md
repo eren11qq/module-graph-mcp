@@ -7,9 +7,10 @@
 - **依赖图渲染**：文件级小球 + 依赖箭头；球色 = 测试状态（Okabe-Ito 色盲安全四色）；红环 = 类型错误；红色虚线弧 = 循环依赖；球大小随依赖度数增长
 - **实时更新**：文件增删改 → 增量重分析 → `graph_delta` / `node_update` 推帧，页面免刷新
 - **节点详情**：点击锁球 → 测试状态 / 覆盖它的测试文件 / 类型错误列表（含行号）/ 入出边跳转 / 语法高亮源码（错误行标记）
-- **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、目录折叠（同目录 ≥3 个文件折叠为一个目录球，点目录球展开）
+- **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、**[模块视图 | 文件视图]** 分段切换（ADR 0002：默认模块视图——文件球按功能类成堆、堆与堆之间连模块级边；点堆进入该功能类的文件视图；文件视图未聚焦时即海报模式）
 - **MCP 查询**：agent 可拉全图、查单模块详情、列未测模块、写备注（备注实时出现在 dashboard 详情面板）
 - **健康报告**：MCP `get_health_report` 工具与 `GET /api/report` 验收报告页——固定整数权重表打分（高中心度 / 未测 / 类型错误 / 在环上 / 评审 error），items 风险降序、同分按 id 字典序，中文简报 top 5；报告页支持 `?focus=<module-id>` 深链高亮（服务端拼装 HTML，无脚本无新依赖）
+- **爆炸半径与变更证据链**（GitNexus 移植）：改代码前 `get_impact` 看一个模块的波及面（upstream/downstream 按 BFS 深度分组、含测试状态与类型错误数）；改完后 `get_change_impact` 回放 watcher 记录的最近变更（仅内存、上限 100 条）并逐变更给出风险级（波及在环上或高中心度 → high；受影响 >10 → medium；否则 low）；`get_module_details` 响应新增 `context` 统计（入出度 / 在环上 / 归一化中心度）
 - **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」（响应内嵌评审 playbook：三色 verdicts 定义、分批节奏与配对纪律）；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）+ 详情面板「AI 已检查」徽章；检查约 10 分钟无活动自动回落
 - **探索可见**：agent 每读一个模块（`get_module_details`），对应球以紫色「查看」脉冲亮 3 秒、ticker 闪「AI 正在查看 …」——浏览文件不再是黑箱
 - **多会话一页**：同仓库新会话不再重复弹浏览器页（也不会闪控制台黑框）；它的 AI 活动（查看脉冲 / 检查脉冲）自动转发到第一个 dashboard 页上
@@ -42,6 +43,8 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 | `--no-open` | 从不自动打开浏览器（CI / 测试环境用；优先级高于 `--open`） |
 | `--version` | 打印版本号后退出（不启动服务） |
 | `MODULE_GRAPH_NO_OPEN=1` | 同 `--no-open` 的环境变量形式 |
+| `MODULE_GRAPH_MCP_READ_ONLY` | `1` = 只读模式：7 个变更类工具（`report_note` / `begin_review` / `update_review` / `end_review` / `report_test_run` / `declare_edit_scope` / `report_edits`）不注册、调用被拒（审计友好错误）；分析类工具保持可用。unset / `0` = 关；其他值启动即报错退出 |
+| `MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS` | 默认响应 token 预算（正整数；非法值启动即报错退出）。工具调用参数 `_maxTokens`（正整数，非法静默忽略）可按次覆盖；超限响应在 UTF-8 边界截断并追加英文省略标记（含原始估算 token 数与收窄指引），截断后的 JSON 可能不完整——护栏文本优先 |
 
 所有人类可读日志走 **stderr**——stdout 属于 MCP JSON-RPC 协议通道。服务只绑定 `127.0.0.1`，是本地单机工具。
 
@@ -49,7 +52,8 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 
 - 悬停：一跳邻域保持高亮，其余淡出；点击：锁定并打开详情（再点同球 / 点背景 / `Esc` 解锁）
 - 搜索框：大小写不敏感，匹配路径与文件名；与「只看未测」可叠加（AND）
-- 目录折叠：开关打开后，直接子文件 ≥3 的目录折叠为一个目录球（状态按最严重者聚合、类型错误计数累加、边重接到目录球）；根目录文件永不折叠；点击目录球展开该目录
+- **模板模式**（ADR 0002）：工具栏 [模块视图 | 文件视图] 切换，默认模块视图——文件球按功能类（模块表）成堆，堆与堆之间连模块级边（跨堆文件边聚合重连，保留跨模块环）；表外文件不进模块视图（只在文件视图出现）；点堆题注/文件球进入该功能类的文件视图，点空白回全部文件；模块视图模板位与文件视图存档按模式分档（重置布局两档全清）
+- **改动核对**（ADR 0002 §7.2）：开工前 `declare_edit_scope {modules, files}` 声明边界（新声明覆盖旧声明、重启即清），改完后 `report_edits {files}` 上报——服务端用模块表展开范围 + watcher 磁盘事实交叉验证，越界改动（红角标 + 状态栏警示条 + tooltip 文案）与漏报都判红；范围内文件常驻紫环、已改整球变紫；read-only 模式下与其它变更类工具一起隐藏 + 审计拒绝
 - 布局：力导向 fcose（唯一布局；早期的层级布局方案已裁定弃用，无切换快捷键）
 - 图例：灰=未测、蓝=有测试未跑、绿=通过、红(橙)=失败，及依赖边 / 循环依赖线型；AI 评审环行（绿=全 confident / 黄=有 unsure / 红=有 error），点击该行隐藏 / 显示已评审节点
 
@@ -97,9 +101,12 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 | 工具 | 说明 |
 |---|---|
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
-| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、源码全文（>512KB 截断并标注 `truncated`）、备注；每次读取让该球短暂亮起紫色脉冲 |
+| `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、context 统计（入出度 / 在环上 / 中心度）、源码全文（>512KB 截断并标注 `truncated`）、备注；每次读取让该球短暂亮起紫色脉冲 |
+| `get_impact` | 爆炸半径：upstream（谁依赖它）/ downstream（它依赖谁）按 BFS 深度分组（同深度按 id 字典序），每项含测试状态与类型错误数；`direction` 默认 both、`maxDepth` 默认 3 上限 10（非法回退 3）；未知 path 走自解释错误 |
+| `get_change_impact` | 变更证据链：watcher 记录的最近变更文件（`{id, changedAt, inGraph}`）+ 每个在图变更的波及面（both 方向、深度 3）与风险级；返回 `overallRisk` 与中文启发式说明；记录仅内存（上限 100 条），服务重启即清 |
 | `get_dashboard_info` | dashboard 浏览器地址、被监视根目录、节点/边计数：agent 每会话先调它核实监视的树对不对，并把链接给用户 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
+| `get_health_report` | 确定性健康报告：固定整数权重表打分（高中心度=3、未测=2、类型错误=2、在环上=1、评审 error=2，同分按 id 字典序），items 风险降序 + 中文简报 top 5 |
 | `report_note` | 给模块写自由备注（≤2000 字符；空串清除） |
 | `begin_review` | 标记模块进入 AI 检查：球开始脉冲、面板显示「检查中」；与 `end_review` 配对使用 |
 | `update_review` | 检查进行中分批推送部分 verdicts（格式同 `end_review`，与已有结论合并、同样新条覆盖旧行）：源码行实时逐行上色 |
@@ -133,7 +140,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 
 - **Python 等其他语言解析**——只静态分析 `ts / tsx / js / jsx` 的 import
 - **多项目根**——单进程只监视一个 `--root`
-- **历史持久化**——图、备注与 AI 评审结果均在内存，进程退出即失；检查中状态约 10 分钟无收尾自动回落
+- **评审常驻**——`end_review` 落地的三色结论写入 `<root>/.module-graph/reviews.json`（默认 gitignore），服务重启 / 弹窗页面关闭后重新打开仍然在；图与备注仍为内存态；检查中状态约 10 分钟无收尾自动回落
 - lint 错误收集、agent 备注编辑 UI
 
 ## 开发

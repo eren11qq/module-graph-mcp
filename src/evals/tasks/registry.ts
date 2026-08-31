@@ -11,6 +11,11 @@ import { task as testRunRemap } from './test-run-remap.js';
 import { task as healthReportRanking } from './health-report-ranking.js';
 import { task as reportPageHttp } from './report-page-http.js';
 import { task as playbookPresent } from './playbook-present.js';
+import { task as impactUpstreamDownstream } from './impact-upstream-downstream.js';
+import { task as changeImpactEmpty } from './change-impact-empty.js';
+import { task as readOnlyMode } from './read-only-mode.js';
+import { task as maxtokensTruncation } from './maxtokens-truncation.js';
+import { task as editScopeVerification } from './edit-scope-verification.js';
 
 /**
  * The task registry — the single list the runner executes. The structure
@@ -34,5 +39,10 @@ export const ALL_TASKS: readonly EvalTask[] = [
   testRunRemap,
   healthReportRanking,
   reportPageHttp,
-  playbookPresent
+  playbookPresent,
+  impactUpstreamDownstream,
+  changeImpactEmpty,
+  readOnlyMode,
+  maxtokensTruncation,
+  editScopeVerification
 ];

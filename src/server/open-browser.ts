@@ -41,6 +41,50 @@ export function shouldAutoOpen(d: AutoOpenDecision): boolean {
   return !d.sameRootHolder;
 }
 
+export interface PopDecision {
+  /** shouldAutoOpen armed this instance for file-granular popping. */
+  armed: boolean;
+  /** This exact file already popped during this process lifetime. */
+  alreadyPopped: boolean;
+  /** A dashboard websocket is OPEN — the user visibly has the page. */
+  pageConnected: boolean;
+}
+
+/**
+ * Per-file popup rhythm (code-review 2026-08-31): with working launchers a
+ * single session reading N files would stack N identical tabs. A connected
+ * dashboard page means the user can already see the project, so popping stops
+ * until that tab closes. --open bypasses this entirely (it pops at startup,
+ * unconditionally, and never routes through this decision).
+ */
+export function shouldPopFile(d: PopDecision): boolean {
+  return d.armed && !d.alreadyPopped && !d.pageConnected;
+}
+
+/** WSL(1/2) sets WSL_DISTRO_NAME in every login shell; nothing else does. */
+export function detectWsl(): boolean {
+  return process.env.WSL_DISTRO_NAME !== undefined;
+}
+
+/**
+ * Launcher candidates per platform, tried in order (each spawn failure falls
+ * through to the next). On Linux the classic chain (wslview, xdg-open) is
+ * absent on minimal WSLg installs, so a WSL session gets cmd.exe (the Windows
+ * default browser via PATH) and `gio open` (ships with gio/glib, present even
+ * where xdg-utils is not) as fallbacks. The empty-string arg in the cmd.exe
+ * chain is REQUIRED: `start` treats its first quoted argument as a window
+ * title, so without it the URL would be swallowed as the title. Pure so the
+ * branch order is pinned in tests without spawning anything.
+ */
+export function browserCandidates(platform: string, isWsl: boolean, url: string): Array<[string, string[]]> {
+  if (platform === 'win32') return [['cmd.exe', ['/c', 'start', '', url]]];
+  if (platform === 'darwin') return [['open', [url]]];
+  const chain: Array<[string, string[]]> = [['wslview', [url]]];
+  if (isWsl) chain.push(['cmd.exe', ['/c', 'start', '', url]]);
+  chain.push(['xdg-open', [url]], ['gio', ['open', url]]);
+  return chain;
+}
+
 /**
  * Open the dashboard URL in the user's default browser.
  * Best-effort: never throws, failures are reported via the returned message.
@@ -49,15 +93,7 @@ export function shouldAutoOpen(d: AutoOpenDecision): boolean {
 export function openBrowser(url: string, opts: OpenOptions = {}): string | undefined {
   if (opts.noOpen || process.env.MODULE_GRAPH_NO_OPEN === '1') return 'browser auto-open suppressed';
 
-  const candidates: Array<[string, string[]]> =
-    process.platform === 'win32'
-      ? [['cmd.exe', ['/c', 'start', '', url]]]
-      : process.platform === 'darwin'
-        ? [['open', [url]]]
-        : [
-            ['wslview', [url]],
-            ['xdg-open', [url]]
-          ];
+  const candidates = browserCandidates(process.platform, detectWsl(), url);
 
   // spawn() does not throw for ENOENT — the failure only surfaces as an
   // async 'error' event, so candidates are tried via that event chain.

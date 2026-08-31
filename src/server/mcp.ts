@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
 import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
+import type { ReviewStore } from './review-store.js';
 import { buildHealthReport } from './health-report.js';
 import {
   computeImpact,
@@ -12,9 +13,18 @@ import {
   type ImpactNode
 } from './impact.js';
 import type { RecentChanges } from './recent-changes.js';
+import {
+  createEditScopeStore,
+  isInScope,
+  normalizeFilePath,
+  VALID_MODULE_IDS,
+  verifyEdits,
+  type EditScopeStore
+} from './edit-scope.js';
+import { filesInModule, FUNCTIONAL_MODULES } from '../shared/module-table.js';
 import { applyTokenBudget } from './response-budget.js';
 import { VERSION } from './version.js';
-import type { AiReview, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
+import type { AiReview, EditScopeDecl, GraphEvent, GraphSnapshot, ModuleNode } from '../shared/types.js';
 
 /**
  * Minimal MCP (Model Context Protocol) server over stdio.
@@ -139,8 +149,13 @@ export interface McpToolDeps {
    */
   defaultMaxTokens?: number;
   /**
+   * 常驻: persistent AI-review store — end_review lands the done review
+   * here so it survives restarts. Absent → in-memory only (tests).
+   */
+  reviewStore?: ReviewStore;
+  /**
    * GitNexus port: read-only mode (MODULE_GRAPH_MCP_READ_ONLY=1, parsed in
-   * index.ts). buildTools skips registering the five mutation tools — so
+   * index.ts). buildTools skips registering the seven mutation tools — so
    * tools/list hides them — and the transport answers their tools/call with
    * a dedicated audit-friendly error instead of "Unknown tool".
    */
@@ -148,7 +163,7 @@ export interface McpToolDeps {
 }
 
 /**
- * The five mutation-class tools hidden in read-only mode. Inspection tools
+ * The seven mutation-class tools hidden in read-only mode. Inspection tools
  * (get_impact / get_change_impact / get_health_report / …) stay visible: a
  * read-only session can still explore, it just cannot write anything back.
  */
@@ -157,7 +172,9 @@ export const READ_ONLY_BLOCKED_TOOLS: readonly string[] = [
   'begin_review',
   'update_review',
   'end_review',
-  'report_test_run'
+  'report_test_run',
+  'declare_edit_scope',
+  'report_edits'
 ];
 
 /**
@@ -231,7 +248,7 @@ const REVIEW_PLAYBOOK = [
   '### Closure',
   '- ALWAYS pair a begin_review with an end_review for the same path — an empty verdicts array means "reviewed, all clear".',
   '- Include a one-line summary (max 500 chars) so the dashboard detail panel can show the conclusion.',
-  '- Verdicts are in-memory: a server restart or rescan clears them; re-report when needed.'
+  '- Verdicts persist on disk: a server restart keeps them (re-review only when the code changes).'
 ].join('\n');
 
 /**
@@ -302,6 +319,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
   // get_change_impact (risk heuristic): recomputed only when the snapshot's
   // generatedAt moves. One factory instance per buildTools call = one graph.
   const statsFor = createGraphStats(() => graph.snapshot());
+  // ADR 0002 §7.2: 会话级编辑范围（declare_edit_scope 覆盖旧声明；重启即清）。
+  const editScopeStore: EditScopeStore = createEditScopeStore();
   const tools: Record<string, ToolDef> = {
     get_dashboard_info: {
       description:
@@ -313,12 +332,21 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
       },
       execute() {
         const snap = graph.snapshot();
+        // ADR 0002 §7.1: 模块表（模块名 + 路径清单）随 get_dashboard_info 交
+        // 给 agent —— declare_edit_scope 的 modules 从这里取合法 id。
+        const nodeIds = snap.nodes.map((n) => n.id);
+        const modules = FUNCTIONAL_MODULES.map((m) => ({
+          id: m.id,
+          label: m.label,
+          files: filesInModule(nodeIds, m.id)
+        }));
         const info = deps.httpInfo?.();
         if (info === undefined) {
           return textToolResult({
             rootPath: snap.rootPath,
             nodeCount: snap.nodes.length,
             edgeCount: snap.edges.length,
+            modules,
             note: 'dashboard not wired in this deployment'
           });
         }
@@ -329,6 +357,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           version: info.version,
           nodeCount: snap.nodes.length,
           edgeCount: snap.edges.length,
+          modules,
           ...(deps.isBaselineDone?.() === false ? { scanning: true } : {})
         });
       }
@@ -582,7 +611,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     end_review: {
       description:
-        'Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max 500 entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts are in-memory; a rescan clears them and you re-report.',
+        'Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max 500 entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts persist on disk (.module-graph/reviews.json): they survive restarts, so a re-review is only needed when the code changed.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -627,6 +656,10 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           };
         }
         const { done, verdictCount } = lifecycle.end(node.id, args.verdicts, args.summary);
+        // 常驻: the completed conclusion is the one durable trace — persist it
+        // (begin/update stay transient; an interrupted re-review keeps the
+        // last completed end_review instead of erasing it).
+        deps.reviewStore?.set(node.id, done);
         return textToolResult({
           ok: true,
           id: node.id,
@@ -662,6 +695,120 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         }
         deps.reportTestRun(args.failed);
         return textToolResult({ ok: true, failed: args.failed, note: 'coverage remap triggered' });
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // ADR 0002 §7.2: 改动核对工具对。declare_edit_scope 开工前声明边界；
+    // report_edits 改完后上报实际改动；服务端用模块表展开范围 + watcher
+    // 磁盘事实交叉验证——越界与漏报都判红，核对不靠 AI 自觉。
+    // -----------------------------------------------------------------------
+
+    declare_edit_scope: {
+      description:
+        'Declare your edit scope BEFORE you start editing: the functional modules (ids from get_dashboard_info.modules) and/or explicit files you plan to touch. The server checks every later report_edits against this boundary — a file outside it is an out-of-scope edit (red on the dashboard), and the watcher record catches files you changed but never reported. A new declaration replaces the old one; the scope is session-level and cleared on restart. Pass an empty object to clear the scope.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          modules: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Functional module ids to cover, e.g. ["graph-engine"] — get_dashboard_info lists the valid ids'
+          },
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Explicit file paths (POSIX relative to the watched root). Files outside the module table can only be admitted here.'
+          }
+        },
+        additionalProperties: false
+      },
+      execute(args) {
+        const rawModules = Array.isArray(args.modules)
+          ? args.modules.filter((x): x is string => typeof x === 'string')
+          : [];
+        const rawFiles = Array.isArray(args.files) ? args.files.filter((x): x is string => typeof x === 'string') : [];
+        const badModules = rawModules.filter((m) => !VALID_MODULE_IDS.includes(m as (typeof VALID_MODULE_IDS)[number]));
+        if (badModules.length > 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `unknown functional module(s): ${badModules.join(', ')}. ` +
+                  `valid ids: ${VALID_MODULE_IDS.join(', ')} (see get_dashboard_info.modules).`
+              }
+            ],
+            isError: true
+          };
+        }
+        const modules = [...new Set(rawModules)];
+        const files = [...new Set(rawFiles.map(normalizeFilePath).filter((f) => f !== ''))];
+        const scope: EditScopeDecl = { modules, files };
+        editScopeStore.declare(scope);
+        const snap = graph.snapshot();
+        const inScopeFiles = snap.nodes.map((n) => n.id).filter((id) => isInScope(id, scope));
+        // The expanded in-scope file list is capped — big repos would blow
+        // the reply otherwise; the count stays exact.
+        const EXPAND_CAP = 200;
+        deps.broadcast?.({ type: 'edit_scope', scope });
+        return textToolResult({
+          ok: true,
+          scope: { modules, files },
+          inScopeFileCount: inScopeFiles.length,
+          inScopeFiles: inScopeFiles.slice(0, EXPAND_CAP),
+          ...(inScopeFiles.length > EXPAND_CAP ? { truncated: true } : {}),
+          note: 'scope declared; report the actual edits with report_edits when done'
+        });
+      }
+    },
+
+    report_edits: {
+      description:
+        'Report the files you actually edited after the work is done. The server checks every file against the declared edit scope (declare_edit_scope) and cross-checks the watcher record: a file the watcher saw changed but you did not report is unreported (漏报), and any change outside the scope is an out-of-scope edit. Returns both lists and an ok flag (ok = no out-of-scope and no unreported).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Edited file paths (POSIX relative to the watched root), e.g. ["src/server/mcp.ts"]'
+          }
+        },
+        required: ['files'],
+        additionalProperties: false
+      },
+      execute(args) {
+        if (!Array.isArray(args.files)) {
+          return {
+            content: [{ type: 'text', text: 'files is required and must be an array of POSIX file paths.' }],
+            isError: true
+          };
+        }
+        const reported = [
+          ...new Set(args.files.filter((x): x is string => typeof x === 'string').map(normalizeFilePath).filter((f) => f !== ''))
+        ];
+        const watcher = deps.recentChanges?.list().map((c) => c.id) ?? [];
+        const verification = verifyEdits(editScopeStore.current(), reported, watcher);
+        deps.broadcast?.({
+          type: 'edit_verification',
+          verification: {
+            edited: [...new Set([...reported, ...watcher])],
+            outOfScope: verification.outOfScope.map((e) => e.id),
+            unreported: verification.unreported
+          }
+        });
+        return textToolResult({
+          ok: verification.ok,
+          scopeDeclared: verification.scopeDeclared,
+          reported,
+          outOfScope: verification.outOfScope,
+          unreported: verification.unreported,
+          note: verification.ok
+            ? 'all edits inside the declared scope and everything reported — clean.'
+            : 'out-of-scope edits and/or unreported changes detected — check the lists.'
+        });
       }
     },
 
@@ -986,11 +1133,41 @@ export class McpStdioServer {
   private async callTool(id: string | number, name: string, tool: ToolDef, args: Record<string, unknown>): Promise<void> {
     try {
       await this.awaitBaseline(name);
-      this.reply(id, tool.execute(args));
+      const result = tool.execute(args);
+      this.reply(id, this.withinBudget(name, args, result));
     } catch (err) {
       this.logger(`mcp: handler error: ${err instanceof Error ? err.message : String(err)}`);
       this.errorReply(id, -32603, 'Internal error');
     }
+  }
+
+  /**
+   * Response budget (GitNexus port): a per-call `_maxTokens` (positive
+   * integer) wins over the deps' default; neither set → pass through. An
+   * illegal per-call value NEVER kills the call — it is ignored with one
+   * stderr line, and the reply goes out untruncated. Truncation (when it
+   * fires) is logged on the same human-readable channel.
+   */
+  private withinBudget(name: string, args: Record<string, unknown>, result: ToolResult): ToolResult {
+    let maxTokens: number | undefined;
+    const raw = args._maxTokens;
+    if (raw !== undefined) {
+      if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) {
+        maxTokens = raw;
+      } else {
+        const shown = typeof raw === 'string' ? `"${raw}"` : String(raw);
+        this.logger(`mcp: ignoring illegal _maxTokens ${shown} for ${name} (must be a positive integer)`);
+      }
+    }
+    if (maxTokens === undefined) maxTokens = this.deps.defaultMaxTokens;
+    if (maxTokens === undefined) return result;
+
+    const first = result.content[0];
+    if (first === undefined || first.type !== 'text') return result;
+    const budgeted = applyTokenBudget(first.text, maxTokens);
+    if (!budgeted.truncated) return result;
+    this.logger(`mcp: reply for ${name} truncated to ~${maxTokens} tokens (original ≈ ${budgeted.originalTokens})`);
+    return { ...result, content: [{ type: 'text', text: budgeted.text }] };
   }
 
   /**

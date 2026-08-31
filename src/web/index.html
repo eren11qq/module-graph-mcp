@@ -22,7 +22,10 @@
         <input type="search" id="search-box" placeholder="搜索：路径 / 文件名" aria-label="搜索模块" />
       </div>
       <button type="button" id="btn-untested-only" class="tool-toggle" title="只显示未测模块（灰球）">只看未测</button>
-      <button type="button" id="btn-collapse" class="tool-toggle" title="同目录文件 ≥ 3 个时折叠为一个目录球；点目录球展开该目录">目录折叠</button>
+      <div class="segmented" id="view-mode" role="group" aria-label="视图模式">
+        <button type="button" id="btn-module-view" class="tool-toggle active" title="模块视图：文件球按功能类成堆，堆与堆之间连模块级边（默认）">模块视图</button>
+        <button type="button" id="btn-file-view" class="tool-toggle" title="文件视图：全部文件（海报模式），或聚焦某一功能类的文件簇">文件视图</button>
+      </div>
       <button type="button" id="btn-reset-layout" class="tool-toggle" title="清空布局存档并从头重排">重置布局</button>
       <button type="button" id="btn-reset" class="tool-toggle" title="缩放/平移复位到全图">重置视图</button>
     </div>

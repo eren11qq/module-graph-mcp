@@ -12,10 +12,12 @@ import type { GraphEvent } from '../src/shared/types.js';
  * Code-review 2026-08-29: two MCP sessions over the SAME repository root.
  * The second instance must (a) stay headless — the first instance's tab is
  * the one on screen — and (b) relay its tool-driven events to the first
- * instance's dashboard, so one page shows every session's AI activity.
+ *  instance's dashboard, so one page shows every session's AI activity.
  * Popup policy (file-granular): NOBODY pops at startup; the armed primary
  * pops once per distinct file the agent opens (own tool call naming the
- * file, or a relayed event naming it). Files never opened never pop.
+ * file, or a relayed event naming it) — but only while no dashboard page is
+ * connected: a live tab already shows the project, further pops would stack
+ * duplicate tabs. Files never opened never pop.
  */
 
 const ROOT = resolve('test-fixtures/sample-app');
@@ -167,7 +169,7 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     expect(secondary.stderr).toContain(`same-root instance already serves this dashboard at http://127.0.0.1:${primaryPort}`);
   }, 15000);
 
-  it('a read on the secondary lights the ball on the primary (module_activity relay)', async () => {
+  it('a read on the secondary lights the ball; the popup waits for the page to close', async () => {
     const collected = collect(ws); // ws is the shared socket opened in beforeAll
 
     secondary.send({
@@ -185,12 +187,37 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     expect(ev.id).toBe('core/app.ts');
     expect(ev.activity).toBe('viewing');
 
-    // The relay was the primary's FIRST file activity: the armed primary pops
-    // here for the file the relayed event names, even though its own session
-    // never called a tool. Under the env suppression the attempt shows up as
-    // this log line.
-    await primary.waitUntilStderr('dashboard auto-open for core/app.ts (relayed activity)');
+    // The relay was the primary's FIRST file activity — but the test's own
+    // socket IS a connected dashboard page, so the armed primary stays quiet:
+    // popping now would stack a tab onto the one the user is already looking
+    // at, and the file is NOT recorded as popped (a later page-less stretch
+    // still pops).
+    await primary.waitUntilStderr('dashboard already open in a browser — skip auto-open for core/app.ts');
+    expect(primary.stderr).not.toContain('dashboard auto-open for core/app.ts');
+
+    // Close the tab (server evicts the socket before its own handler ends),
+    // then a relayed read of ANOTHER file pops — under NO_OPEN the attempt
+    // shows up as the suppressed-open log line.
+    await new Promise<void>((res) => {
+      ws.once('close', () => res());
+      ws.close();
+    });
+    secondary.send({
+      jsonrpc: '2.0',
+      id: 911,
+      method: 'tools/call',
+      params: { name: 'get_module_details', arguments: { path: 'core/emitter.ts' } }
+    });
+    await secondary.waitForReply(911);
+    await primary.waitUntilStderr('dashboard auto-open for core/emitter.ts (relayed activity)');
     expect(primary.stderr).toContain('browser auto-open suppressed');
+
+    // Later tests collect relayed frames again — reopen the page socket.
+    ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws`);
+    await new Promise<void>((res, rej) => {
+      ws.once('open', () => res());
+      ws.once('error', rej);
+    });
   }, 30000);
 
   it('a begin_review on the secondary pulses on the primary (node_update relay)', async () => {

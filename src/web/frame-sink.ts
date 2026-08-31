@@ -1,4 +1,4 @@
-import type { GraphEvent, ModuleNode, TestState } from '../shared/types.js';
+import type { EditScopeDecl, EditVerificationWire, GraphEvent, ModuleNode, TestState } from '../shared/types.js';
 import { worstReviewVerdict } from './ai-review.js';
 import type { DetailPanel } from './detail-panel.js';
 import { isGraphDelta, isGraphSnapshot, isModuleNode } from './frame-guards.js';
@@ -8,6 +8,26 @@ import type { Legend, LegendCounts } from './legend.js';
 import type { Statusbar } from './statusbar.js';
 import { stateLabel } from './test-states.js';
 import { CHROME, shortLabel } from './theme.js';
+
+/** ADR 0002 §7.2 wire 校验：edit_scope / edit_verification 载荷。 */
+function isEditScopeDecl(value: unknown): value is EditScopeDecl {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Array.isArray((value as { modules?: unknown }).modules) &&
+    Array.isArray((value as { files?: unknown }).files)
+  );
+}
+
+function isEditVerificationWire(value: unknown): value is EditVerificationWire {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Array.isArray((value as { edited?: unknown }).edited) &&
+    Array.isArray((value as { outOfScope?: unknown }).outOfScope) &&
+    Array.isArray((value as { unreported?: unknown }).unreported)
+  );
+}
 
 /**
  * The frame choreography, one place (architecture review 2026-08-29,
@@ -214,6 +234,44 @@ export function createFrameSink(opts: FrameSinkDeps): FrameSink {
         }
         view.pulseViewing(id);
         statusbar.flashEvent(`AI 正在查看 ${shortLabel(id)}`);
+        return;
+      }
+
+      case 'edit_scope': {
+        // ADR 0002 §7.2: 编辑范围落地（scope null = 清除）。范围内文件拿
+        // 常驻紫环；新范围 = 新基线，警示条与已改/越界标记一并清零。
+        const scope = isEditScopeDecl(event.scope) ? event.scope : null;
+        view.setEditScope(scope);
+        statusbar.warn(null);
+        statusbar.flashEvent(
+          scope !== null
+            ? `编辑范围已声明 · ${scope.modules.length} 模块 / ${scope.files.length} 显式文件`
+            : '编辑范围已清除'
+        );
+        return;
+      }
+
+      case 'edit_verification': {
+        // ADR 0002 §7.2: 核对结果——已改整球变紫、越界红角标 + 常驻警示条；
+        // 漏报进 ticker。不折进图模型（marks 是视图层状态）。
+        const v = event.verification;
+        if (!isEditVerificationWire(v)) {
+          console.warn('ws: dropped malformed edit_verification frame');
+          return;
+        }
+        view.setEditVerification(v);
+        if (v.outOfScope.length > 0) {
+          const shown = v.outOfScope.slice(0, 5).map((id) => shortLabel(id)).join(', ');
+          statusbar.warn(
+            `越界改动：${shown}${v.outOfScope.length > 5 ? ` 等 ${v.outOfScope.length} 个` : ''}`
+          );
+        } else {
+          statusbar.warn(null);
+        }
+        const bits: string[] = [];
+        if (v.outOfScope.length > 0) bits.push(`${v.outOfScope.length} 越界`);
+        if (v.unreported.length > 0) bits.push(`${v.unreported.length} 漏报`);
+        statusbar.flashEvent(bits.length > 0 ? `改动核对：${bits.join(' · ')}` : '改动核对通过');
         return;
       }
     }

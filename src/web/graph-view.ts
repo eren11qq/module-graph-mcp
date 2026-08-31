@@ -1,8 +1,18 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
+import type { Edge, EditScopeDecl, EditVerificationWire, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
+import { labelOf, moduleIdOf, type FunctionalModuleId } from '../shared/module-table.js';
+import {
+  aggregateModuleEdges,
+  deriveScopeMarks,
+  groupByModule,
+  moduleIdFromPile,
+  PILE_ANCHOR,
+  pileBallPosition,
+  pileIdOf
+} from './module-view.js';
 import { worstReviewVerdict } from './ai-review.js';
-import { applyViewState, dirBallDirOf, type ViewState } from './graph-filters.js';
+import { applyViewState, type ViewState } from './graph-filters.js';
 import { applyRegionLayout, assignRegions, syncRegionPlates, type RegionId } from './graph-areas.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
 import { createLayoutStore, type LayoutPoint, type LayoutStore } from './layout-store.js';
@@ -51,6 +61,10 @@ export interface GraphView {
    * frame) — light the transient `viewing` pulse, self-expiring.
    */
   pulseViewing(id: string): void;
+  /** ADR 0002 §7.2: 编辑范围落地/清除（edit_scope 事件）——重置已改/越界标记。 */
+  setEditScope(scope: EditScopeDecl | null): void;
+  /** ADR 0002 §7.2: 核对结果（edit_verification 事件）——已改紫 / 越界红角标。 */
+  setEditVerification(verification: EditVerificationWire): void;
   /** Drop the current lock (Esc / close). */
   clearFocus(): void;
   resetView(): void;
@@ -117,7 +131,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   /** Archived positions for the current root (empty when store/root absent). */
   function currentLayout(): Map<string, LayoutPoint> {
     if (currentRoot === null) return new Map();
-    return store.load(currentRoot);
+    return store.load(currentRoot, viewState.viewMode);
   }
 
   /**
@@ -138,7 +152,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         points.set(n.id(), { x: p.x, y: p.y });
       });
     }
-    if (points.size > 0) store.save(currentRoot, points);
+    if (points.size > 0) store.save(currentRoot, points, viewState.viewMode);
   }
 
   let currentNodes = new Map<string, ModuleNode>();
@@ -153,15 +167,19 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   let entered = false; // entrance choreography (pre → fade-in) runs once, on first load
   // Ticket 11 + theme.html legend filter: the view owns the mutable copies;
   // the pipeline sees ReadonlySets.
-  const expandedDirs = new Set<string>();
   let viewState: ViewState = {
     query: '',
     untestedOnly: false,
-    collapseEnabled: false,
-    expandedDirs,
     hiddenStates: new Set<TestState>(),
-    hideReviewed: false
+    hideReviewed: false,
+    viewMode: 'module',
+    focusedModule: null
   };
+
+  // ADR 0002 §7.2 改动标记状态（edit_scope / edit_verification 事件驱动）。
+  let editScope: EditScopeDecl | null = null;
+  let editedIds = new Set<string>();
+  let outOfScopeIds = new Set<string>();
 
   // -------------------------------------------------------------------------
   // Data
@@ -202,10 +220,16 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // Ticket 12: a node the agent is reviewing carries the checking class —
     // the stylesheet draws the bright edge, physics.ts pulses the overlay.
     if (n.aiReview?.status === 'checking') classes.push('checking');
+    // ADR 0002 §7.2: 范围环 / 已改紫 / 越界红角标——三条独立 class 通道，
+    // 与测试球色、类型错误环、评审环、viewing 紫脉冲互不冲突。
+    const marks = deriveScopeMarks([n], editScope, editedIds, outOfScopeIds).get(n.id);
+    if (marks?.inScope) classes.push('in-scope');
+    if (marks?.edited) classes.push('edited');
+    if (marks?.outOfScope) classes.push('out-of-scope');
     return {
       data: {
         id: n.id,
-        label: shortLabel(n.path),
+        label: shortLabel(n.path) + (marks?.outOfScope ? ' \u26D4' : ''),
         path: n.path,
         state: n.testState,
         diameter: diameterFor(n.id, deg.in + deg.out),
@@ -245,7 +269,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   function setSnapshot(next: GraphSnapshot): void {
     lockedId = null;
     opts.onFocusChange(null);
-    expandedDirs.clear();
     // 布局存档分仓键 (Code-review 2026-08-29): the snapshot is where the view
     // first learns which repo it is showing.
     currentRoot = next.rootPath;
@@ -260,7 +283,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     return (
       viewState.query.trim() !== '' ||
       viewState.untestedOnly ||
-      viewState.collapseEnabled ||
       viewState.hiddenStates.size > 0 ||
       viewState.hideReviewed
     );
@@ -272,27 +294,21 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
    * With every control off this renders the plain graph, so setSnapshot is
    * just bookkeeping + renderVisible.
    */
-  function renderVisible(): void {
-    const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
-    degrees = rebuildDegrees(visible.nodes, visible.edges);
-    refreshRegions(visible.nodes, visible.edges);
-
-    // Cycle arcs are computed once here and consumed by the edge styling
-    // (dashed vermillion). Placement is fcose's job.
+  /**
+   * 文件视图元素：文件球 + 文件级边（海报模式）。fcose 排布、区域罗盘
+   * 平移照旧；焦点与环标记走 nodeElement 的 class 通道。
+   */
+  function fileViewElements(
+    visible: { nodes: ModuleNode[]; edges: Edge[] },
+    saved: Map<string, LayoutPoint>,
+    firstRender: boolean
+  ): cytoscape.ElementDefinition[] {
     const layoutInput: LayoutGraphInput = {
       nodes: visible.nodes.map((n) => ({ id: n.id, label: shortLabel(n.path) })),
       links: visible.edges.map((e) => ({ from: e.from, to: e.to }))
     };
     backEdgeIds = findBackEdges(layoutInput);
-
-    const firstRender = !entered;
-    entered = true;
-    // 布局存档恢复 (Code-review 2026-08-29): the element swap used to wipe
-    // every position (every filter toggle re-solved from scratch). Restoring
-    // the archived spots into the fresh defs makes fcose randomize:false
-    // start from the last stable layout — 老球落回原位,新球才交给力模拟。
-    const saved = currentLayout();
-    const elements: cytoscape.ElementDefinition[] = [
+    return [
       ...visible.nodes.map((n) => {
         const def = nodeElement(n);
         const spot = saved.get(n.id);
@@ -302,6 +318,74 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       }),
       ...visible.edges.map((e) => edgeElement(e, backEdgeIds.has(edgeIdOf(e))))
     ];
+  }
+
+  /**
+   * 模块视图元素（ADR 0002 §7.1）：表内文件球按功能类成堆（固定模板位，
+   * 存档优先 / 网格兜底），堆与堆之间用模块级边连线（跨堆文件边聚合重连，
+   * 保留跨模块环），每堆一个可点击的题注节点（pile:<id>）。表外文件不进
+   * 模块视图。无 fcose——堆位是固定的，只有堆内球可被拖走（拖点即存档）。
+   */
+  function moduleViewElements(
+    visible: { nodes: ModuleNode[]; edges: Edge[] },
+    saved: Map<string, LayoutPoint>
+  ): cytoscape.ElementDefinition[] {
+    const groups = groupByModule(visible.nodes);
+    const moduleOf = new Map<string, FunctionalModuleId>();
+    for (const n of visible.nodes) {
+      const m = moduleIdOf(n.id);
+      if (m !== null) moduleOf.set(n.id, m);
+    }
+    const modEdges = aggregateModuleEdges(visible.edges, moduleOf);
+    // 模块级环：在抽象图上算（堆=节点,模块级边=链接）。
+    const layoutInput: LayoutGraphInput = {
+      nodes: [...groups.keys()].map((m) => ({ id: pileIdOf(m), label: '' })),
+      links: modEdges.map((e) => ({ from: e.from, to: e.to }))
+    };
+    backEdgeIds = findBackEdges(layoutInput);
+
+    const elements: cytoscape.ElementDefinition[] = [];
+    for (const [m, nodes] of groups) {
+      // 题注：可点击（点某堆 → 文件视图聚焦该功能类），不可拖。
+      elements.push({
+        data: { id: pileIdOf(m), label: `${labelOf(m)} · ${nodes.length}`, path: pileIdOf(m) },
+        classes: 'region-plate pile-plate',
+        position: { ...PILE_ANCHOR[m] }
+      });
+      nodes.forEach((n, i) => {
+        const def = nodeElement(n);
+        const spot = saved.get(n.id);
+        def.position = spot !== undefined ? { x: spot.x, y: spot.y } : pileBallPosition(m, i);
+        elements.push(def);
+      });
+    }
+    for (const e of modEdges) {
+      const cycle = backEdgeIds.has(edgeIdOf(e));
+      elements.push({
+        data: { id: edgeIdOf(e), source: e.from, target: e.to },
+        classes: `edge-module${cycle ? ' cycle' : ''}`
+      });
+    }
+    return elements;
+  }
+
+  function renderVisible(): void {
+    const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
+    degrees = rebuildDegrees(visible.nodes, visible.edges);
+    refreshRegions(visible.nodes, visible.edges);
+
+    const firstRender = !entered;
+    entered = true;
+    // 布局存档恢复 (Code-review 2026-08-29): the element swap used to wipe
+    // every position (every filter toggle re-solved from scratch). Restoring
+    // the archived spots into the fresh defs makes fcose randomize:false
+    // start from the last stable layout — 老球落回原位,新球才交给力模拟。
+    // ADR 0002: 存档按视图模式分档（layout-store rootPath + mode）。
+    const saved = currentLayout();
+    const elements =
+      viewState.viewMode === 'module'
+        ? moduleViewElements(visible, saved)
+        : fileViewElements(visible, saved, firstRender);
 
     cy.batch(() => {
       cy.elements().remove();
@@ -363,8 +447,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // Ticket 11: while any view control reshapes the graph, the incremental
     // DOM path no longer matches what should be visible — fall back to a
     // full render of the pipelined graph (which also clears a focus whose
-    // node left the visible set).
-    if (filtersActive()) {
+    // node left the visible set). ADR 0002: 模块视图的堆分组/模块级边聚合
+    // 是整体结构，增量 DOM 路径同样不适用。
+    if (filtersActive() || viewState.viewMode === 'module') {
       renderVisible();
       return;
     }
@@ -460,9 +545,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   function applyNodeUpdate(node: ModuleNode): void {
     currentNodes.set(node.id, node);
     // With controls on, a state change can change what is visible (未测
-    // filter, dir-ball aggregation, legend-hidden states) — re-render
-    // instead of patching one ball.
-    if (filtersActive()) {
+    // filter, legend-hidden states) — re-render instead of patching one ball.
+    // ADR 0002: 模块视图同理由——分组与模块级边随节点状态可整体变化。
+    if (filtersActive() || viewState.viewMode === 'module') {
       renderVisible();
       return;
     }
@@ -520,6 +605,15 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
    * back last, once everything has settled.
    */
   function applyLayout(): void {
+    if (viewState.viewMode === 'module') {
+      // 模块视图：无 fcose、无区域罗盘——堆位在元素定义里就定死了，这里
+      // 只取景 + rebase 漂移基准 + 存档（题注/堆球都已就位，无需再动）。
+      if (cy.nodes().empty()) return;
+      cy.fit(undefined, THEME.canvas.padding);
+      physics?.rebase();
+      persistLayout();
+      return;
+    }
     cy.nodes('.region-plate').remove();
     if (cy.nodes().empty()) return;
     cy.layout({
@@ -562,6 +656,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   cy.on('mouseover', 'node', (evt) => {
+    if (evt.target.hasClass('region-plate')) return; // 题注不弹 tooltip
     if (lockedId === null) applyFocus(evt.target.id());
     if (physics !== null) {
       physics.popNode(evt.target, MOTION.hoverPopMult);
@@ -572,7 +667,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
           if (n.id() !== evt.target.id()) physics.popNode(n, MOTION.neighborPopMult);
         });
     }
-    opts.tooltipEl.textContent = evt.target.data('path');
+    // ADR 0002 §7.2: 越界球 tooltip 带警示文案。
+    const path = String(evt.target.data('path') ?? '');
+    opts.tooltipEl.textContent = evt.target.hasClass('out-of-scope') ? `${path} · 越界改动` : path;
     opts.tooltipEl.style.opacity = '1';
   });
   cy.on('mousemove', 'node', (evt) => {
@@ -588,11 +685,24 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   cy.on('tap', 'node', (evt) => {
     const id = evt.target.id();
-    // Ticket 11: a collapsed directory ball expands just its own directory.
-    const dir = dirBallDirOf(id);
-    if (dir !== null) {
-      expandedDirs.add(dir);
+    // ADR 0002 §7.1: 点堆题注 → 文件视图聚焦该功能类的小模块簇。
+    const pileModule = moduleIdFromPile(id);
+    if (pileModule !== null) {
+      viewState.viewMode = 'file';
+      viewState.focusedModule = pileModule;
       renderVisible();
+      return;
+    }
+    // 模块视图里点文件球 → 进入其功能类的文件视图并打开详情（钻取）。
+    if (viewState.viewMode === 'module') {
+      const mod = moduleIdOf(id);
+      if (mod === null) return; // 表外球不该出现在模块视图
+      viewState.viewMode = 'file';
+      viewState.focusedModule = mod;
+      renderVisible();
+      lockedId = id;
+      opts.onFocusChange(findNode(id));
+      applyFocus(id);
       return;
     }
     if (lockedId === id) {
@@ -604,7 +714,13 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     applyFocus(id);
   });
   cy.on('tap', (evt) => {
-    if (evt.target === cy && lockedId !== null) clearFocus();
+    if (evt.target !== cy) return;
+    if (lockedId !== null) clearFocus();
+    // 文件视图聚焦态下点空白 → 回到「全部文件」（海报模式）。
+    if (viewState.viewMode === 'file' && viewState.focusedModule !== null) {
+      viewState.focusedModule = null;
+      renderVisible();
+    }
   });
 
   // 布局存档 · 拖放即保存 (Code-review 2026-08-29, Obsidian Persistent Graph
@@ -614,8 +730,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   // motion feature); plates carry events:'no' so they can't be dragged in.
   cy.on('dragfree', 'node', (evt) => {
     if (currentRoot === null) return;
+    if (typeof evt.target.hasClass === 'function' && evt.target.hasClass('region-plate')) return; // 题注不可拖
     const p = evt.target.position();
-    store.update(currentRoot, evt.target.id(), { x: p.x, y: p.y });
+    store.update(currentRoot, evt.target.id(), { x: p.x, y: p.y }, viewState.viewMode);
   });
 
   // -------------------------------------------------------------------------
@@ -666,10 +783,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         viewState.untestedOnly = patch.untestedOnly;
         changed = true;
       }
-      if (patch.collapseEnabled !== undefined && patch.collapseEnabled !== viewState.collapseEnabled) {
-        viewState.collapseEnabled = patch.collapseEnabled;
-        // Manual expansions belong to one collapse session only.
-        expandedDirs.clear();
+      if (patch.viewMode !== undefined && patch.viewMode !== viewState.viewMode) {
+        viewState.viewMode = patch.viewMode;
+        changed = true;
+      }
+      if (patch.focusedModule !== undefined && patch.focusedModule !== viewState.focusedModule) {
+        viewState.focusedModule = patch.focusedModule;
         changed = true;
       }
       if (patch.hiddenStates !== undefined) {
@@ -689,6 +808,18 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     setTheme(key: ThemeKey): void {
       setActiveTheme(key);
       cy.style(buildStylesheet());
+    },
+    setEditScope(scope: EditScopeDecl | null): void {
+      editScope = scope;
+      // 新范围 = 新基线：已改/越界标记清零，等下一次 report_edits 再点亮。
+      editedIds = new Set();
+      outOfScopeIds = new Set();
+      renderVisible();
+    },
+    setEditVerification(verification: EditVerificationWire): void {
+      editedIds = new Set(verification.edited);
+      outOfScopeIds = new Set(verification.outOfScope);
+      renderVisible();
     },
     cycleCount(): number {
       return backEdgeIds.size;
@@ -861,6 +992,46 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     // 评审环声明在 type-error 之后：被评审的球以评审结论为主视觉，
     // type-error 环让位（信息仍在详情面板与源码行）。
     ...reviewRingRules,
+    {
+      // ADR 0002 §7.2: 范围 = 常驻紫环。声明在评审环之后（范围纪律优先，
+      // 范围环赢过类型错误/评审环），checking/viewing/focused 等瞬态规则
+      // 仍在其后——正在检查/聚焦的球保持强视觉。
+      selector: 'node.in-scope',
+      style: {
+        'border-width': 1.4,
+        'border-color': p.scope.ring,
+        'border-opacity': 1
+      }
+    },
+    {
+      // ADR 0002 §7.2: 已改 = 整球紫填充（background 通道，覆盖状态球色；
+      // 状态仍可从图例/详情面板读取）。
+      selector: 'node.edited',
+      style: {
+        'background-color': p.scope.fill
+      }
+    },
+    {
+      // ADR 0002 §7.1: 模块级边——比文件级边略粗，读作「堆与堆之间的依赖」。
+      selector: 'edge.edge-module',
+      style: edgeStyle({
+        width: 2.2,
+        'line-opacity': 0.9,
+        'target-arrow-opacity': 0.9
+      })
+    },
+    {
+      // ADR 0002 §7.1: 堆题注 = 可点击（点某堆 → 文件视图聚焦该功能类），
+      // 不可拖；无底板无边框（同区域题注），字号略大承载中文标签。
+      selector: '.pile-plate',
+      style: nodeStyle({
+        'font-size': 12,
+        'font-weight': 600,
+        events: 'yes',
+        grabbable: false,
+        cursor: 'pointer'
+      } as EdgeStylePatch)
+    },
     {
       // 入场编排: nodes mount invisible and fade in once, on first load.
       selector: 'node.pre',

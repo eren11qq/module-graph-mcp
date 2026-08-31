@@ -5,8 +5,9 @@
  * GraphDelta would miss the most common case, a pure content edit of an
  * already-known file, which produces an empty delta.
  *
- * Memory semantics match the AI-review state: in-memory only, a server
- * restart clears it, nothing is persisted anywhere.
+ * Memory semantics: in-memory only, a server restart clears it — unlike
+ * AI-review conclusions (persisted since 2026-09-01), the evidence chain is
+ * deliberately ephemeral.
  */
 
 export interface RecentChange {
