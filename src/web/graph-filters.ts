@@ -1,6 +1,5 @@
-import type { Edge, ModuleNode, TestState } from '../shared/types.js';
+import type { EditScopeDecl, Edge, ModuleNode, TestState } from '../shared/types.js';
 import { moduleIdOf } from '../shared/module-table.js';
-import type { FunctionalModuleId } from '../shared/module-table.js';
 import { shortLabel } from './theme.js';
 
 /**
@@ -8,10 +7,9 @@ import { shortLabel } from './theme.js';
  * graph-view render pipeline calls. No DOM, no cytoscape — everything here is
  * data-in/data-out and covered by tests/graph-filters.test.ts.
  *
- * ADR 0002 §7.1: directory collapse is RETIRED — the toolbar now switches
- * 模块视图 | 文件视图; module grouping lives in module-view.ts (the render
- * pipeline composes: applyViewState filters file balls, then the view mode
- * decides how they are arranged).
+ * ADR 0002 §7.1: directory collapse is RETIRED. ADR 0003: the module view UI
+ * is retired too — the file poster is the ONLY view; the module table stays
+ * as the agent-side scope vocabulary (§7.2, deriveScopeMarks below).
  */
 
 /**
@@ -37,9 +35,6 @@ export function searchMatches(nodes: readonly ModuleNode[], query: string): Set<
   return out;
 }
 
-/** 视图模式：模块视图（默认，按功能类成堆 + 模块级边）| 文件视图。 */
-export type ViewMode = 'module' | 'file';
-
 /** Everything the render pipeline needs. */
 export interface ViewState {
   query: string;
@@ -54,10 +49,6 @@ export interface ViewState {
    * 的节点。
    */
   hideReviewed: boolean;
-  /** 模块视图 | 文件视图（ADR 0002 §7.1），默认模块视图。 */
-  viewMode: ViewMode;
-  /** 文件视图聚焦的功能类（点某堆进入）；null = 全部文件（海报模式）。 */
-  focusedModule: FunctionalModuleId | null;
 }
 
 function edgesWithin(edges: readonly Edge[], ids: ReadonlySet<string>): Edge[] {
@@ -65,12 +56,12 @@ function edgesWithin(edges: readonly Edge[], ids: ReadonlySet<string>): Edge[] {
 }
 
 /**
- * The view pipeline: 图例状态过滤 → 只看未测 → hideReviewed → 文件视图聚焦
- * → 搜索。Later stages see earlier stages' survivors.
+ * The view pipeline: 图例状态过滤 → 只看未测 → hideReviewed → 搜索。Later
+ * stages see earlier stages' survivors.
  *
- * Pure data-in/data-out (no DOM, no cytoscape). Module-view grouping happens
- * AFTER this filter in graph-view (module-view.ts), so a search match inside
- * a pile reveals the file itself.
+ * Pure data-in/data-out (no DOM, no cytoscape). Since ADR 0003 this is the
+ * whole story of what is on canvas: the file poster is the only view, a
+ * search match reveals the file ball itself.
  */
 export function applyViewState(
   nodes: readonly ModuleNode[],
@@ -95,17 +86,6 @@ export function applyViewState(
     keptEdges = edgesWithin(keptEdges, new Set(keptNodes.map((n) => n.id)));
   }
 
-  if (view.viewMode === 'file' && view.focusedModule !== null) {
-    // 文件视图聚焦一个功能类：只留该功能类的小模块簇（表外文件无功能类，
-    // 聚焦时一并隐藏——它们只能靠搜索或清除聚焦露出）。
-    const ids = new Set<string>();
-    for (const n of keptNodes) {
-      if (moduleIdOf(n.id) === view.focusedModule) ids.add(n.id);
-    }
-    keptNodes = keptNodes.filter((n) => ids.has(n.id));
-    keptEdges = edgesWithin(keptEdges, ids);
-  }
-
   if (view.query.trim() !== '') {
     const matched = searchMatches(keptNodes, view.query);
     keptNodes = keptNodes.filter((n) => matched.has(n.id));
@@ -113,4 +93,37 @@ export function applyViewState(
   }
 
   return { nodes: keptNodes, edges: keptEdges };
+}
+
+export interface ScopeMarks {
+  /** 范围内 → 常驻紫环（与 viewing 紫脉冲——瞬时 3s——区分）。 */
+  inScope: boolean;
+  /** 已改 → 整球紫（填充）。 */
+  edited: boolean;
+  /** 越界 → 红警示角标 + tooltip 文案。 */
+  outOfScope: boolean;
+}
+
+/**
+ * 标记派生（ADR 0002 §7.2）：范围环（声明模块 ∪ 显式文件，表外文件只能
+ * 显式点名）、已改紫、越界红角标三条独立通道。
+ */
+export function deriveScopeMarks(
+  nodes: readonly ModuleNode[],
+  scope: EditScopeDecl | null,
+  edited: ReadonlySet<string>,
+  outOfScope: ReadonlySet<string>
+): Map<string, ScopeMarks> {
+  const out = new Map<string, ScopeMarks>();
+  for (const n of nodes) {
+    const mod = moduleIdOf(n.id);
+    const inScope =
+      scope !== null && (scope.files.includes(n.id) || (mod !== null && scope.modules.includes(mod)));
+    out.set(n.id, {
+      inScope,
+      edited: edited.has(n.id),
+      outOfScope: outOfScope.has(n.id)
+    });
+  }
+  return out;
 }

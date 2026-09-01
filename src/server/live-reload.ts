@@ -101,6 +101,14 @@ export function startLiveReload(opts: LiveReloadOptions): LiveReloadHandle {
       if (delta.removedNodeIds.length > 0) {
         opts.reviewStore?.remove(delta.removedNodeIds);
       }
+      // P0-2: an unreadable directory (EACCES/EMFILE) skipped this window's
+      // pruning to protect notes — surface it on the dashboard instead of
+      // failing silently; the next successful window catches up.
+      if (delta.walkFailed === true) {
+        const message = 'directory walk hit an unreadable folder — pruning skipped this window to keep notes';
+        opts.hub.broadcast({ type: 'scan_error', message });
+        opts.log(`walk failed : ${message}`);
+      }
       // GitNexus port: record the RAW watcher paths, NOT the delta — a pure
       // content edit of an already-known file produces an EMPTY GraphDelta
       // yet is the most common "changed file" signal get_change_impact must

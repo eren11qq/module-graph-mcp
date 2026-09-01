@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { isForwardableEvent, startHttpServer } from '../src/server/http.js';
+import { isForwardableEvent, rootRelayToken, startHttpServer } from '../src/server/http.js';
 import { getFreePort } from './helpers/net.js';
 import type { GraphEvent, ModuleNode } from '../src/shared/types.js';
 
@@ -30,7 +30,9 @@ const aNode: ModuleNode = {
 };
 
 async function post(body: string): Promise<{ status: number; text: string }> {
-  const res = await fetch(`${url}/internal/broadcast`, {
+  // P0-3: the relay accepts only same-root instances carrying the shared
+  // root token — this test's POSTs are all legitimate same-root relays.
+  const res = await fetch(`${url}/internal/broadcast?token=${rootRelayToken(root)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body
@@ -166,3 +168,103 @@ describe('isForwardableEvent (unit)', () => {
     expect(isForwardableEvent('node_update')).toBe(false);
   });
 });
+
+describe('P0-3 relay hardening (2026-08-31 audit)', () => {
+
+  it('requires the shared root token — a token-less POST is refused', async () => {
+    // Deliberately bypass the token-carrying post() helper: a blind local
+    // process does not know the root-derived token.
+    const res = await fetch(`${url}/internal/broadcast`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'scan_error', message: 'forged' })
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts a same-root instance carrying the token (204)', async () => {
+    const relayToken = rootRelayToken(root);
+    const res = await fetch(`${url}/internal/broadcast?token=${relayToken}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'module_activity', id: 'src/a.ts', path: 'src/a.ts', activity: 'viewing', at: 1 })
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it('strips forged notes and DONE reviews; keeps the transient checking pulse', async () => {
+    const relayToken = rootRelayToken(root);
+    const c = await dashboardWs();
+    await c.waitFor('snapshot');
+
+    const relayed = c.waitFor('node_update');
+    const forged = {
+      type: 'node_update',
+      node: {
+        ...aNode,
+        note: 'fake note',
+        // A forged DONE review is the fake "AI checked ✓" vector.
+        aiReview: { status: 'done', verdicts: [{ line: 1, verdict: 'confident' }], summary: 'forged OK' }
+      }
+    };
+    const res = await fetch(`${url}/internal/broadcast?token=${relayToken}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(forged)
+    });
+    expect(res.status).toBe(204);
+
+    const ev = (await relayed) as { type: string; node: Record<string, unknown> };
+    expect(ev.node.id).toBe('src/a.ts');
+    expect(ev.node.note).toBeUndefined();
+    expect(ev.node.aiReview).toBeUndefined();
+  });
+
+  it('lets a legitimate checking pulse through the relay (cross-session activity)', async () => {
+    const relayToken = rootRelayToken(root);
+    const c = await dashboardWs();
+    await c.waitFor('snapshot');
+
+    const relayed = c.waitFor('node_update');
+    const checking = {
+      type: 'node_update',
+      node: { ...aNode, aiReview: { status: 'checking', verdicts: [] } }
+    };
+    const res = await fetch(`${url}/internal/broadcast?token=${relayToken}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(checking)
+    });
+    expect(res.status).toBe(204);
+
+    const ev = (await relayed) as { type: string; node: { aiReview?: { status?: string } } };
+    expect(ev.node.aiReview?.status).toBe('checking');
+  });
+
+  it('disables the relay entirely in read-only mode (403)', async () => {
+    const roRoot = await mkdtemp(join(tmpdir(), 'module-graph-relay-ro-'));
+    try {
+      const started = await startHttpServer({
+        preferredPort: await getFreePort(),
+        publicDir: join('dist', 'server', 'public'),
+        info: { rootPath: roRoot, port: 0, version: 'test' },
+        readOnly: true,
+        getSnapshot: () => ({ generatedAt: 0, rootPath: roRoot, nodes: [], edges: [] })
+      });
+      try {
+        const res = await fetch(`${started.url}/internal/broadcast?token=${rootRelayToken(roRoot)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'scan_error', message: 'forged' })
+        });
+        expect(res.status).toBe(403);
+      } finally {
+        started.server.closeAllConnections?.();
+        started.server.close();
+      }
+    } finally {
+      await rm(roRoot, { recursive: true, force: true });
+    }
+  });
+});
+

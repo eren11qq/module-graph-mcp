@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as {
   private?: boolean;
   dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
   files?: string[];
 };
 
@@ -14,8 +15,9 @@ const pkg = require('../package.json') as {
  * an accidental tarball. Deliberately dumb: it only reads package.json.
  */
 describe('publish contract', () => {
-  it('declares typescript as a real runtime dependency (no phantom deps)', () => {
-    expect(pkg.dependencies?.typescript).toBeDefined();
+  it('keeps typescript OUT of runtime dependencies (P1-6: the engine probes the watched repo\'s own tsc — this package\'s typescript only builds it)', () => {
+    expect(pkg.dependencies?.typescript).toBeUndefined();
+    expect(pkg.devDependencies?.typescript).toBeDefined();
   });
 
   it('is shippable: not private, dist + README declared in files', () => {

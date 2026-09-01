@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { dashboardToken } from '../mcp-client.js';
 import { check, type EvalTask, type ProbeResult } from '../types.js';
 import type { SpawnedClient } from '../mcp-client.js';
 
@@ -34,9 +35,11 @@ export const task: EvalTask = {
   maxBytes: 16000,
   async probe(client): Promise<ProbeResult> {
     const port = (client as SpawnedClient).port;
+    // P0-4: /api/* is authenticated with the startup token from the dashboard URL.
+    const token = await dashboardToken(client);
     let bytes = 0;
 
-    const plain = await fetchReportWhenReady(port, '');
+    const plain = await fetchReportWhenReady(port, `?token=${token}`);
     check(plain.status === 200, `status ${plain.status}, expected 200`);
     check(plain.contentType.includes('text/html'), `content-type wrong: ${plain.contentType}`);
     check(plain.csp.includes('default-src'), `CSP header missing: ${plain.csp}`);
@@ -46,7 +49,7 @@ export const task: EvalTask = {
     check(!plain.body.includes('class="report-item report-focus"'), 'no row may be highlighted without ?focus');
     bytes += Buffer.byteLength(plain.body, 'utf8');
 
-    const focused = await fetchReportWhenReady(port, '?focus=core%2Femitter.ts');
+    const focused = await fetchReportWhenReady(port, `?token=${token}&focus=core%2Femitter.ts`);
     check(focused.status === 200, `focus fetch status ${focused.status}`);
     check(
       focused.body.includes('<li id="module-core/emitter.ts" class="report-item report-focus">'),

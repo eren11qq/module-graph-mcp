@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { applyViewState, isUntested, searchMatches } from '../src/web/graph-filters.js';
-import type { Edge, ModuleNode, TestState } from '../src/shared/types.js';
+import { applyViewState, deriveScopeMarks, isUntested, searchMatches } from '../src/web/graph-filters.js';
+import type { EditScopeDecl, Edge, ModuleNode, TestState } from '../src/shared/types.js';
 
 /**
  * Ticket 11 seam 1: collapse — pure function from (nodes, edges, collapsed
@@ -42,7 +42,7 @@ describe('searchMatches — query → matched ids (ticket 11 seam 2)', () => {
   });
 });
 
-describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)', () => {
+describe('applyViewState — 过滤 → 搜索 pipeline (ticket 11)', () => {
   // Threshold is THEME.collapse.minFiles = 3: pkg has 3 direct files (folds),
   // solo has 2 (stays), main.ts is root-level (never folds).
   const nodes = [
@@ -65,8 +65,6 @@ describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)',
     untestedOnly: false,
     hiddenStates: new Set<TestState>(),
     hideReviewed: false,
-    viewMode: 'module',
-    focusedModule: null,
     ...over
   });
 
@@ -94,27 +92,6 @@ describe('applyViewState — 过滤 → 搜索 → 折叠 pipeline (ticket 11)',
       'pkg/b.ts'
     ]);
   });
-
-  it('文件视图聚焦一个功能类：只留该功能类的小模块簇', () => {
-    const out = applyViewState(
-      nodes,
-      edges,
-      view({
-        viewMode: 'file',
-        focusedModule: 'mcp-service',
-        query: ''
-      })
-    );
-    // mcp-service 是显式文件类；pkg/、solo/、main.ts 都不属于任何功能类 → 空。
-    expect(out.nodes).toEqual([]);
-    expect(out.edges).toEqual([]);
-  });
-
-  it('模块视图不应用聚焦过滤（聚焦只在文件视图生效）', () => {
-    const out = applyViewState(nodes, edges, view({ viewMode: 'module', focusedModule: 'mcp-service' }));
-    expect(out.nodes).toEqual(nodes);
-    expect(out.edges).toEqual(edges);
-  });
 });
 
 describe('hiddenStates — 图例状态过滤 (theme.html legend filter)', () => {
@@ -134,8 +111,6 @@ describe('hiddenStates — 图例状态过滤 (theme.html legend filter)', () =>
     untestedOnly: false,
     hiddenStates: new Set<TestState>(hidden),
     hideReviewed: false,
-    viewMode: 'module',
-    focusedModule: null,
     ...over
   });
 
@@ -184,8 +159,6 @@ describe('hideReviewed — 评审环图例过滤 (code-review 2026-08-29)', () =
     untestedOnly: false,
     hiddenStates: new Set<TestState>(),
     hideReviewed: false,
-    viewMode: 'module',
-    focusedModule: null,
     ...over
   });
 
@@ -198,18 +171,42 @@ describe('hideReviewed — 评审环图例过滤 (code-review 2026-08-29)', () =
     expect(out.nodes.map((n) => n.id)).toEqual(['main.ts', 'checking.ts']);
     expect(out.edges).toEqual([]);
   });
+});
 
-  it('combines with 文件视图聚焦: reviewed files leave the focused cluster', () => {
-    const nodes = [
-      done('src/server/mcp.ts'),
-      file('src/server/index.ts'),
-      file('src/server/http.ts')
-    ];
-    const out = applyViewState(
+describe('deriveScopeMarks — 范围环 / 已改紫 / 越界红角标 (ADR 0002 §7.2)', () => {
+  const nodes = [
+    file('src/server/mcp.ts'),
+    file('src/web/main.ts'),
+    file('package.json'),
+    file('src/server/incremental-graph.ts')
+  ];
+  const scope: EditScopeDecl = { modules: ['mcp-service'], files: ['package.json'] };
+
+  it('ring: files of declared modules plus explicit files; out-of-table only via explicit', () => {
+    const marks = deriveScopeMarks(nodes, scope, new Set(), new Set());
+    expect(marks.get('src/server/mcp.ts')!.inScope).toBe(true);
+    expect(marks.get('package.json')!.inScope).toBe(true);
+    expect(marks.get('src/web/main.ts')!.inScope).toBe(false);
+    expect(marks.get('src/server/incremental-graph.ts')!.inScope).toBe(false);
+  });
+
+  it('no scope: nothing gets the ring', () => {
+    const marks = deriveScopeMarks(nodes, null, new Set(), new Set());
+    for (const m of marks.values()) expect(m.inScope).toBe(false);
+  });
+
+  it('edited and out-of-scope are independent channels', () => {
+    const marks = deriveScopeMarks(
       nodes,
-      [],
-      view({ hideReviewed: true, viewMode: 'file', focusedModule: 'mcp-service' })
+      scope,
+      new Set(['src/server/mcp.ts', 'src/web/main.ts']),
+      new Set(['src/web/main.ts'])
     );
-    expect(out.nodes.map((n) => n.id)).toEqual(['src/server/index.ts', 'src/server/http.ts']);
+    // in-scope AND edited: ring + purple fill.
+    expect(marks.get('src/server/mcp.ts')).toEqual({ inScope: true, edited: true, outOfScope: false });
+    // edited AND out-of-scope (越界也照实标记已改).
+    expect(marks.get('src/web/main.ts')).toEqual({ inScope: false, edited: true, outOfScope: true });
+    // untouched in-scope: ring only.
+    expect(marks.get('package.json')).toEqual({ inScope: true, edited: false, outOfScope: false });
   });
 });

@@ -46,8 +46,8 @@
 | `createReviewStore`（review-store.ts） | `createReviewStore({rootPath, log}) → {attachInto(graph) → number, set(id, review \| undefined), remove(ids)}`；`ReviewGraph` = `{node(id), setReview(id, review)}`（IncrementalGraph 结构性满足） | **评审常驻**（2026-09-01）：done 结论持久化到 `<root>/.module-graph/reviews.json`（schema `{version:1, reviews}`，原子 tmp+rename）；load 只认 done（checking 瞬态不复活）、剪掉已不存在文件的条目；写前重读磁盘合并（并发会话并集、同 key 后写覆盖、本地墓碑集合防删除意图被残留复活）；只读盘/坏文件降级仅内存（告警一次）；目录默认 gitignore（写入自带 `.gitignore`） | 214 |
 | `buildHealthReport` / `findCycleNodeIds`（health-report.ts） | 纯函数：`findCycleNodeIds(edges) → Set<id>`（多起点 DFS，指向 on-stack 祖先的弧封闭环，环上节点全标记）、`computeHighCentralityIds(snap) → Set<id>`（top-20% rank 截断，与 impact.ts 共享）、`buildHealthReport(snap) → HealthReport`（固定整数权重表 + 同分 id 字典序 + 中文简报 top 5 + 剩余计数）；`HEALTH_FLAG_LABELS` 是简报与报告页共用的展示词汇 | **信任闭环的确定性打分**（信任闭环路线图 PR-3）：高中心度=入度+出度排序前 20%（rank 截断，非度数阈值）、环检测为 back-edges.ts 的服务端移植（接口换 `Edge[]`、问句从"哪些弧"换成"哪些节点在环上"）；同输入同输出逐字节稳定，evals 探针断言精确排序 | 199 |
 | `computeImpact` / `computeGraphStats`（impact.ts） | 纯函数：`computeImpact(snap, startId, {direction?, maxDepth?}) → ImpactResult`（upstream=反向边 / downstream=正向边 / both 取最小深度；visited 防环收敛；未知 start → 结构化 miss；按深度升序、同深度 id 字典序；`DEFAULT_IMPACT_DEPTH=3` / `MAX_IMPACT_DEPTH=10`）、`computeGraphStats(snap) → GraphStats`（`{inDegree, outDegree, inCycle, highCentrality, centrality(id)}`，centrality=(in+out)/(2·(n−1))）、`createGraphStats(getSnap)`（按 generatedAt 记忆化的访问器工厂，每图一份）；`IMPACT_DIRECTIONS` 是校验与 schema 共用的词表 | **爆炸半径与风险启发式的图数学**（GitNexus 移植步骤 1）：BFS 邻接表每调用重建（仓库规模毫秒级）、环与高中心度直接复用 health-report 的两个导出（零新算法）、get_module_details 的 `context` 信封与 get_change_impact 的风险判定都吃 `GraphStats`；派生统计只进响应信封、绝不挂 ModuleNode（活共享对象会陈旧） | 180 |
-| `verifyEdits` / `normalizeFilePath` / `createEditScopeStore`（edit-scope.ts） | 纯函数：`verifyEdits(scope, reported, watcherRecorded) → {scopeDeclared, declaredModules, declaredFiles, outOfScope[], unreported[], ok}`（越界 = (上报 ∪ watcher) ∖ 范围，来源标签去重 reported 优先；漏报 = watcher 见而上报无）；`normalizeFilePath`（反斜杠/`./`/空白卫生）；`createEditScopeStore`（会话级，declare 覆盖、空声明清除） | **改动核对判定**（ADR 0002 §7.2）：判定靠模块表 + watcher 磁盘事实，不靠 AI 自觉；`isInScope` 是工具与纯函数共用的范围判定；store 挂 buildTools 闭包，重启即清 | 105 |
-| `createRecentChanges`（recent-changes.ts） | `createRecentChanges() → {record(paths), list() → RecentChange[], clear()}`；`RECENT_CHANGES_CAP=100`（最新写入优先，超限逐出最旧；重记录刷新时间戳与逐出序）；`list()` 最新在前、同毫秒按 id 字典序 | **变更证据链的有界内存记录**（GitNexus 移植步骤 3）：Map 插入序=逐出序（delete+set 技巧，逐出 O(1)），仅内存、重启即清（评审结论已持久化，变更记录仍内存态）；null/空路径静默跳过；喂它的是 live-reload 的原始事件路径（空 delta 也记） | 60 |
+| `verifyEdits` / `normalizeFilePath` / `createEditScopeStore`（edit-scope.ts） | 纯函数：`verifyEdits(scope, reported, watcherRecorded: (string \| WatcherFact)[]) → {scopeDeclared, declaredModules, declaredFiles, outOfScope[], unreported[], preexisting[], ok}`（watcher 证据先按 `scope.declaredAt` 基线过滤：更早 → preexisting 不判；越界 = (上报 ∪ 代内 watcher) ∖ 范围，来源标签去重 reported 优先；漏报 = 代内 watcher 见而上报无；裸 string 无时间 → 永不豁免）；`normalizeFilePath`（反斜杠/`./`/空白卫生）；`createEditScopeStore`（会话级，declare 覆盖并盖 `declaredAt = Date.now()`、空声明清除） | **改动核对判定**（ADR 0002 §7.2 + ticket 13 scope epoch）：判定靠模块表 + watcher 磁盘事实，不靠 AI 自觉；基线前的历史残留（上一会话）不再错判成本代越界/漏报；`isInScope` 是工具与纯函数共用的范围判定；store 挂 buildTools 闭包，重启即清 | 105 |
+| `createRecentChanges`（recent-changes.ts） | `createRecentChanges({rootPath?, log?}) → {record(paths), list() → RecentChange[], clear()}`；`RECENT_CHANGES_CAP=100`（最新写入优先，超限逐出最旧；重记录刷新时间戳与逐出序）；`list()` 最新在前、同毫秒按 id 字典序；给 rootPath → 落盘 `<root>/.module-graph/recent-changes.json`（schema `{version:1, changes}`，原子 tmp+rename，写前重读磁盘并集合并同根兄弟会话，启动回灌截到容量，坏文件即空 + 告警一次，clear() 同步清空磁盘，目录自带 gitignore 卫生） | **变更证据链的有界记录**（GitNexus 移植步骤 3 + ticket 13 修法 B）：Map 插入序=逐出序（delete+set 技巧，逐出 O(1)）；重启灭失 → 已修（落盘回灌堵住 report_edits 假绿路径），残余缺口=单会话内 >100 连改时最旧记录滑出核对窗口（容量语义不变，注释里明说）；null/空路径静默跳过；喂它的是 live-reload 的原始事件路径（空 delta 也记） | 60 |
 | `applyTokenBudget`（response-budget.ts） | 纯函数：`estimateTokens(text)`（ceil(utf8 字节/4)）、`applyTokenBudget(text, maxTokens) → {text, truncated, originalTokens}` | **响应预算护栏**（GitNexus 移植步骤 5）：4 字节/token 的计划钉死粗估（零依赖）；截断点 = maxTokens×4 字节减去标记自身字节，UTF-8 续字节回扫到字符边界（中文/emoji 不劈半）；预算太小放不下正文时只返回英文省略标记（含原始估算与收窄指引）——护栏文本永远优先，截断后 JSON 可能不完整是接受过的代价 | 50 |
 | `renderReportPage`（report-page.ts） | 纯函数：`renderReportPage(report, focus | null) → HTML 字符串`——无构建步骤、无脚本、无新依赖 | **/api/report 验收报告页**（信任闭环路线图 PR-4）：health-report 排序的 HTML 投影；`?focus=` 深链由服务端算好高亮类（`report-focus`），文件系统来源的 id/rootPath 全量 HTML 转义；CSP 与 dashboard 同一份常量 | 84 |
 | `evals`（src/evals/） | `run.ts` CLI（逐任务**冷启动 spawn** dist/server/index.js，不变量断言先行 + maxMs/maxBytes 硬门槛，p50/p95 两列照记）；`tasks/registry.ts` 注册表 ⇄ 磁盘双向对账；`EvalTask { id, description, probe(client, fixture), maxMs, maxBytes, spawnEnv? }`（spawnEnv 按任务注额外 env，如 read-only-mode 的 READ_ONLY=1） | **信任做成可执行资产**（信任闭环路线图 PR-2）：`mcp-client.ts` 复刻 e2e 测试的换行分帧 + 按 id 关联（MODULE_GRAPH_NO_OPEN=1 强制无头；`spawnClient` 支持注额外 env）；maxBytes 是 CI 红线契约（ADR 0001）；目录守卫 tests/evals-structure.test.ts 钉死结构（游离文件 / 幽灵条目都红） | 919 |
@@ -57,16 +57,17 @@
 ### 共享
 
 - `shared/types.ts` —— wire 词汇表。它是接口语言，不是独立 deep module；任何模块的 Interface 都由它定义。
-- `module-table.ts` —— **功能模块表**（ADR 0002 §7.1）：六功能类（MCP 服务 / 依赖图引擎 / Dashboard 渲染 / 共享契约 / 信任探针 / 测试与样例），条目 = 目录前缀（尾 `/`，整棵）或显式文件；`moduleIdOf`（首个命中即所属类）/ `modulesOf`（冲突可见）/ `filesInModule` / `moduleMatches` 纯函数；表外文件无类（不进模块视图、只能显式点名进范围）；服务端核对器与 `get_dashboard_info` 共用同一份——单一事实源（124 行）
+- `module-table.ts` —— **功能模块表**（ADR 0002 §7.1 引入；ADR 0003 后仅服务
+  `declare_edit_scope` 的 modules 通道展开与 `get_dashboard_info` 清单，无视图投影）：
+  六功能类（MCP 服务 / 依赖图引擎 / Dashboard 渲染 / 共享契约 / 信任探针 / 测试与样例），条目 = 目录前缀（尾 `/`，整棵）或显式文件；`moduleIdOf`（首个命中即所属类）/ `modulesOf`（冲突可见）/ `filesInModule` / `moduleMatches` 纯函数；表外文件无类（进范围只能显式点名）；服务端核对器与 `get_dashboard_info` 共用同一份——单一事实源（124 行）
 
 ### 浏览器端
 
 | Module | Interface | Implementation 藏了什么 | 行数 |
 |---|---|---|---|
 | `createGraphModel`（graph-model.ts） | `foldSnapshot` / `foldDelta` / `foldNodeUpdate` / `rootPath()` / `nodes()` / `edges()` / `node(id)` / `neighbors(id)`，纯 data-in/data-out | 浏览器端**唯一**的图状态与 fold（snapshot/delta/node_update 三种帧）、邻接查询——main.ts 与 graph-view 的两份副本和两份 fold 已删除 | 78 |
-| `createGraphView`（graph-view.ts） | 12 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `pulseViewing`（2026-08-29：module_activity 的瞬态查看脉冲，按 id 自到期）/ `setViewState` / `setEditScope` / `setEditVerification`（ADR 0002 §7.2：范围与核对结果落地，新范围=新基线清标记）/ `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调 | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / viewing 紫边+紫 overlay（声明序在 checking 之前：评审赢）/ AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——五条独立视觉通道 + ADR 0002 §7.2 三条改动标记通道（`in-scope` 常驻紫环声明在评审环之后 / `edited` 紫填充 / `out-of-scope` 红⛔标 + tooltip 文案 + 状态栏警示条））、度数→球径（tests 带缩 0.85）、hover 邻域高亮（调暗扫描排除板块）、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；**双视图**（ADR 0002 §7.1：模块视图 = 六堆固定模板位 + 模块级边 + 可点题注 `pile:<id>`，无 fcose；文件视图 = fcose + 区域化海报 + `focusedModule` 聚焦簇，点空白回全部文件）；布局唯一 fcose + 区域化后处理（applyLayout 独占板块生命周期与「fcose→平移→rebase」顺序）；存档按 rootPath+模式分档（layout-store v4） | 1066 |
-| `applyViewState` + `searchMatches` / `isUntested`（graph-filters.ts） | `(nodes, edges, ViewState) → {nodes, edges}`，纯 data-in/data-out | 图例状态过滤 → 只看未测 → 隐藏已评审 → 文件视图聚焦（`focusedModule`）→ 搜索管线；目录折叠已随 ADR 0002 退役（§7.1），`dir:` 命名空间删除 | 116 |
-| `groupByModule` / `aggregateModuleEdges` / `deriveScopeMarks` / `pileBallPosition`（module-view.ts） | 纯函数：`groupByModule(nodes) → Map<moduleId, nodes>`（表外文件不进堆）、`aggregateModuleEdges(edges, moduleOf) → Edge[]`（跨堆文件边聚合重连为 `pile:<id>` 端点、同堆内边丢弃、去重，保留跨模块环）、`deriveScopeMarks(nodes, scope, edited, outOfScope) → Map<id, {inScope, edited, outOfScope}>`（三条独立 class 通道）、`pileBallPosition(moduleId, index)`（固定模板位网格） | **模块视图数据侧**（ADR 0002 §7.1+§7.2）：模块级边复用目录折叠的 rewire 语义；堆锚点 `PILE_ANCHOR`（六堆固定模板位）；范围环/已改紫/越界红角标的判定纯函数 | 121 |
+| `createGraphView`（graph-view.ts） | 12 方法：`setSnapshot` / `applyDelta` / `applyNodeUpdate` / `pulseViewing`（2026-08-29：module_activity 的瞬态查看脉冲，按 id 自到期）/ `setViewState`（只看未测 / 搜索 / 图例 / 隐藏已评审）/ `setEditScope` / `setEditVerification`（ADR 0002 §7.2：范围与核对结果落地，新范围=新基线清标记）/ `focusNode` / `clearFocus` / `resetView` / `setTheme` / `cycleCount` + `onFocusChange` 回调 | 全部 cytoscape：主题化样式表（状态填充 / type-error 环 / checking 亮边 / viewing 紫边+紫 overlay（声明序在 checking 之前：评审赢）/ AI 评审环 border（实测 underlay 渲染圆角方形，改 border 且声明序在 type-error 之后：评审赢、type-error 让位、聚焦仍最赢）——五条独立视觉通道 + ADR 0002 §7.2 三条改动标记通道（`in-scope` 常驻紫环声明在评审环之后 / `edited` 紫填充 / `out-of-scope` 红⛔标 + tooltip 文案 + 状态栏警示条））、度数→球径（tests 带缩 0.85）、hover 邻域高亮（调暗扫描排除板块）、锁球、增量 element 操作；每帧只算一次循环弧（back-edges.ts）供红弧样式与 statusbar 计数消费；**单一文件海报视图**（ADR 0003：模块视图中断后不再分叉，增量 DOM 路径只在无过滤时走，`filtersActive()` 一律全量重渲）；布局唯一 fcose + 区域化后处理（applyLayout 独占板块生命周期与「fcose→平移→rebase」顺序）；存档按 rootPath 单档（layout-store v6，ADR 0003） | 935 |
+| `applyViewState` + `searchMatches` / `isUntested` / `deriveScopeMarks`（graph-filters.ts） | `(nodes, edges, ViewState) → {nodes, edges}`，纯 data-in/data-out | 图例状态过滤 → 只看未测 → 隐藏已评审 → 搜索管线；目录折叠已随 ADR 0002 退役（§7.1）、`focusedModule` 聚焦分支已随 ADR 0003 退役，`dir:` 命名空间删除；`deriveScopeMarks`（ADR 0002 §7.2 标记派生，原 module-view.ts 的唯一保留面，2026-09-01 搬家至此）：范围环（声明模块 ∪ 显式文件）/ 已改紫 / 越界红角标三条独立 class 通道判定 | 129 |
 | `findBackEdges`（back-edges.ts） | 纯函数：`LayoutGraphInput → Set<linkId>`（多起点 DFS，指向 on-stack 祖先的弧即回边） | **循环依赖检测**（红弧与 statusbar 循环计数的唯一来源）；原 `hierarchyLayout` 层级布局已按 ticket-00 amendment 裁定删除（fcose 唯一布局），检测逻辑于 2026-08-29 抽出留存 | 96 |
 | `assignRegions` / `computeRegionSlots` / `applyRegionLayout` / `syncRegionPlates`（graph-areas.ts） | 纯函数 `assignRegions(nodes, edges) → Map<id, RegionId>`（路径前缀表 + 度 0 兜底）、`computeRegionSlots(bboxes, geo) → Map<RegionId, Slot>`；两个 cy 动词 `applyRegionLayout`（刚性平移各区到罗盘槽位，孤儿坞例外——度 0 无排列可保，按 id 排序收确定性网格）/ `syncRegionPlates`（每非空区一枚 `region-plate` 背景节点，z 底层、events:no、随主题调色） | **区域化海报**（2026-08-29 grilling Q1–Q9）：把单张 fcose 云团摆成固定罗盘——web 左 / shared 脊柱居中 / server 右 / tests 底带 / 样例岛右下 / 孤球坞左下；不做布局（fcose 唯一布局裁定不破），只做定位后处理；「fcose→平移→rebase」顺序由 graph-view.applyLayout 独占（rebase 把平移后位置快照为漂移基点，板块与物理状态互不见面） | 280 |
 | `worstReviewVerdict`（ai-review.ts） | `AiReview → '' / confident / unsure / error`（最差 verdict 定环色） | 评审环判定纯函数：仅 done 参与，error > unsure > confident | 26 |
@@ -176,20 +177,27 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 | `frame-sink.test.ts` | FrameSink：帧进 → 编排出（每批一次派生刷新 / 畸形帧丢弃 / 聚焦诚实性 / ticker 与 notice） |
 | `legend.test.ts` | Legend 渲染面（行结构 / off 类 / toggle hooks） |
 | `graph-areas.test.ts` | graph-areas 纯函数直测（成员表 / 罗盘几何不变量）+ 假 cy 上的刚性平移、孤儿网格与板块 upsert |
-| `graph-filters.test.ts` / `graph-view.test.ts`（含区域化 wiring 钉：板块 / edge-cross / tests 缩放 / 孤球退役；ADR 0002 模块视图钉：默认模块视图 / 六堆题注 / 模块级边与跨模块环 / 点堆钻取 / 改动标记三通道 / 模式分档存档）/ `web-render.test.ts`（构建产物 + findBackEdges 环检测 oracle + frame guards）/ `code-view.test.ts` / `ai-review.test.ts` | web 内部 seam 与 createGraphView |
+| `graph-filters.test.ts`（含 `deriveScopeMarks` 标记派生钉，2026-09-01 自 module-view 迁入）/ `graph-view.test.ts`（含区域化 wiring 钉：板块 / edge-cross / tests 缩放 / 孤球退役；ADR 0002 §7.2 钉：改动标记三通道 / 新范围=新基线；模块视图钉已随 ADR 0003 删除）/ `layout-store.test.ts`（rootPath 单档 + 旧分档档案作废）/ `web-render.test.ts`（构建产物 + findBackEdges 环检测 oracle + frame guards）/ `code-view.test.ts` / `ai-review.test.ts` | web 内部 seam 与 createGraphView |
 | `module-table.test.ts` | 模块表 seam（六类 / 前缀与显式文件 / 表冲突守卫 / 表外无类 / 展开） |
 | `edit-scope.test.ts` | 改动核对 seam（范围判定 / 显式文件通道 / watcher 漏报与并集去重 / 输入卫生 / 会话 store）+ `mcp-guardrails.test.ts`（只读 7 工具隐藏与审计拒绝）+ `edit-scope-verification` evals 探针（wire 契约） |
-| `module-view.test.ts` | 模块视图纯函数（成堆 / 模块级边聚合与跨模块环 / pile id 词表 / 标记派生） |
 
 规则（replace, don't layer）：在模块 Interface 上写行为断言，不在实现内部探状态；引擎删除时其专属测试同删，Interface 测试存活于内部重构。
 
-## 7. 模板模式与改动核对（2026-08-31 grilling Q1–Q17 定案）
+## 7. 模块表与改动核对（2026-08-31 grilling Q1–Q17 定案；模块视图 UI 已随 ADR 0003 退役）
 
-### 7.1 模板模式（template layout）
+### 7.1 模块表（module table）——只有契约面，没有视图投影
 
-~~目录折叠（Ticket-11：同目录 ≥3 文件折成目录球）~~ 退役。工具栏原「目录折叠」
-按钮换成 **[模块视图 | 文件视图]** 分段切换，默认模块视图。模板模式 = 模块视图；
-文件视图·全部 = 现有海报模式，二者合一（不再另设模板模式开关）。
+模板模式（模块视图 = 六堆固定模板位 + 模块级边 + 点堆钻取，文件视图双模式切换）
+已于 2026-09-01 被 **ADR 0003 退役**：它与区域化海报是两套聚类视图的冗余，
+`viewMode`/`focusedModule` 穿透 graph-view 的代价不再值得。**唯一视图 = 文件海报**
+（fcose + graph-areas 罗盘），打开 dashboard 直接生效；搜索命中文件 → 直接定位高亮
+文件球。
+
+**模块表本身保留**——它从来不是（也不再有任何）渲染概念，而是 agent 圈范围的
+**省 token 手段**：`declare_edit_scope { modules }` 一句模块名由服务端展开成整棵
+文件清单（§7.2），`get_dashboard_info` 附模块→文件清单供 agent 选范围。表外文件
+无类，进范围只能 `files` 显式点名（同 §7.2）；堆积 = 扩表信号（同 graph-areas
+表外规则）。
 
 **模块表**（模块名 + 路径清单；按**功能**分类——每个功能类下辖若干小模块，
 每个小球（一个文件）就是一个小模块。条目支持**目录前缀**（该目录整棵）或**显式
@@ -204,27 +212,11 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 - **共享契约** —— src/shared/（目录前缀）；
 - **信任探针** —— src/evals/（目录前缀）；
 - **测试与样例** —— tests/ + test-fixtures/（目录前缀）；
-- 从浏览器端挪到 `src/shared`——服务端核对器（§7.2）与 `get_dashboard_info`
-  （模块→文件清单）共用同一份，单一事实源；
-- 表外文件**不进模块视图**（不画「未分组」球），只在文件视图出现；堆积 = 扩表
-  信号（同 graph-areas 表外规则）；AI 声明范围时表外文件只能显式点名（§7.2）。
+- 住在 `src/shared`——服务端核对器（§7.2）与 `get_dashboard_info`
+  （模块→文件清单）共用同一份，单一事实源。
 
-**模块视图**（默认）：**所有小模块球直接按功能类排成堆**——每堆一个功能类
-（例：登录功能一堆；本项目六堆），每个小球 = 一个小模块（一个文件），保留自身
-状态与标记（不聚合）。模块按功能排布（固定模板位）；堆与堆之间用**模块级边**
-连线（跨堆文件边聚合重连，复用 `collapseDirectories` 的 rewire 逻辑），一眼看到
-每个模块之间关系。点某堆 → 文件视图聚焦该功能类的小模块簇。
-
-**文件视图**：文件球。当前选中功能类（堆）的小模块簇；未选中 = 全部文件
-（海报模式）。点文件球 → 详情面板。
-
-**交互**：点击驱动（不做 hover 展开；tap 同点击）。过滤叠加沿用 applyViewState
-语义：只看未测 / 图例 / 搜索直接作用于小模块球（每球保留自身状态与标记）；
-搜索命中文件 → 自动聚焦其所在功能类（堆）并定位高亮（同「搜索命中折叠目录内
-文件会露出文件本身」）。
-
-**存档**：模块视图模板位进 layout-store（rootPath + 模式分档）；「重置布局」两档
-全清。
+**存档**：布局存档按 rootPath **单档**（ADR 0003：曾经的 rootPath + 视图模式
+分档随模块视图一起作废，layout-store v5→6 不迁移）；「重置布局」全清。
 
 ### 7.2 改动核对（edit-scope verification）
 
@@ -232,11 +224,18 @@ edge key 两种内部格式与 posix 归一六处差异按 YAGNI 缓做——均
 
 **工具对**（read-only 模式下同现有变更类工具一起隐藏 + 审计拒绝）：
 - `declare_edit_scope { modules?: string[], files?: string[] }` —— 开工前声明
-  改动边界；新声明覆盖旧声明；会话级，重启即清。
+  改动边界；新声明覆盖旧声明；会话级，重启即清。每次成功声明盖基线时刻
+  `declaredAt`（scope epoch，ticket 13）。
 - `report_edits { files: string[] }` —— 改完后上报实际改动文件。
 
 **核对**：服务端用模块表展开声明范围，改动文件 ∉ 范围 = **越界改动**；watcher
 recent-changes（磁盘事实）交叉验证——漏报也逃不掉。响应返回越界清单。
+watcher 证据按 `declaredAt` 过滤：`changedAt < declaredAt`（上一会话/重启前
+残留）→ 列进 `preexisting` 给人看，不算红、不影响 `ok`；未声明 → 不设下界
+（一切照旧）。自己上报的越界永远有罪，不受基线豁免。
+（已知权衡，ADR 0002：声明之后落盘的人工改动仍会被算进 agent 代——单 agent
+场景的保守方向。）证据链落盘 `<root>/.module-graph/recent-changes.json`
+（ticket 13 修法 B）：重启不再灭失越界证据。
 
 **标记**（复用五条视觉通道，不新开球色体系）：
 - 范围 = **紫环**（常驻描边；与查看紫脉冲——瞬时 3s 动画——区分）；

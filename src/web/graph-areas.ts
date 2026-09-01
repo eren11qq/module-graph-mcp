@@ -278,14 +278,24 @@ export function syncRegionPlates(cy: Core, regions: ReadonlyMap<string, RegionId
  * 半径,堆内球会贴边。把中心距 < r1 + r2 + gap 的同区域对沿连线轴各推
  * 一半,直到处处满足边到边 ≥ gap。按 id 排序迭代、有限轮数、对已满足的
  * 布局零移动(幂等)——配合存档回放与 randomize:false 不产生跨会话漂移。
- * 只处理同区域对:跨区有 regionGapX ≥ 120 的包围盒间距,孤儿坞 84 网格
- * 也天然满足。这是确定性修正,不是布局引擎——保形,只开缝。
+ * 这是确定性修正,不是布局引擎——保形,只开缝。
+ * 聚类排列模式 2026-09-01 (ADR 0004): export 后两模式共用同一通道。
+ * 同日修正 (用户裁定 D3): 球间最小距离升级为**全场硬保证**——跨聚类对与
+ * 区域模式游离球也归口下方的 separateAllBalls;本函数只做「一份名单内」
+ * 的分离内核,喂什么名单由调用方定。
  */
-function separateTouching(list: readonly NodeSingular[], gap: number): void {
+export function separateTouching(list: readonly NodeSingular[], gap: number): void {
   if (list.length < 2) return;
   const sorted = [...list].sort((a, b) => (a.id() < b.id() ? -1 : 1));
   const radii = sorted.map((n) => (Number(n.data('diameter')) || 0) / 2);
-  for (let round = 0; round < 30; round++) {
+  // 2026-09-01 全局通道上线:轮数上限 30→200 + 满足判据加 1e-6px 容差——
+  // 硬保证不能靠截断兑现。实测 50 球紧贴网格的 Gauss-Seidel 级联渐近收敛
+  // (残余违例每轮缩 ~10×、无容差时永不早退,140 轮仍差 1e-5),容差让
+  // moved 早退真正可达 (141 轮收工,残差 ≤ 1e-6 ≪ 测试 1e-3 口径)。
+  // 满足布局第一轮零推送即退出,高上限只为病态堆兜底。
+  // 测试 graph-areas.test.ts「稠密堆收敛」钉死这条底线。
+  const TOL = 1e-6;
+  for (let round = 0; round < 200; round++) {
     let moved = false;
     for (let i = 0; i < sorted.length; i++) {
       for (let j = i + 1; j < sorted.length; j++) {
@@ -297,7 +307,7 @@ function separateTouching(list: readonly NodeSingular[], gap: number): void {
         const dx = pb.x - pa.x;
         const dy = pb.y - pa.y;
         const d = Math.hypot(dx, dy);
-        if (d >= need) continue;
+        if (d >= need - TOL) continue;
         moved = true;
         if (d < 0.01) {
           // 完全重合:确定性沿横轴拆开(id 小的去 -x)。
@@ -315,6 +325,25 @@ function separateTouching(list: readonly NodeSingular[], gap: number): void {
     }
     if (!moved) break;
   }
+}
+
+/**
+ * 球间最小距离硬保证 (2026-09-01 用户裁定 D3): 全场任意两球——题注板除外,
+ * 含跨聚类对与区域模式游离球 (stray)——边到边 ≥ gap。两模式 applyLayout
+ * 收尾统一走这一条全局通道:fcose 只给软排布,确定性推送才有硬保证。
+ * O(n²·轮数):百级节点毫秒级,600 节点 (drift 上限) 几十 ms 可接受。
+ * 跑在 physics.rebase()/persistLayout() 之前——分离后的落点自动成为
+ * drift 基准与存档落点 (write-through 零额外改动)。
+ */
+export function separateAllBalls(cy: Core, gap: number): void {
+  const list: NodeSingular[] = [];
+  cy.nodes()
+    .not('.region-plate')
+    .forEach((n: NodeSingular) => {
+      list.push(n);
+    });
+  if (list.length < 2) return;
+  cy.batch(() => separateTouching(list, gap));
 }
 
 function groupByRegion(

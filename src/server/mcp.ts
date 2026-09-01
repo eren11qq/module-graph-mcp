@@ -706,7 +706,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     declare_edit_scope: {
       description:
-        'Declare your edit scope BEFORE you start editing: the functional modules (ids from get_dashboard_info.modules) and/or explicit files you plan to touch. The server checks every later report_edits against this boundary — a file outside it is an out-of-scope edit (red on the dashboard), and the watcher record catches files you changed but never reported. A new declaration replaces the old one; the scope is session-level and cleared on restart. Pass an empty object to clear the scope.',
+        'Declare your edit scope BEFORE you start editing: the functional modules (ids from get_dashboard_info.modules) and/or explicit files you plan to touch. The server checks every later report_edits against this boundary — a file outside it is an out-of-scope edit (red on the dashboard), and the watcher record catches files you changed but never reported. Each successful declaration stamps a baseline moment: watcher evidence changed before it (leftovers from earlier sessions) is reported as preexisting instead of being judged against you. A new declaration replaces the old one; the scope is session-level and cleared on restart. Pass an empty object to clear the scope.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -766,7 +766,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     report_edits: {
       description:
-        'Report the files you actually edited after the work is done. The server checks every file against the declared edit scope (declare_edit_scope) and cross-checks the watcher record: a file the watcher saw changed but you did not report is unreported (漏报), and any change outside the scope is an out-of-scope edit. Returns both lists and an ok flag (ok = no out-of-scope and no unreported).',
+        'Report the files you actually edited after the work is done. The server checks every file against the declared edit scope (declare_edit_scope) and cross-checks the watcher record: a file the watcher saw changed but you did not report is unreported (漏报), and any change outside the scope is an out-of-scope edit. Watcher evidence is scoped by the declaration baseline (scope epoch): records changed BEFORE the current scope was declared — e.g. leftovers from an earlier session — are listed in preexisting (informational, never affects ok). Anything you report yourself is always judged. Returns all lists and an ok flag (ok = no out-of-scope and no unreported).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -789,12 +789,15 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const reported = [
           ...new Set(args.files.filter((x): x is string => typeof x === 'string').map(normalizeFilePath).filter((f) => f !== ''))
         ];
-        const watcher = deps.recentChanges?.list().map((c) => c.id) ?? [];
+        const watcher = deps.recentChanges?.list() ?? [];
+        // Ticket 13 (scope epoch): pass the timestamped records — verifyEdits
+        // keeps changedAt < declaredAt as preexisting instead of judging it.
         const verification = verifyEdits(editScopeStore.current(), reported, watcher);
+        const prebaseline = new Set(verification.preexisting);
         deps.broadcast?.({
           type: 'edit_verification',
           verification: {
-            edited: [...new Set([...reported, ...watcher])],
+            edited: [...new Set([...reported, ...watcher.map((c) => c.id).filter((id) => !prebaseline.has(id))])],
             outOfScope: verification.outOfScope.map((e) => e.id),
             unreported: verification.unreported
           }
@@ -805,8 +808,11 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           reported,
           outOfScope: verification.outOfScope,
           unreported: verification.unreported,
+          preexisting: verification.preexisting,
           note: verification.ok
-            ? 'all edits inside the declared scope and everything reported — clean.'
+            ? verification.preexisting.length > 0
+              ? `all edits inside the declared scope and everything reported — clean (${verification.preexisting.length} pre-baseline watcher record(s) listed in preexisting, not judged).`
+              : 'all edits inside the declared scope and everything reported — clean.'
             : 'out-of-scope edits and/or unreported changes detected — check the lists.'
         });
       }
@@ -875,7 +881,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     get_change_impact: {
       description:
-        'AFTER editing, replay the change evidence chain: every file the watcher recorded as changed recently (id, changedAt, whether still in the graph), and per in-graph change the computed blast radius (both directions, depth 3) with a risk level. 风险级：波及在环上或高中心度节点 → high；受影响节点 > 10 → medium；否则 low。Call it right after saving files to double-check the scope of what you just touched — before running tests or reporting a review. Records are in-memory: a server restart clears them.',
+        'AFTER editing, replay the change evidence chain: every file the watcher recorded as changed recently (id, changedAt, whether still in the graph), and per in-graph change the computed blast radius (both directions, depth 3) with a risk level. 风险级：波及在环上或高中心度节点 → high；受影响节点 > 10 → medium；否则 low。Call it right after saving files to double-check the scope of what you just touched — before running tests or reporting a review. Records persist to .module-graph/recent-changes.json and survive a restart (bounded to the newest 100).',
       inputSchema: {
         type: 'object',
         properties: {},

@@ -1,21 +1,20 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import type { Edge, EditScopeDecl, EditVerificationWire, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
-import { labelOf, moduleIdOf, type FunctionalModuleId } from '../shared/module-table.js';
-import {
-  aggregateModuleEdges,
-  deriveScopeMarks,
-  groupByModule,
-  moduleIdFromPile,
-  PILE_ANCHOR,
-  pileBallPosition,
-  pileIdOf
-} from './module-view.js';
 import { worstReviewVerdict } from './ai-review.js';
-import { applyViewState, type ViewState } from './graph-filters.js';
-import { applyRegionLayout, assignRegions, syncRegionPlates, type RegionId } from './graph-areas.js';
+import { applyViewState, deriveScopeMarks, type ViewState } from './graph-filters.js';
+import { applyRegionLayout, assignRegions, separateAllBalls, syncRegionPlates, type RegionId } from './graph-areas.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
-import { createLayoutStore, type LayoutPoint, type LayoutStore } from './layout-store.js';
+import { detectCommunities } from './communities.js';
+import {
+  anchorClusterTerritories,
+  assignTestBalls,
+  fnv1a,
+  isTestPath,
+  refineClusterBodies,
+  seedClusterLayout
+} from './layout-cluster.js';
+import { createLayoutStore, type LayoutMode, type LayoutPoint, type LayoutStore } from './layout-store.js';
 import {
   MOTION,
   THEME,
@@ -44,6 +43,11 @@ export interface GraphViewOptions {
    * store; tests inject a fake. Position authority = last stable layout.
    */
   store?: LayoutStore;
+  /**
+   * 聚类排列模式 2026-09-01 (ADR 0004): mode flips on snapshot arrival (per-root
+   * 存档值) and on setLayoutMode — the topbar segmented control mirrors this.
+   */
+  onLayoutModeChange?(mode: LayoutMode): void;
 }
 
 export interface GraphView {
@@ -52,7 +56,7 @@ export interface GraphView {
   applyDelta(delta: GraphDelta): void;
   /** Ticket 06/07/08/12: single-node state patch (testState / typeErrors / aiReview / …). */
   applyNodeUpdate(node: ModuleNode): void;
-  /** Ticket 11+theme view controls: 只看未测 / search / collapse / legend-hidden states. */
+  /** Ticket 11+theme view controls: 只看未测 / search / legend-hidden states. */
   setViewState(patch: Partial<ViewState>): void;
   /** Re-lock focus on a node and bring it into view (detail-panel jumps). */
   focusNode(id: string): void;
@@ -73,6 +77,10 @@ export interface GraphView {
    * re-render — balls re-enter fcose with no preset positions (从头解一次).
    */
   resetLayout(): void;
+  /** 聚类排列模式 2026-09-01: current arrangement mode (topbar state). */
+  getLayoutMode(): LayoutMode;
+  /** Persist a root's layout mode and re-render the whole poster with it. */
+  setLayoutMode(mode: LayoutMode): void;
   /** Restyle to another theme without touching positions or data. */
   setTheme(key: ThemeKey): void;
   /** Cycle arcs currently rendered — the statusbar's 循环依赖 counter. */
@@ -97,18 +105,8 @@ function nodeStyle(
 
 const edgeIdOf = (e: Edge): string => `${e.from}->${e.to}`;
 
-/**
- * FNV-1a 32-bit — 新球种子的确定性抖动源 (Code-review 2026-08-29)。同一
- * path 永远哈希出同一角度/半径,种子是路径的可复现函数,不引入随机数。
- */
-function fnv1a(text: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
+// FNV-1a 抖动源 2026-09-01 起住在 layout-cluster.ts（聚类出生与新球种子共用
+// 一处定义），此处只 import。
 
 export function createGraphView(container: HTMLElement, opts: GraphViewOptions): GraphView {
   const cy = cytoscape({
@@ -127,11 +125,21 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   // 不再丢弃 rootPath),存档按 rootPath 分仓。
   const store: LayoutStore = opts.store ?? createLayoutStore();
   let currentRoot: string | null = null;
+  // 排列模式 (ADR 0004): per-root, resolved from the archive when the snapshot
+  // arrives. 2026-09-01 用户裁定 R2 (D1 翻转): 缺省 = 'cluster'——快照前与
+  // 旧档无记录时都以聚类海报开场,区域模式留在顶栏开关可切。Solving in cluster
+  // mode ignores archived positions (确定性优先于拖拽保留, D2/COMPROMISES) —
+  // the seeds are the deterministic birth points computed by layout-cluster.
+  let layoutMode: LayoutMode = 'cluster';
 
-  /** Archived positions for the current root (empty when store/root absent). */
+  /**
+   * Archived positions for the current root (empty when store/root absent).
+   * 聚类模式求解零种子 (ADR 0004 修正点 1): 返回空 Map 让每个球都从头
+   * 出生,存档只在切回区域模式时回放。
+   */
   function currentLayout(): Map<string, LayoutPoint> {
-    if (currentRoot === null) return new Map();
-    return store.load(currentRoot, viewState.viewMode);
+    if (currentRoot === null || layoutMode === 'cluster') return new Map();
+    return store.load(currentRoot);
   }
 
   /**
@@ -152,7 +160,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         points.set(n.id(), { x: p.x, y: p.y });
       });
     }
-    if (points.size > 0) store.save(currentRoot, points, viewState.viewMode);
+    if (points.size > 0) store.save(currentRoot, points);
   }
 
   let currentNodes = new Map<string, ModuleNode>();
@@ -171,9 +179,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     query: '',
     untestedOnly: false,
     hiddenStates: new Set<TestState>(),
-    hideReviewed: false,
-    viewMode: 'module',
-    focusedModule: null
+    hideReviewed: false
   };
 
   // ADR 0002 §7.2 改动标记状态（edit_scope / edit_verification 事件驱动）。
@@ -270,8 +276,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     lockedId = null;
     opts.onFocusChange(null);
     // 布局存档分仓键 (Code-review 2026-08-29): the snapshot is where the view
-    // first learns which repo it is showing.
+    // first learns which repo it is showing. 排列模式同样按 rootPath 落定
+    // (ADR 0004/D1)——切仓库 = 切回该仓库自己记住的模式。
     currentRoot = next.rootPath;
+    layoutMode = store.getMode(next.rootPath);
+    opts.onLayoutModeChange?.(layoutMode);
 
     currentNodes = new Map(next.nodes.map((n) => [n.id, n]));
     currentEdges = new Map(next.edges.map((e) => [edgeIdOf(e), e]));
@@ -289,16 +298,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   /**
-   * Full re-render of the visible graph: view pipeline (图例过滤 → 只看未测 →
-   * 搜索 → 折叠) over currentNodes/currentEdges, then layout + element swap.
-   * With every control off this renders the plain graph, so setSnapshot is
-   * just bookkeeping + renderVisible.
+   * 海报元素（唯一视图，ADR 0003）：文件球 + 文件级边。fcose 排布、区域
+   * 罗盘平移照旧；焦点与环标记走 nodeElement 的 class 通道。
    */
-  /**
-   * 文件视图元素：文件球 + 文件级边（海报模式）。fcose 排布、区域罗盘
-   * 平移照旧；焦点与环标记走 nodeElement 的 class 通道。
-   */
-  function fileViewElements(
+  function posterElements(
     visible: { nodes: ModuleNode[]; edges: Edge[] },
     saved: Map<string, LayoutPoint>,
     firstRender: boolean
@@ -321,54 +324,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   /**
-   * 模块视图元素（ADR 0002 §7.1）：表内文件球按功能类成堆（固定模板位，
-   * 存档优先 / 网格兜底），堆与堆之间用模块级边连线（跨堆文件边聚合重连，
-   * 保留跨模块环），每堆一个可点击的题注节点（pile:<id>）。表外文件不进
-   * 模块视图。无 fcose——堆位是固定的，只有堆内球可被拖走（拖点即存档）。
+   * Full re-render of the visible graph: view pipeline (图例过滤 → 只看未测 →
+   * 隐藏已评审 → 搜索) over currentNodes/currentEdges, then layout + element
+   * swap. With every control off this renders the plain graph, so setSnapshot
+   * is just bookkeeping + renderVisible.
    */
-  function moduleViewElements(
-    visible: { nodes: ModuleNode[]; edges: Edge[] },
-    saved: Map<string, LayoutPoint>
-  ): cytoscape.ElementDefinition[] {
-    const groups = groupByModule(visible.nodes);
-    const moduleOf = new Map<string, FunctionalModuleId>();
-    for (const n of visible.nodes) {
-      const m = moduleIdOf(n.id);
-      if (m !== null) moduleOf.set(n.id, m);
-    }
-    const modEdges = aggregateModuleEdges(visible.edges, moduleOf);
-    // 模块级环：在抽象图上算（堆=节点,模块级边=链接）。
-    const layoutInput: LayoutGraphInput = {
-      nodes: [...groups.keys()].map((m) => ({ id: pileIdOf(m), label: '' })),
-      links: modEdges.map((e) => ({ from: e.from, to: e.to }))
-    };
-    backEdgeIds = findBackEdges(layoutInput);
-
-    const elements: cytoscape.ElementDefinition[] = [];
-    for (const [m, nodes] of groups) {
-      // 题注：可点击（点某堆 → 文件视图聚焦该功能类），不可拖。
-      elements.push({
-        data: { id: pileIdOf(m), label: `${labelOf(m)} · ${nodes.length}`, path: pileIdOf(m) },
-        classes: 'region-plate pile-plate',
-        position: { ...PILE_ANCHOR[m] }
-      });
-      nodes.forEach((n, i) => {
-        const def = nodeElement(n);
-        const spot = saved.get(n.id);
-        def.position = spot !== undefined ? { x: spot.x, y: spot.y } : pileBallPosition(m, i);
-        elements.push(def);
-      });
-    }
-    for (const e of modEdges) {
-      const cycle = backEdgeIds.has(edgeIdOf(e));
-      elements.push({
-        data: { id: edgeIdOf(e), source: e.from, target: e.to },
-        classes: `edge-module${cycle ? ' cycle' : ''}`
-      });
-    }
-    return elements;
-  }
-
   function renderVisible(): void {
     const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
     degrees = rebuildDegrees(visible.nodes, visible.edges);
@@ -380,12 +340,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // every position (every filter toggle re-solved from scratch). Restoring
     // the archived spots into the fresh defs makes fcose randomize:false
     // start from the last stable layout — 老球落回原位,新球才交给力模拟。
-    // ADR 0002: 存档按视图模式分档（layout-store rootPath + mode）。
-    const saved = currentLayout();
-    const elements =
-      viewState.viewMode === 'module'
-        ? moduleViewElements(visible, saved)
-        : fileViewElements(visible, saved, firstRender);
+    const elements = posterElements(visible, currentLayout(), firstRender);
 
     cy.batch(() => {
       cy.elements().remove();
@@ -398,6 +353,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       else clearFocus();
     }
     applyLayout();
+    computeHubIds();
+    updateLabelThrottle();
     if (firstRender) {
       // 入场编排: the graph body fades in after the shell (pre → transition).
       window.setTimeout(() => {
@@ -447,9 +404,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // Ticket 11: while any view control reshapes the graph, the incremental
     // DOM path no longer matches what should be visible — fall back to a
     // full render of the pipelined graph (which also clears a focus whose
-    // node left the visible set). ADR 0002: 模块视图的堆分组/模块级边聚合
-    // 是整体结构，增量 DOM 路径同样不适用。
-    if (filtersActive() || viewState.viewMode === 'module') {
+    // node left the visible set).
+    if (filtersActive()) {
       renderVisible();
       return;
     }
@@ -540,14 +496,16 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     if (removedFocused) clearFocus();
 
     applyLayout();
+    // 图结构变了 → hub 集重算（zoom/pan 不重算，这是缓存的刷新点之一）。
+    computeHubIds();
+    updateLabelThrottle();
   }
 
   function applyNodeUpdate(node: ModuleNode): void {
     currentNodes.set(node.id, node);
     // With controls on, a state change can change what is visible (未测
     // filter, legend-hidden states) — re-render instead of patching one ball.
-    // ADR 0002: 模块视图同理由——分组与模块级边随节点状态可整体变化。
-    if (filtersActive() || viewState.viewMode === 'module') {
+    if (filtersActive()) {
       renderVisible();
       return;
     }
@@ -580,7 +538,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   function pulseViewing(id: string): void {
     const el = cy.getElementById(id);
-    if (el.empty()) return; // filtered out / aggregated away / not yet scanned
+    if (el.empty()) return; // filtered out / not yet scanned
     el.addClass('viewing');
     const prev = viewingTimers.get(id);
     if (prev !== undefined) window.clearTimeout(prev);
@@ -605,17 +563,92 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
    * back last, once everything has settled.
    */
   function applyLayout(): void {
-    if (viewState.viewMode === 'module') {
-      // 模块视图：无 fcose、无区域罗盘——堆位在元素定义里就定死了，这里
-      // 只取景 + rebase 漂移基准 + 存档（题注/堆球都已就位，无需再动）。
-      if (cy.nodes().empty()) return;
+    cy.nodes('.region-plate').remove();
+    if (cy.nodes().empty()) return;
+    // 聚类通道 (ADR 0004): 出生 → 逐簇精修 → 领地归位 → 全局最小距离硬保证。题注板永不进
+    // fcose/physics（开头统一 remove、结尾不 add 回来）；applyRegionLayout
+    // 与 syncRegionPlates 整体跳过——聚类只通过空间表达。求解不读存档
+    // （currentLayout 已返回空 Map），落定的静止基准照常 write-through。
+    if (layoutMode === 'cluster') {
+      // 海报质量三修 (2026-09-01 R1/R3 实测裁定): 出生 → 逐簇 fcose 精修
+      // （每社区独立 eles，团形由簇内弹簧决定、跨簇边不拽球）→ 按真实
+      // 团形标定领地并刚体归位 → 全局分离兜底。THEME.fcose 共享对象不动，
+      // regions 分支逐行如旧。求解不读存档，落定的静止基准照常 write-through。
+      const clusters = clusterOfRenderedGraph();
+      seedClusterLayout(cy, clusters);
+      refineClusterBodies(cy, clusters);
+      anchorClusterTerritories(cy, clusters);
+      // 2026-09-01 用户裁定 D3: 全局分离（含跨聚类对）跑在 rebase 之前——
+      // 分离落点成 drift 基准 + 存档。per-cluster 求解 fit:false，整图入镜在此。
+      separateAllBalls(cy, THEME.layout.ballGap);
       cy.fit(undefined, THEME.canvas.padding);
       physics?.rebase();
       persistLayout();
       return;
     }
-    cy.nodes('.region-plate').remove();
-    if (cy.nodes().empty()) return;
+    solveWithFcose();
+    applyRegionLayout(cy, regions);
+    // 全局分离必须在区内分离 + 罗盘平移之后：区内几何先喂包围盒算稳槽位，
+    // 再对全场兜底（游离球/跨区贴边对）。题注 syncRegionPlates 在分离后
+    // 按最终位置计算包围盒，位置仍正确。
+    separateAllBalls(cy, THEME.layout.ballGap);
+    physics?.rebase();
+    persistLayout();
+    syncRegionPlates(cy, regions);
+  }
+
+  // -------------------------------------------------------------------------
+  // 标签节流 (2026-09-01 D5)：默认档（视口内球数 > viewportMax）只给度数
+  // 前 hubCount 的球上标签，聚焦球靠 CSS `.focused` 通道并行显示（hover 信息
+  // 本就有独立 tooltip）；视口内 ≤ viewportMax 全开。hub 集只在图结构变化
+  // （renderVisible/applyDelta）时重算缓存在 hubIds，zoom/pan 只重判视口。
+  // -------------------------------------------------------------------------
+
+  let hubIds = new Set<string>();
+
+  /** 可见球（题注板除外）→ 度数降序、id 升序决胜，取前 hubCount。 */
+  function computeHubIds(): void {
+    const ranked: { id: string; deg: number }[] = [];
+    cy.nodes().forEach((n: cytoscape.NodeSingular) => {
+      if (n.hasClass('region-plate')) return;
+      const d = degrees.get(n.id());
+      if (d === undefined) return;
+      ranked.push({ id: n.id(), deg: d.in + d.out });
+    });
+    ranked.sort((a, b) => (b.deg - a.deg) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    hubIds = new Set(ranked.slice(0, THEME.labels.hubCount).map((r) => r.id));
+  }
+
+  /** 视口感知的标签开关：class 通道批量切换，无 rAF 状态、事件同步跑。 */
+  function updateLabelThrottle(): void {
+    const z = cy.zoom();
+    const pan = cy.pan();
+    const xMin = -pan.x / z;
+    const xMax = (cy.width() - pan.x) / z;
+    const yMin = -pan.y / z;
+    const yMax = (cy.height() - pan.y) / z;
+    const balls: { id: string; x: number; y: number }[] = [];
+    cy.nodes().forEach((n: cytoscape.NodeSingular) => {
+      // 题注板的标签不走节流通道（.region-plate 规则自带 label）。
+      if (n.hasClass('region-plate')) return;
+      const p = n.position();
+      balls.push({ id: n.id(), x: p.x, y: p.y });
+    });
+    const inViewport = balls.filter(
+      (b) => b.x >= xMin && b.x <= xMax && b.y >= yMin && b.y <= yMax
+    );
+    const wanted =
+      inViewport.length <= THEME.labels.viewportMax
+        ? new Set(inViewport.map((b) => b.id))
+        : hubIds;
+    cy.batch(() => {
+      for (const b of balls) {
+        cy.getElementById(b.id).toggleClass('labeled', wanted.has(b.id));
+      }
+    });
+  }
+
+  function solveWithFcose(): void {
     cy.layout({
       name: 'fcose',
       ...THEME.fcose,
@@ -623,10 +656,28 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       padding: THEME.canvas.padding,
       animate: false
     } as cytoscape.LayoutOptions).run();
-    applyRegionLayout(cy, regions);
-    physics?.rebase();
-    persistLayout();
-    syncRegionPlates(cy, regions);
+  }
+
+  /**
+   * 当前渲染图（含过滤态）→ 确定性聚类：Louvain 输入只含 src 球 + 两端皆
+   * src 的边（2026-09-01 D3——测试球重边权会喂肥「测试热点」社区，划分先
+   * 排除它们）；测试球事后多数票挂靠（assignTestBalls）。无向投影在
+   * detectCommunities 内部完成，题注板在 applyLayout 开头已整体移除。
+   */
+  function clusterOfRenderedGraph(): Map<string, number> {
+    const srcIds: string[] = [];
+    const testIds: string[] = [];
+    cy.nodes().forEach((n: cytoscape.NodeSingular) => {
+      if (isTestPath(String(n.data('path') ?? n.id()))) testIds.push(n.id());
+      else srcIds.push(n.id());
+    });
+    const links: { from: string; to: string }[] = [];
+    cy.edges().forEach((e: cytoscape.EdgeSingular) => {
+      links.push({ from: e.source().id(), to: e.target().id() });
+    });
+    const clusters = detectCommunities(srcIds, links);
+    for (const [id, index] of assignTestBalls(testIds, clusters, links)) clusters.set(id, index);
+    return clusters;
   }
 
   // -------------------------------------------------------------------------
@@ -685,26 +736,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   cy.on('tap', 'node', (evt) => {
     const id = evt.target.id();
-    // ADR 0002 §7.1: 点堆题注 → 文件视图聚焦该功能类的小模块簇。
-    const pileModule = moduleIdFromPile(id);
-    if (pileModule !== null) {
-      viewState.viewMode = 'file';
-      viewState.focusedModule = pileModule;
-      renderVisible();
-      return;
-    }
-    // 模块视图里点文件球 → 进入其功能类的文件视图并打开详情（钻取）。
-    if (viewState.viewMode === 'module') {
-      const mod = moduleIdOf(id);
-      if (mod === null) return; // 表外球不该出现在模块视图
-      viewState.viewMode = 'file';
-      viewState.focusedModule = mod;
-      renderVisible();
-      lockedId = id;
-      opts.onFocusChange(findNode(id));
-      applyFocus(id);
-      return;
-    }
     if (lockedId === id) {
       clearFocus();
       return;
@@ -716,11 +747,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   cy.on('tap', (evt) => {
     if (evt.target !== cy) return;
     if (lockedId !== null) clearFocus();
-    // 文件视图聚焦态下点空白 → 回到「全部文件」（海报模式）。
-    if (viewState.viewMode === 'file' && viewState.focusedModule !== null) {
-      viewState.focusedModule = null;
-      renderVisible();
-    }
   });
 
   // 布局存档 · 拖放即保存 (Code-review 2026-08-29, Obsidian Persistent Graph
@@ -728,12 +754,19 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   // entry in one move — user intent is always authoritative over the last
   // auto-solve. Independent of the physics option (persistence is not a
   // motion feature); plates carry events:'no' so they can't be dragged in.
+  // 聚类模式拖拽照旧写档 (ADR 0004/D2 搁置): 求解不读存档,手摆位只活到
+  // 下一次重渲,切回区域模式即复活——COMPROMISES 12 在册。
   cy.on('dragfree', 'node', (evt) => {
     if (currentRoot === null) return;
     if (typeof evt.target.hasClass === 'function' && evt.target.hasClass('region-plate')) return; // 题注不可拖
     const p = evt.target.position();
-    store.update(currentRoot, evt.target.id(), { x: p.x, y: p.y }, viewState.viewMode);
+    store.update(currentRoot, evt.target.id(), { x: p.x, y: p.y });
   });
+
+  // 标签节流 (2026-09-01 D5)：zoom/pan 只重判视口（同步 batch，无 rAF 状态）,
+  // hub 集不随缩放变（结构刷新点在 renderVisible/applyDelta）。
+  cy.on('zoom', () => updateLabelThrottle());
+  cy.on('pan', () => updateLabelThrottle());
 
   // -------------------------------------------------------------------------
   // Controls
@@ -760,6 +793,23 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     renderVisible();
   }
 
+  function getLayoutMode(): LayoutMode {
+    return layoutMode;
+  }
+
+  /**
+   * 切换排列模式 (ADR 0004): 持久化 per-root 模式 + 全量重排。两模式互为
+   * 种子（D5 单档 write-through）——上一次求解的落点就是这一次的重排起点,
+   * 切换瞬间的视觉跳变是预期行为。同值点击不重渲。
+   */
+  function setLayoutMode(mode: LayoutMode): void {
+    if (mode === layoutMode) return;
+    layoutMode = mode;
+    if (currentRoot !== null) store.setMode(currentRoot, mode);
+    opts.onLayoutModeChange?.(mode);
+    renderVisible();
+  }
+
   const onResize = (): void => {
     cy.resize();
   };
@@ -783,14 +833,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
         viewState.untestedOnly = patch.untestedOnly;
         changed = true;
       }
-      if (patch.viewMode !== undefined && patch.viewMode !== viewState.viewMode) {
-        viewState.viewMode = patch.viewMode;
-        changed = true;
-      }
-      if (patch.focusedModule !== undefined && patch.focusedModule !== viewState.focusedModule) {
-        viewState.focusedModule = patch.focusedModule;
-        changed = true;
-      }
       if (patch.hiddenStates !== undefined) {
         viewState.hiddenStates = new Set(patch.hiddenStates);
         changed = true;
@@ -805,6 +847,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     clearFocus,
     resetView,
     resetLayout,
+    getLayoutMode,
+    setLayoutMode,
     setTheme(key: ThemeKey): void {
       setActiveTheme(key);
       cy.style(buildStylesheet());
@@ -863,7 +907,10 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       style: nodeStyle({
         width: 'data(diameter)',
         height: 'data(diameter)',
-        label: 'data(label)',
+        // 标签节流 (2026-09-01 D5)：默认无标签——.labeled（JS 节流通道：视口
+        // ≤40 全开 / 超档度数前 24）与 .focused（hover/锁定并行通道）在下方
+        // 各自把 label 接回来；题注板用自己的 .region-plate 规则。
+        label: '',
         'font-size': THEME.node.labelFontSize,
         // Vibrancy (small text over a busy canvas): slightly heavier weight
         // + a ground-colored chip behind the glyphs — the label stays legible
@@ -912,6 +959,13 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         events: 'no',
         'overlay-opacity': 0
       } as EdgeStylePatch)
+    },
+    {
+      // 标签节流通道 (2026-09-01 D5)：JS 按视口/hub 集挂 .labeled，未挂即无字。
+      selector: 'node.labeled',
+      style: {
+        label: 'data(label)'
+      }
     },
     ...stateRules,
     {
@@ -1012,27 +1066,6 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       }
     },
     {
-      // ADR 0002 §7.1: 模块级边——比文件级边略粗，读作「堆与堆之间的依赖」。
-      selector: 'edge.edge-module',
-      style: edgeStyle({
-        width: 2.2,
-        'line-opacity': 0.9,
-        'target-arrow-opacity': 0.9
-      })
-    },
-    {
-      // ADR 0002 §7.1: 堆题注 = 可点击（点某堆 → 文件视图聚焦该功能类），
-      // 不可拖；无底板无边框（同区域题注），字号略大承载中文标签。
-      selector: '.pile-plate',
-      style: nodeStyle({
-        'font-size': 12,
-        'font-weight': 600,
-        events: 'yes',
-        grabbable: false,
-        cursor: 'pointer'
-      } as EdgeStylePatch)
-    },
-    {
       // 入场编排: nodes mount invisible and fade in once, on first load.
       selector: 'node.pre',
       style: { opacity: 0 }
@@ -1056,10 +1089,12 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       })
     },
     {
+      // focused 是标签的第二通道 (D5)：被聚焦/锁定的球哪怕不在 hub 集也亮字。
       selector: 'node.focused',
       style: {
         'border-width': 2.4,
-        'border-color': p.accent
+        'border-color': p.accent,
+        label: 'data(label)'
       }
     }
   ];

@@ -700,6 +700,50 @@ describe('get_change_impact — change evidence chain (GitNexus port)', () => {
   });
 });
 
+/**
+ * Ticket 13 (scope epoch) at the TOOL seam: the wiring between
+ * recent-changes timestamps and verifyEdits' baseline — unit-level
+ * edit-scope tests cannot catch a wiring regression here.
+ */
+describe('report_edits — scope epoch wiring (ticket 13)', () => {
+  function wire() {
+    const recent = createRecentChanges();
+    const tools = buildTools(fakeGraph(), { recentChanges: recent });
+    return { recent, tools };
+  }
+
+  it('exempts pre-baseline watcher evidence into preexisting and judges in-generation facts', () => {
+    vi.useFakeTimers();
+    try {
+      const { recent, tools } = wire();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      recent.record(['last-session.ts']); // 上一会话残留
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      tools.declare_edit_scope.execute({ files: ['index.ts'] });
+      recent.record(['this-session-stray.ts']); // 代内越界
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+
+      const body = payload(tools.report_edits.execute({ files: ['index.ts'] }));
+      expect(body.ok).toBe(false);
+      expect(body.preexisting).toEqual(['last-session.ts']);
+      expect(body.outOfScope).toEqual([{ id: 'this-session-stray.ts', source: 'watcher' }]);
+      expect(body.unreported).toEqual(['this-session-stray.ts']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no declaration yet → every watcher record (even pre-restart-restored ones) is judged', () => {
+    const { recent, tools } = wire();
+    recent.record(['stray.ts']);
+    const body = payload(tools.report_edits.execute({ files: [] }));
+    expect(body.scopeDeclared).toBe(false);
+    expect(body.outOfScope).toEqual([{ id: 'stray.ts', source: 'watcher' }]);
+    expect(body.preexisting).toEqual([]);
+    expect(body.ok).toBe(false);
+  });
+});
+
 describe('get_module_details context stats (GitNexus port)', () => {
   it('derives degree/cycle/centrality fresh per call from the envelope', () => {
     const { tools } = build();

@@ -41,8 +41,9 @@ export const task: EvalTask = {
     }
     check(typeof p.rootPath === 'string' && basename(p.rootPath) === 'sample-app', `rootPath wrong: ${String(p.rootPath)}`);
     check(
-      typeof p.dashboardUrl === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(p.dashboardUrl),
-      `dashboardUrl not a loopback URL: ${String(p.dashboardUrl)}`
+      typeof p.dashboardUrl === 'string' &&
+        /^http:\/\/127\.0\.0\.1:\d+\?token=[0-9a-f]{32}$/.test(p.dashboardUrl),
+      `dashboardUrl not a loopback URL with the startup token: ${String(p.dashboardUrl)}`
     );
     check(p.nodeCount === 7 && p.edgeCount === 8, `counts wrong: nodes=${String(p.nodeCount)} edges=${String(p.edgeCount)}`);
     // ADR 0002 §7.1: the module table rides get_dashboard_info (单一事实源).

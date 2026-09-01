@@ -7,14 +7,16 @@
  *
  * IMPORTANT: stdout belongs to MCP. Every human-readable log goes to stderr.
  */
+import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncrementalGraph } from './incremental-graph.js';
 import { McpStdioServer } from './mcp.js';
-import { startHttpServer } from './http.js';
+import { rootRelayToken, startHttpServer } from './http.js';
 import { openBrowser, shouldAutoOpen, shouldPopFile } from './open-browser.js';
 import { startLiveReload } from './live-reload.js';
+import { createRecentChanges } from './recent-changes.js';
 import { createReviewStore } from './review-store.js';
 import { VERSION } from './version.js';
 import type { GraphEvent } from '../shared/types.js';
@@ -138,9 +140,13 @@ async function findSameRootInstance(opts: {
  * its tool-driven events to the primary's /internal/broadcast so the ONE tab
  * the user actually keeps open shows every session's AI activity.
  */
-function makeForwarder(primaryPort: number): (event: GraphEvent) => void {
+function makeForwarder(primaryPort: number, rootPath: string): (event: GraphEvent) => void {
+  // P0-3: the relay accepts only same-root instances — the shared root token
+  // is derived from the watched root, so every session of this project
+  // computes the same value without a handshake.
+  const relayToken = rootRelayToken(rootPath);
   return (event: GraphEvent) => {
-    void fetch(`http://127.0.0.1:${primaryPort}/internal/broadcast`, {
+    void fetch(`http://127.0.0.1:${primaryPort}/internal/broadcast?token=${relayToken}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(event)
@@ -171,6 +177,10 @@ async function main(): Promise<void> {
 
   const { root, port, noOpen, open } = parseArgs(process.argv);
   const { readOnly, defaultMaxTokens } = parseGuardrailEnv();
+  // P0-4: a random per-startup token rides in the dashboard URL; /api/* and
+  // /ws demand it, so a same-machine low-privilege process cannot read
+  // source files through the HTTP surface.
+  const startupToken = randomBytes(16).toString('hex');
 
   if (root.length === 0 || !existsSync(root) || !statSync(root).isDirectory()) {
     fail(`--root must be an existing directory, got "${root}"`);
@@ -196,6 +206,8 @@ async function main(): Promise<void> {
     info: { rootPath, port, version: VERSION },
     getSnapshot: () => graph.snapshot(),
     onSecurityEvent: log,
+    token: startupToken,
+    readOnly,
     // Popup policy (file-granular): a relayed event from a same-root
     // secondary names the file its agent opened — the armed primary pops
     // for that file (once per file), even when its own session has not
@@ -267,7 +279,7 @@ async function main(): Promise<void> {
   void sameRootWalk.then((holderPort) => {
     if (holderPort !== null) {
       relayTargetPort = holderPort;
-      relayForward = makeForwarder(holderPort);
+      relayForward = makeForwarder(holderPort, rootPath);
     }
     if (noOpen || open) return;
     if (shouldAutoOpen({ noOpen, forceOpen: open, portBumped, sameRootHolder: holderPort !== null })) {
@@ -282,7 +294,11 @@ async function main(): Promise<void> {
   // ready resolves once the baseline scan is done (or degraded — a failed
   // scan logs a warning and serves an empty graph until the next file event
   // rebuilds it) and the watcher is listening.
-  const liveReload = startLiveReload({ rootPath, hub, log, graph, reviewStore });
+  // Ticket 13 修法 B: the watcher evidence chain persists to
+  // <root>/.module-graph/recent-changes.json — restart no longer clears the
+  // proof needed by report_edits / get_change_impact (false-green fix).
+  const recentChanges = createRecentChanges({ rootPath, log });
+  const liveReload = startLiveReload({ rootPath, hub, log, graph, reviewStore, recentChanges });
   // Plugin mode (code-review 2026-08-29): the MCP transport must come up
   // BEFORE the baseline scan finishes — an MCP client drops a server whose
   // handshake times out (30s default), and a big repository can scan longer
@@ -306,10 +322,13 @@ async function main(): Promise<void> {
     },
     reportTestRun: (failed: boolean) => liveReload.reportTestRun(failed),
     httpInfo: () => {
-      // A headless secondary hands the agent the PRIMARY's URL, so the link
-      // given to the user is always the one tab that shows every session.
-      const reportedPort = relayTargetPort ?? boundPort;
-      return { url: `http://127.0.0.1:${reportedPort}`, port: reportedPort, rootPath, version: VERSION };
+      // P0-4: every instance hands out its OWN tokenized URL. The primary's
+      // random startup token is deliberately not shareable to other local
+      // processes (that is the point of the auth), so a headless secondary
+      // can no longer mint a working link to the primary's port — its own
+      // dashboard serves the same root, and its tool events still relay to
+      // whatever primary tab is open.
+      return { url: `http://127.0.0.1:${boundPort}?token=${startupToken}`, port: boundPort, rootPath, version: VERSION };
     },
     onFileActivity: (fileId) => popOnFileActivity(fileId, 'file opened by agent'),
     isBaselineDone: () => baselineDone,

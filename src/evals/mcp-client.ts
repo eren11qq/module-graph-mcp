@@ -160,6 +160,22 @@ export interface SpawnedClient extends McpClient {
   port: number;
 }
 
+/**
+ * P0-4: pull the startup token out of the spawned dashboard URL so HTTP
+ * probes can authenticate their /api/* fetches and WS handshakes.
+ */
+export async function dashboardToken(client: McpClient): Promise<string> {
+  const res = await client.callTool('get_dashboard_info');
+  if (res.failed) throw new Error(`get_dashboard_info failed: ${res.rpcError?.message ?? res.text}`);
+  const payload = res.payload as { dashboardUrl?: unknown };
+  const m =
+    typeof payload.dashboardUrl === 'string'
+      ? payload.dashboardUrl.match(/[?&]token=([0-9a-f]+)/)
+      : null;
+  if (m === null) throw new Error(`no startup token in dashboardUrl: ${String(payload.dashboardUrl)}`);
+  return m[1]!;
+}
+
 export interface SpawnClientOptions {
   /**
    * Extra env vars merged over process.env (MODULE_GRAPH_NO_OPEN stays

@@ -6,6 +6,7 @@ import { createFrameSink, type FrameSink } from './frame-sink.js';
 import { createGraphModel } from './graph-model.js';
 import { createGraphView } from './graph-view.js';
 import { createLegend } from './legend.js';
+import type { LayoutMode } from './layout-store.js';
 import { createStatusbar } from './statusbar.js';
 import { CHROME, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
 
@@ -31,9 +32,19 @@ const model = createGraphModel();
 // after, before any frame or interaction can arrive.
 let sink: FrameSink | undefined;
 
+// P0-4: the startup token rides in the dashboard URL (?token=…). Every /api/*
+// fetch and the WS handshake must present it; static assets load without it
+// so the shell can read it out of its own location first.
+const TOKEN = new URLSearchParams(location.search).get('token') ?? '';
+
+/** Append the startup token to a URL that already has a query string. */
+function withToken(query: string): string {
+  return TOKEN === '' ? query : `${query}&token=${encodeURIComponent(TOKEN)}`;
+}
+
 /** Ticket 09: restricted source fetch for the detail panel's code view. */
 async function loadSource(path: string): Promise<{ content: string; truncated?: boolean }> {
-  const res = await fetch(`/api/source?path=${encodeURIComponent(path)}`);
+  const res = await fetch(withToken(`/api/source?path=${encodeURIComponent(path)}`));
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -47,7 +58,8 @@ const detailPanel = createDetailPanel(detailContainer, loadSource);
 const view = createGraphView(cyContainer, {
   tooltipEl,
   physics: true,
-  onFocusChange: (node) => sink?.setFocus(node)
+  onFocusChange: (node) => sink?.setFocus(node),
+  onLayoutModeChange: (mode) => renderModeButtons(mode)
 });
 
 const statusbar = createStatusbar({
@@ -142,12 +154,28 @@ document.getElementById('btn-reset')?.addEventListener('click', () => view.reset
 document.getElementById('btn-reset-layout')?.addEventListener('click', () => view.resetLayout());
 
 // ---------------------------------------------------------------------------
-// View controls (ticket 11): search box, 只看未测 filter, directory collapse
+// 排列模式分段开关 (ADR 0004): topbar 区域的/聚类的 → view.setLayoutMode。
+// 激活态复用 .tool-toggle.active；per-root 模式经 layout-store 持久化
+// （store 通道自带隐私模式回落，不裸用 localStorage——与主题同姿态）。
+// ---------------------------------------------------------------------------
+
+const btnModeRegions = document.getElementById('btn-mode-regions') as HTMLButtonElement;
+const btnModeCluster = document.getElementById('btn-mode-cluster') as HTMLButtonElement;
+
+function renderModeButtons(mode: LayoutMode): void {
+  btnModeRegions.classList.toggle('active', mode === 'regions');
+  btnModeCluster.classList.toggle('active', mode === 'cluster');
+}
+
+btnModeRegions.addEventListener('click', () => view.setLayoutMode('regions'));
+btnModeCluster.addEventListener('click', () => view.setLayoutMode('cluster'));
+renderModeButtons(view.getLayoutMode());
+
+// ---------------------------------------------------------------------------
+// View controls (ticket 11): search box, 只看未测 filter
 // ---------------------------------------------------------------------------
 
 const btnUntestedOnly = document.getElementById('btn-untested-only') as HTMLButtonElement;
-const btnModuleView = document.getElementById('btn-module-view') as HTMLButtonElement;
-const btnFileView = document.getElementById('btn-file-view') as HTMLButtonElement;
 const searchBox = document.getElementById('search-box') as HTMLInputElement;
 
 function toggleBtn(btn: HTMLButtonElement, set: (on: boolean) => void): void {
@@ -163,16 +191,7 @@ function setViewState(patch: Parameters<typeof view.setViewState>[0]): void {
   sink?.refreshDerived();
 }
 
-/** 视图模式切换（ADR 0002 §7.1）：模块视图（默认）| 文件视图。 */
-function setViewMode(mode: 'module' | 'file'): void {
-  btnModuleView.classList.toggle('active', mode === 'module');
-  btnFileView.classList.toggle('active', mode === 'file');
-  setViewState({ viewMode: mode });
-}
-
 btnUntestedOnly.addEventListener('click', () => toggleBtn(btnUntestedOnly, (on) => setViewState({ untestedOnly: on })));
-btnModuleView.addEventListener('click', () => setViewMode('module'));
-btnFileView.addEventListener('click', () => setViewMode('file'));
 searchBox.addEventListener('input', () => setViewState({ query: searchBox.value }));
 
 // ---------------------------------------------------------------------------
@@ -187,7 +206,7 @@ function setLive(connected: boolean, text: string): void {
 
 function connectWs(): void {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${protocol}://${location.host}/ws`);
+  const ws = new WebSocket(`${protocol}://${location.host}/ws${TOKEN === '' ? '' : `?token=${encodeURIComponent(TOKEN)}`}`);
   ws.addEventListener('open', () => setLive(true, 'LIVE · WS 已连接'));
   ws.addEventListener('message', (evt) => {
     setLive(true, 'LIVE · WS 已连接');
@@ -210,7 +229,7 @@ async function boot(): Promise<void> {
   applyTheme(storedTheme(), false);
 
   try {
-    const res = await fetch('/api/graph');
+    const res = await fetch(`/api/graph${TOKEN === '' ? '' : `?token=${encodeURIComponent(TOKEN)}`}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const snapshot = (await res.json()) as GraphSnapshot;
     sink?.apply({ type: 'snapshot', snapshot });

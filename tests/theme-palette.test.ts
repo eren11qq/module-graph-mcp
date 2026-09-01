@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CY_PALETTES, MOTION, THEME, activeThemeKey, cyPalette, diameterOf, setTheme, sizeAwareRepulsion, stateColor, uniformIdealEdgeLength } from '../src/web/theme.js';
+import { CY_PALETTES, MOTION, THEME, activeThemeKey, clusterFcoseOverrides, clusterIdealEdgeLength, cyPalette, diameterOf, setTheme, sizeAwareRepulsion, stateColor, uniformIdealEdgeLength } from '../src/web/theme.js';
 import { STATE_ORDER } from '../src/web/test-states.js';
 import type { ThemeKey } from '../src/web/theme.js';
 
@@ -98,6 +98,30 @@ describe('uniformIdealEdgeLength — 等空隙裁定 (2026-08-31)', () => {
   it('spacingGap 单一事实源住在 THEME.layout,且守住漂移下限 ≥ 40', () => {
     expect(THEME.layout.spacingGap).toBe(52);
     expect(THEME.layout.spacingGap).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('clusterIdealEdgeLength / clusterFcoseOverrides (2026-09-01 D1/D2)', () => {
+  const edge = (d1: number, d2: number) =>
+    (({
+      source: () => ({ data: () => d1 }),
+      target: () => ({ data: () => d2 })
+    }) as unknown) as cytoscape.EdgeSingular;
+
+  it('簇内理想边长 = ballGap + 两端半径（共享 spacingGap 52 的降档，海报要团不要点阵）', () => {
+    const r = diameterOf(1) / 2;
+    expect(clusterIdealEdgeLength(edge(24, 24))).toBeCloseTo(THEME.layout.ballGap + 24, 9);
+    expect(clusterIdealEdgeLength(edge(0, 0))).toBeCloseTo(THEME.layout.ballGap + 2 * r, 9); // 缺失夹最小球
+  });
+
+  it('聚类覆盖只出三键（numIter 600 / gravity 1.2 / idealEdgeLength 函数），THEME.fcose 共享对象不被污染', () => {
+    const before = { ...THEME.fcose };
+    const o = clusterFcoseOverrides();
+    expect(o.numIter).toBe(600);
+    expect(o.gravity).toBe(1.2);
+    expect(o.idealEdgeLength).toBe(clusterIdealEdgeLength);
+    expect(Object.keys(o).sort()).toEqual(['gravity', 'idealEdgeLength', 'numIter']);
+    expect(THEME.fcose).toEqual(before);
   });
 });
 

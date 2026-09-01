@@ -24,7 +24,14 @@ export type ThemeKey = 'dark' | 'light';
  */
 export interface CyPalette {
   states: Record<TestState, string>;
-  edge: { color: string; alpha: number; cycleColor: string; cycleAlpha: number };
+  edge: {
+    color: string;
+    alpha: number;
+    cycleColor: string;
+    cycleAlpha: number;
+    /** ADR 0002 §7.1 模板位 v2：模块级连线（edge-module）专属色——与普通边、accent、cycle 朱红都可区分。 */
+    moduleColor: string;
+  };
   label: string;
   nodeBorderW: number;
   nodeBorderColor: string;
@@ -66,7 +73,13 @@ const DARK: CyPalette = {
     'has-tests-unrun': '#5CC0FF',
     untested: '#5C6E8C'
   },
-  edge: { color: '#3D5378', alpha: 0.75, cycleColor: '#FF7A45', cycleAlpha: 0.95 },
+  edge: {
+    color: '#3D5378',
+    alpha: 0.75,
+    cycleColor: '#FF7A45',
+    cycleAlpha: 0.95,
+    moduleColor: '#E696C4'
+  },
   label: '#E7EEF9',
   nodeBorderW: 0,
   nodeBorderColor: 'rgba(0,0,0,0)',
@@ -90,7 +103,13 @@ const LIGHT: CyPalette = {
     'has-tests-unrun': '#56B4E9',
     untested: '#ADB5BD'
   },
-  edge: { color: '#A9A294', alpha: 0.75, cycleColor: '#C2410C', cycleAlpha: 0.95 },
+  edge: {
+    color: '#A9A294',
+    alpha: 0.75,
+    cycleColor: '#C2410C',
+    cycleAlpha: 0.95,
+    moduleColor: '#CC79A7'
+  },
   label: '#44403C',
   nodeBorderW: 1.4,
   nodeBorderColor: '#FFFFFF',
@@ -140,7 +159,9 @@ export function reviewColor(verdict: 'confident' | 'unsure' | 'error'): string {
 const SPACING_GAP = 52;
 // 非邻接对斥力的基准值与尺寸放大顶格:大球按 (r/minR)² 吃面积,
 // 枢纽球(≈3×min)斥力 ×9+,大球与大球之间才顶得出 spacingGap 的空隙。
-const REPULSION_BASE = 20000;
+// 2026-09-01 用户裁定: 20000→40000(×2),加大非邻接球对的排布间距——
+// fit:true 等比缩小让整图球/字略小的权衡已知(硬间距另有全局分离通道兜底)。
+const REPULSION_BASE = 40000;
 const REPULSION_SIZE_CAP = 16;
 
 export const THEME = {
@@ -234,7 +255,52 @@ export const THEME = {
     dockSpacingX: 84,
     dockSpacingY: 84,
     ballGap: 32,
-    spacingGap: SPACING_GAP
+    spacingGap: SPACING_GAP,
+    /**
+     * 聚类排列模式（ADR 0004）螺旋地盘几何 — layout-cluster.ts 唯一消费者。
+     * GitNexus 原式的黄金角螺旋极角序：angle = i·goldenAngle。2026-09-01
+     * 海报质量修正 (D4)：spiralScale 语义从「等面积环带缩放」降为**半径下限**
+     * ——每簇按需求半径线性外扩直到满足领地间距约束，聚类多了不再向内填充。
+     * 缩放依据：GitNexus 球小、理想边长 ≈40px，spiralScale 取 40·0.8；
+     * 我们的球径更大且 GitNexus 的小球标定在本仓库失效（首版整图挤成一坨），
+     * 下限取 32 起步（观感定值，改它只动排布半径）。
+     * jitterScale 是成员出生抖动幅度系数（×√聚类人数），3px 起、贴边由
+     * separateAllBalls(ballGap) 兜底。goldenAngle = π(3−√5) 常数钉死。
+     *
+     * 领地标定四常数（2026-09-01 D4/D2 标定，依据=球的实际面积）：
+     * - looseFactor 1.5：簇需求半径 R = √(Σ成员半径²)×1.5 的松置系数——
+     *   √(Σr²) 是等面积密铺下限，fcose 软排布+抖动出生后留 50% 余量。
+     * - pairGapFactor 1.4 / minClusterGap 64：簇心距下限
+     *   max((Ri+Rj)×1.4, Ri+Rj+64)——系数项让大簇留白随面积涨，下限项
+     *   兜住小簇（R≈30 时 1.4 系数只给 24px 间隙，肉眼粘连）。
+     * - territoryStep 8：外扩步进 px。过大图先观测再调小（纯常数）。
+     * - fcose：聚类分支的求解覆盖（D1）——只加宽弹簧约束收紧全局拉力，
+     *   regions 分支不读（THEME.fcose 共享对象一字不动）。numIter 600 是
+     *   fcose 默认 2500 的 24%：出生点已是好种子，迭代砍 4 倍换簇形紧凑；
+     *   gravity 1.2 是共享值 0.25 的 ~5×：防成员被跨簇弱边拽出门禁区。
+     */
+    cluster: {
+      spiralScale: 32,
+      jitterScale: 3,
+      goldenAngle: 2.399963229728653,
+      looseFactor: 1.5,
+      pairGapFactor: 1.4,
+      minClusterGap: 64,
+      territoryStep: 8,
+      fcose: {
+        numIter: 600,
+        gravity: 1.2
+      }
+    }
+  },
+  /**
+   * 球上标签节流（2026-09-01 D5）：视口内球数 > viewportMax 时只给度数
+   * 前 hubCount 的球上标签（.focused 球走 CSS 并行通道永远有）；≤ viewportMax
+   * 全开。hover 信息不受影响（tooltip 通道独立于球上标签）。
+   */
+  labels: {
+    hubCount: 24,
+    viewportMax: 40
   },
   /**
    * 区域化海报 visual channels: tests 带的球整体缩一档、跨区线一律细+淡
@@ -343,6 +409,36 @@ function fcoseIdealEdgeLength(edge: cytoscape.EdgeSingular): number {
     Number(edge.source().data('diameter')) / 2,
     Number(edge.target().data('diameter')) / 2
   );
+}
+
+/**
+ * 聚类分支的等空隙理想边长(纯函数, 2026-09-01 D2): = ballGap(32) + 两端半径。
+ * 不能沿用共享版 spacingGap(52)——簇内目标 73px 中心距直接顶爆「成员球心到
+ * 簇心 ≤ R_i + 2×平均球半径」验收(海报要的是团,不是等距点阵)。球对硬间距
+ * 仍由 separateAllBalls(ballGap) 兜底,弹簧只负责把簇内收拢。
+ */
+export function clusterIdealEdgeLength(edge: cytoscape.EdgeSingular): number {
+  return uniformIdealEdgeLength(
+    THEME.layout.ballGap,
+    Number(edge.source().data('diameter')) / 2,
+    Number(edge.target().data('diameter')) / 2
+  );
+}
+
+/**
+ * 聚类分支的 fcose 覆盖参数(D1): graph-view 聚类路径与测试管线共用的唯一
+ * 事实源。只出 numIter/gravity/idealEdgeLength 三键,其余力参数随 THEME.fcose。
+ */
+export function clusterFcoseOverrides(): {
+  numIter: number;
+  gravity: number;
+  idealEdgeLength: (edge: cytoscape.EdgeSingular) => number;
+} {
+  return {
+    numIter: THEME.layout.cluster.fcose.numIter,
+    gravity: THEME.layout.cluster.fcose.gravity,
+    idealEdgeLength: clusterIdealEdgeLength
+  };
 }
 
 /**

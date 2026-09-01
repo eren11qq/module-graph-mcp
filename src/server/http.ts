@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
@@ -47,6 +48,36 @@ export interface HttpInfo {
   rootPath: string;
   port: number;
   version: string;
+}
+
+/**
+ * P0-3: the cross-session relay's shared secret. Derived from the watched
+ * root (NOT random per startup — a same-root secondary must be able to
+ * compute the same value without a handshake), so every instance of the same
+ * project speaks the same relay token while a different root is a different
+ * universe. It gates ONLY the cosmetic relay surface (/internal/broadcast);
+ * source reads are protected by the random startup token (P0-4) instead.
+ */
+export function rootRelayToken(rootPath: string): string {
+  return createHash('sha256').update(`module-graph-relay:${rootPath}`).digest('hex').slice(0, 32);
+}
+
+/** The `?token=` value on a request URL, or '' when absent/unparseable. */
+function tokenFromUrl(rawUrl: string | undefined): string {
+  try {
+    return new URL(rawUrl ?? '/', 'http://127.0.0.1').searchParams.get('token') ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * P0-4: the startup-token gate. Unconfigured (token === undefined) = legacy
+ * unauthenticated mode used by library tests; production (index.ts) always
+ * configures it, so /api/* and /ws require the exact token.
+ */
+function apiTokenOk(rawUrl: string | undefined, expected: string | undefined): boolean {
+  return expected === undefined || tokenFromUrl(rawUrl) === expected;
 }
 
 /** Fan-out hub for dashboard websocket clients. */
@@ -110,21 +141,35 @@ export function startHttpServer(opts: {
    * the event names (at most once per file).
    */
   onRelayAccepted?: (event: GraphEvent) => void;
+  /**
+   * P0-4: random per-startup token embedded in the dashboard URL. When set,
+   * /api/* (except the band-walk /api/info) and the /ws handshake require
+   * `?token=` to match; static assets stay public (the shell must load to
+   * read the token out of its own URL).
+   */
+  token?: string;
+  /**
+   * P0-3: read-only mode (MODULE_GRAPH_MCP_READ_ONLY=1). The relay surface
+   * (/internal/broadcast) is a write channel for tool-driven state — it is
+   * disabled entirely so a read-only process can never be used as a forge.
+   */
+  readOnly?: boolean;
 }): Promise<{ url: string; port: number; server: ReturnType<typeof createServer>; hub: WsHub }> {
-  const { preferredPort, maxTries = 20, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted } = opts;
+  const { preferredPort, maxTries = 20, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted, token, readOnly } = opts;
 
   return new Promise((res, rej) => {
     let attempt = preferredPort;
 
   const app = createServer((req, resp) =>
-    handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted, () => attempt, (event) => hub.broadcast(event))
+    handle(req, resp, publicDir, info, getSnapshot, onSecurityEvent, onRelayAccepted, () => attempt, (event) => hub.broadcast(event), token, readOnly)
   );
 
     // Websocket endpoint shares the same port (plan §架构). Upgrades are limited
     // to /ws; browsers must present the dashboard's own origin (CSWSH guard).
     const wss = new WebSocketServer({
       noServer: true,
-      verifyClient: (info: { req: IncomingMessage }) => originAllowed(info.req.headers.origin, attempt)
+      verifyClient: (info: { req: IncomingMessage }) =>
+        originAllowed(info.req.headers.origin, attempt) && apiTokenOk(info.req.url, token)
     });
     const hub = new WsHub(wss);
     app.on('upgrade', (req, socket, head) => {
@@ -154,7 +199,7 @@ export function startHttpServer(opts: {
     });
 
     app.listen(attempt, '127.0.0.1', () => {
-      res({ url: `http://127.0.0.1:${attempt}`, port: attempt, server: app, hub });
+      res({ url: `http://127.0.0.1:${attempt}${token !== undefined ? `?token=${token}` : ''}`, port: attempt, server: app, hub });
     });
   });
 }
@@ -168,7 +213,9 @@ function handle(
   onSecurityEvent: ((msg: string) => void) | undefined,
   onRelayAccepted: ((event: GraphEvent) => void) | undefined,
   boundPort: () => number,
-  broadcast: (event: GraphEvent) => void
+  broadcast: (event: GraphEvent) => void,
+  token?: string,
+  readOnly?: boolean
 ): void {
   if (!hostAllowed(req.headers.host, boundPort())) {
     sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
@@ -180,15 +227,25 @@ function handle(
 
   // Code-review 2026-08-29: cross-session relay — a same-root secondary
   // instance posts its tool-driven events here so the one dashboard tab the
-  // user keeps open shows every session's AI activity.
+  // user keeps open shows every session's AI activity. P0-3: gated by the
+  // shared root token (and disabled in read-only mode).
   if (pathname === '/internal/broadcast') {
-    serveInternalBroadcast(req, resp, broadcast, boundPort, onRelayAccepted);
+    serveInternalBroadcast(req, resp, broadcast, boundPort, onRelayAccepted, info.rootPath, readOnly);
     return;
   }
 
   if (pathname === '/api/info') {
+    // Deliberately unauthenticated: the same-root band walk probes it to
+    // learn which port holds this root's dashboard.
     sendHead(resp, 200, { 'content-type': 'application/json; charset=utf-8' });
     resp.end(JSON.stringify(info));
+    return;
+  }
+
+  // P0-4: every other /api/* endpoint requires the startup token.
+  if (pathname.startsWith('/api/') && !apiTokenOk(req.url, token)) {
+    sendHead(resp, 401, { 'content-type': 'text/plain; charset=utf-8' });
+    resp.end('unauthorized');
     return;
   }
 
@@ -341,6 +398,28 @@ export function isForwardableEvent(value: unknown): value is GraphEvent {
   }
 }
 
+/**
+ * P0-3: shape-check AND sanitize a relayed event. node_update is the one
+ * frame whose payload a forger could use to paint authoritative-looking
+ * state on the dashboard:
+ *   - note is stripped entirely (user-authored content must come from the
+ *     server's own snapshot, never from a local POST);
+ *   - aiReview survives ONLY in the transient `checking` state (the pulse is
+ *     harmless activity — and the cross-session relay exists exactly to show
+ *     it); a `done` review (the fake "AI checked ✓" ring) is stripped.
+ * Returns null when the value is not relayable.
+ */
+export function sanitizeForwardableEvent(value: unknown): GraphEvent | null {
+  if (!isForwardableEvent(value)) return null;
+  const ev = value as GraphEvent;
+  if (ev.type === 'node_update') {
+    const review = ev.node.aiReview;
+    const aiReview = review !== undefined && review !== null && review.status === 'checking' ? review : undefined;
+    return { ...ev, node: { ...ev.node, note: undefined, aiReview } };
+  }
+  return ev;
+}
+
 function isLoopbackPeer(remote: string | undefined): boolean {
   return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
 }
@@ -350,26 +429,46 @@ function serveInternalBroadcast(
   resp: ServerResponse,
   broadcast: (event: GraphEvent) => void,
   boundPort: () => number,
-  onRelayAccepted?: (event: GraphEvent) => void
+  onRelayAccepted: ((event: GraphEvent) => void) | undefined,
+  rootPath: string,
+  readOnly?: boolean
 ): void {
+  // Rejection helper: drain the request body before answering, so the
+  // keep-alive socket stays usable — answering with the body unconsumed makes
+  // Node reset the connection and poisons the client's connection pool.
+  const reject = (status: number, text: string): void => {
+    req.resume();
+    sendHead(resp, status, { 'content-type': 'text/plain; charset=utf-8' });
+    resp.end(text);
+  };
+
   if (req.method !== 'POST') {
-    sendHead(resp, 405, { 'content-type': 'text/plain; charset=utf-8' });
-    resp.end('method not allowed');
+    reject(405, 'method not allowed');
+    return;
+  }
+  // P0-3: read-only mode is not a relay surface — refuse before anything else.
+  if (readOnly === true) {
+    reject(403, 'relay disabled in read-only mode');
     return;
   }
   // The server binds loopback only, but an open local proxy could relay a
   // foreign peer's POST; the socket address is the check that actually holds.
   if (!isLoopbackPeer(req.socket.remoteAddress)) {
-    sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
-    resp.end('forbidden');
+    reject(403, 'forbidden');
     return;
   }
   // A cross-site page can smuggle a text/plain POST past CORS (the request is
   // sent even though its response is unreadable); Origin pins it to the
   // dashboard's own page — same guard as the WS handshake (review 2026-08-30).
   if (!originAllowed(req.headers.origin, boundPort())) {
-    sendHead(resp, 403, { 'content-type': 'text/plain; charset=utf-8' });
-    resp.end('forbidden origin');
+    reject(403, 'forbidden origin');
+    return;
+  }
+  // P0-3: only same-root instances (which can compute the shared root token)
+  // may relay; a blind local POST with no token is refused. Checked last so
+  // the transport-level rejections (loopback, Origin) keep their statuses.
+  if (tokenFromUrl(req.url) !== rootRelayToken(rootPath)) {
+    reject(401, 'unauthorized');
     return;
   }
 
@@ -399,13 +498,14 @@ function serveInternalBroadcast(
       resp.end('malformed JSON');
       return;
     }
-    if (!isForwardableEvent(parsed)) {
+    const safe = sanitizeForwardableEvent(parsed);
+    if (safe === null) {
       sendHead(resp, 400, { 'content-type': 'text/plain; charset=utf-8' });
       resp.end('event type not relayable');
       return;
     }
-    broadcast(parsed);
-    onRelayAccepted?.(parsed);
+    broadcast(safe);
+    onRelayAccepted?.(safe);
     sendHead(resp, 204);
     resp.end();
   });

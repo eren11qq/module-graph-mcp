@@ -3,8 +3,11 @@ import { IncrementalGraph } from '../src/server/incremental-graph.js';
 import { startLiveReload } from '../src/server/live-reload.js';
 import { createRecentChanges, RECENT_CHANGES_CAP, type RecentChanges } from '../src/server/recent-changes.js';
 import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { rm, writeFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { verifyEdits } from '../src/server/edit-scope.js';
 import { getFreePort } from './helpers/net.js';
 import { makeTempProject } from './helpers/temp-project.js';
 
@@ -72,6 +75,84 @@ describe('createRecentChanges — bounded record semantics', () => {
     rc.record(['a.ts']);
     rc.clear();
     expect(rc.list()).toEqual([]);
+  });
+});
+
+/**
+ * Ticket 13 修法 B: the evidence chain persists to
+ * <root>/.module-graph/recent-changes.json (same dir + hygiene as
+ * reviews.json) — restart-loses-the-proof (假绿) is the failure this closes.
+ */
+describe('createRecentChanges — disk persistence (evidence survives restart)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'recent-changes-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const storeFile = (): string => join(dir, '.module-graph', 'recent-changes.json');
+  const writeStore = (raw: string): void => {
+    mkdirSync(join(dir, '.module-graph'), { recursive: true });
+    writeFileSync(storeFile(), raw, 'utf8');
+  };
+
+  it('records to disk and restores the same evidence after a "restart"', () => {
+    const first = createRecentChanges({ rootPath: dir });
+    first.record(['src/server/http.ts', null, 'src/server/mcp.ts']);
+    expect(JSON.parse(readFileSync(storeFile(), 'utf8')).version).toBe(1);
+
+    const revived = createRecentChanges({ rootPath: dir });
+    expect(revived.list()).toEqual(first.list());
+
+    // The pre-restart 越界 is still watcher evidence for an undeclared-scope
+    // verification after the restart — the false-green path is closed.
+    const v = verifyEdits(null, [], revived.list());
+    expect(v.outOfScope.map((e) => e.id)).toEqual(['src/server/http.ts', 'src/server/mcp.ts']);
+  });
+
+  it('a corrupt store file is treated as empty and stays usable', () => {
+    writeStore('{not json');
+    const logs: string[] = [];
+    const rc = createRecentChanges({ rootPath: dir, log: (m) => logs.push(m) });
+    expect(rc.list()).toEqual([]);
+    rc.record(['a.ts']);
+    expect(rc.list().map((c) => c.id)).toEqual(['a.ts']);
+    expect(logs.some((m) => m.includes('corrupt'))).toBe(true);
+  });
+
+  it('merges a same-root sibling process on write (neither side loses proof)', () => {
+    const a = createRecentChanges({ rootPath: dir });
+    a.record(['a.ts']);
+    const b = createRecentChanges({ rootPath: dir });
+    b.record(['b.ts']);
+    const view = createRecentChanges({ rootPath: dir });
+    expect(view.list().map((c) => c.id).sort()).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('clear() empties the disk store too (deleted evidence must not resurrect)', () => {
+    const rc = createRecentChanges({ rootPath: dir });
+    rc.record(['a.ts']);
+    rc.clear();
+    expect(createRecentChanges({ rootPath: dir }).list()).toEqual([]);
+  });
+
+  it('restores newest-first and trims an oversized file to the cap', () => {
+    const base = 1_000_000;
+    writeStore(
+      JSON.stringify({
+        version: 1,
+        changes: Array.from({ length: RECENT_CHANGES_CAP + 5 }, (_, i) => ({ id: `f${i}.ts`, changedAt: base + i }))
+      })
+    );
+    const rc = createRecentChanges({ rootPath: dir });
+    const ids = rc.list().map((c) => c.id);
+    expect(ids).toHaveLength(RECENT_CHANGES_CAP);
+    expect(ids[0]).toBe('f104.ts'); // newest first
+    expect(ids).not.toContain('f0.ts'); // oldest five dropped
   });
 });
 

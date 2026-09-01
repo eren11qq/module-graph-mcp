@@ -31,9 +31,12 @@ export const task: EvalTask = {
 
     const clean = await client.callTool('report_edits', { files: ['core/app.ts'] });
     check(!clean.failed, `report_edits failed: ${clean.rpcError?.message ?? clean.text}`);
-    const cleanPayload = clean.payload as { ok?: boolean; outOfScope?: unknown[]; unreported?: unknown[] };
+    const cleanPayload = clean.payload as { ok?: boolean; outOfScope?: unknown[]; unreported?: unknown[]; preexisting?: unknown[] };
     check(cleanPayload.ok === true, `declared file must be in scope: ${clean.text}`);
     check(Array.isArray(cleanPayload.outOfScope) && cleanPayload.outOfScope.length === 0, `unexpected outOfScope: ${clean.text}`);
+    // Ticket 13 (scope epoch): the response must carry the pre-baseline list
+    // (static fixture never changes → it stays empty here, but the field is contract).
+    check(Array.isArray(cleanPayload.preexisting), `preexisting array missing: ${clean.text}`);
 
     const dirty = await client.callTool('report_edits', { files: ['core/app.ts', 'core/emitter.ts'] });
     const dirtyPayload = dirty.payload as {

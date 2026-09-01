@@ -113,13 +113,19 @@ describe('normalizeFilePath — agent input hygiene', () => {
 });
 
 describe('createEditScopeStore — session-level state', () => {
-  it('declare replaces the previous scope; current() reflects the latest', () => {
+  it('declare replaces the previous scope and stamps a declaredAt baseline', () => {
     const store = createEditScopeStore();
     expect(store.current()).toBeNull();
     store.declare(scope({ modules: ['dashboard'] }));
-    expect(store.current()).toEqual(scope({ modules: ['dashboard'] }));
+    const first = store.current()!;
+    expect(first.modules).toEqual(['dashboard']);
+    expect(first.files).toEqual([]);
+    expect(typeof first.declaredAt).toBe('number');
     store.declare(scope({ files: ['a.ts'] }));
-    expect(store.current()).toEqual(scope({ files: ['a.ts'] }));
+    const second = store.current()!;
+    expect(second.files).toEqual(['a.ts']);
+    expect(second.modules).toEqual([]);
+    expect(second.declaredAt).toBeGreaterThanOrEqual(first.declaredAt!);
   });
 
   it('declaring an empty scope clears the previous one', () => {
@@ -127,5 +133,63 @@ describe('createEditScopeStore — session-level state', () => {
     store.declare(scope({ modules: ['dashboard'] }));
     store.declare(scope());
     expect(store.current()).toBeNull();
+  });
+});
+
+/**
+ * Ticket 13 修法 A (scope epoch): watcher evidence older than the current
+ * declaration's baseline is preexisting — shown, never judged. In-generation
+ * evidence (changedAt >= declaredAt, same-ms races included) goes through the
+ * normal verdicts. No declaration → no lower bound (legacy behaviour).
+ */
+const epochScope = (declaredAt: number, over: Partial<DeclaredEditScope> = {}): DeclaredEditScope => ({
+  ...scope(over),
+  modules: over.modules ?? [],
+  files: over.files ?? [],
+  declaredAt
+});
+
+describe('verifyEdits — scope epoch (baseline filtering)', () => {
+  it('pre-baseline out-of-scope watcher evidence lands in preexisting, ok stays true', () => {
+    const v = verifyEdits(epochScope(1000, { files: ['http.ts'] }), [], [
+      { id: 'stale.ts', changedAt: 999 },
+      { id: 'stale-in-scope.ts', changedAt: 500 }
+    ]);
+    expect(v.preexisting).toEqual(['stale.ts', 'stale-in-scope.ts']); // 在/不在范围都列（给人看）
+    expect(v.outOfScope).toEqual([]);
+    expect(v.unreported).toEqual([]); // 基线前的记录不参与漏报判定，范围内外一视同仁
+    expect(v.ok).toBe(true);
+  });
+
+  it('in-generation watcher evidence is still judged (same-ms race counts as in-generation)', () => {
+    const v = verifyEdits(epochScope(1000, { files: ['http.ts'] }), [], [
+      { id: 'race.ts', changedAt: 1000 },
+      { id: 'stray.ts', changedAt: 1001 }
+    ]);
+    expect(v.preexisting).toEqual([]);
+    expect(v.outOfScope).toEqual([
+      { id: 'race.ts', source: 'watcher' },
+      { id: 'stray.ts', source: 'watcher' }
+    ]);
+    expect(v.unreported).toEqual(['race.ts', 'stray.ts']);
+    expect(v.ok).toBe(false);
+  });
+
+  it('reported out-of-scope edits are never exempted by the baseline', () => {
+    const v = verifyEdits(epochScope(1000, { files: ['http.ts'] }), ['guilty.ts'], []);
+    expect(v.outOfScope).toEqual([{ id: 'guilty.ts', source: 'reported' }]);
+    expect(v.ok).toBe(false);
+  });
+
+  it('bare-id watcher facts (no timestamp) are never exempted', () => {
+    const v = verifyEdits(epochScope(1000, { files: ['http.ts'] }), [], ['anytime.ts']);
+    expect(v.outOfScope).toEqual([{ id: 'anytime.ts', source: 'watcher' }]);
+  });
+
+  it('no declaration → no lower bound: every watcher fact is judged (no regression)', () => {
+    const v = verifyEdits(null, [], [{ id: 'ancient.ts', changedAt: 1 }]);
+    expect(v.preexisting).toEqual([]);
+    expect(v.outOfScope).toEqual([{ id: 'ancient.ts', source: 'watcher' }]);
+    expect(v.ok).toBe(false);
   });
 });

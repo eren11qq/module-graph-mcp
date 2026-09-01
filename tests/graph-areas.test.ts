@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import cytoscape from 'cytoscape';
 import type { Core, NodeSingular } from 'cytoscape';
 import {
   applyRegionLayout,
   assignRegions,
   computeRegionSlots,
+  separateAllBalls,
   syncRegionPlates,
   type BBox,
   type RegionId
@@ -15,7 +17,8 @@ import { THEME } from '../src/web/theme.js';
  * surface: assignRegions/computeRegionSlots are pure and pinned exactly;
  * applyRegionLayout/syncRegionPlates run against a minimal recording fake
  * (real cytoscape cannot render under vitest, same reason graph-view.test
- * mocks it).
+ * mocks it). 例外：separateAllBalls 是面向 headless 的纯坐标通道，
+ * 直接用真实 cytoscape 钉「全场硬保证」语义（2026-09-01 D3）。
  */
 
 const node = (id: string, path = id): { id: string; path: string } => ({ id, path });
@@ -419,5 +422,86 @@ describe('region gap channel (Code-review 2026-08-29)', () => {
     const after = nodes.map((n) => ({ id: n.id, x: n.x, y: n.y }));
     runPass(nodes);
     expect(nodes.map((n) => ({ id: n.id, x: n.x, y: n.y }))).toEqual(after);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// separateAllBalls (2026-09-01 D3): 全场最小距离硬保证——真实 headless
+// 通道，跨聚类对与游离球（stray）也在内。题注板 (.region-plate) 必须被排除。
+// ---------------------------------------------------------------------------
+
+function realCy(nodes: { id: string; x: number; y: number; d?: number }[]): Core {
+  const cy = cytoscape({ headless: true });
+  cy.add(
+    nodes.map((n) => ({
+      data: { id: n.id, path: n.id, diameter: n.d ?? 24 },
+      position: { x: n.x, y: n.y }
+    }))
+  );
+  return cy;
+}
+
+function edgeGap(cy: Core, a: string, b: string): number {
+  const pa = (cy.getElementById(a) as never).position() as { x: number; y: number };
+  const pb = (cy.getElementById(b) as never).position() as { x: number; y: number };
+  const ra = (Number((cy.getElementById(a) as never).data('diameter')) || 0) / 2;
+  const rb = (Number((cy.getElementById(b) as never).data('diameter')) || 0) / 2;
+  return Math.hypot(pa.x - pb.x, pa.y - pb.y) - ra - rb;
+}
+
+describe('separateAllBalls (全场最小距离硬保证 D3)', () => {
+  it('stray vs region ball is pushed apart cross-boundary (the old intra-only gap)', () => {
+    // stray（不在 PATH_REGIONS 的游离球）贴在 web 区球上——旧通道从不分离它。
+    const cy = realCy([
+      { id: 'src/web/a.ts', x: 0, y: 0 },
+      { id: 'stray.ts', x: 10, y: 0 }
+    ]);
+    separateAllBalls(cy, THEME.layout.ballGap);
+    expect(edgeGap(cy, 'src/web/a.ts', 'stray.ts')).toBeGreaterThanOrEqual(
+      THEME.layout.ballGap - 1e-3
+    );
+    cy.destroy();
+  });
+
+  it('excludes region plates: a ball never gets pushed off a plate caption', () => {
+    const cy = realCy([{ id: 'src/server/s.ts', x: 0, y: 0 }]);
+    cy.add({ data: { id: 'plate:server', path: 'plate', diameter: 200 }, classes: 'region-plate', position: { x: 8, y: 0 } });
+    // 题注板与球重合也不许推动球（板被剔除，剩下单球 < 2 → 直接返回）。
+    separateAllBalls(cy, THEME.layout.ballGap);
+    const p = (cy.getElementById('src/server/s.ts') as never).position() as { x: number; y: number };
+    expect(p).toEqual({ x: 0, y: 0 });
+    cy.destroy();
+  });
+
+  it('is idempotent: an already-spaced field does not move', () => {
+    const cy = realCy([
+      { id: 'a', x: -500, y: 0 },
+      { id: 'b', x: 500, y: 0 },
+      { id: 'c', x: 0, y: -500 }
+    ]);
+    const before = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as never).position() }));
+    separateAllBalls(cy, THEME.layout.ballGap);
+    const after = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as never).position() }));
+    expect(after).toEqual(before);
+    cy.destroy();
+  });
+
+  it('dense pile of ~50 overlapped balls all satisfy ≥ ballGap within the round cap', () => {
+    // 稠密堆级联推开是轮数上限的极限测试——钉死收敛（D3 不许放宽 ≥gap；
+    // 无容差渐近不收,容差 + 200 轮上限让它 141 轮早退,见 graph-areas.ts 注释）。
+    // 2D 紧贴网格（8px 步距 < 24+32 的需求距），非退化共线，逼出跨方向级联。
+    const nodes: { id: string; x: number; y: number }[] = [];
+    for (let i = 0; i < 50; i++)
+      nodes.push({ id: `n${i}`.padStart(3, '0'), x: (i % 5) * 8, y: Math.floor(i / 5) * 8 });
+    const cy = realCy(nodes);
+    separateAllBalls(cy, THEME.layout.ballGap);
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        expect(edgeGap(cy, nodes[i]!.id, nodes[j]!.id)).toBeGreaterThanOrEqual(
+          THEME.layout.ballGap - 1e-3
+        );
+      }
+    }
+    cy.destroy();
   });
 });

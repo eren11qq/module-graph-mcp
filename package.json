@@ -18,14 +18,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "evals": "node dist/evals/run.js",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test && npm run evals"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
     "chokidar": "^5.0.0",
-    "typescript": "^7.0.2",
     "ws": "^8.21.3"
   },
   "devDependencies": {
@@ -36,7 +36,22 @@
     "cytoscape-fcose": "^2.2.0",
     "happy-dom": "^20.11.12",
     "highlight.js": "^11.12.0",
+    "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
+  },
+  "license": "MIT",
+  "author": "dqq",
+  "keywords": [
+    "mcp",
+    "module-graph",
+    "dependency-graph",
+    "dashboard",
+    "typescript"
+  ],
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
   }
 }

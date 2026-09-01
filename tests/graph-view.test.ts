@@ -2,8 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGraphView } from '../src/web/graph-view.js';
 import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../src/shared/types.js';
-import type { LayoutStore } from '../src/web/layout-store.js';
-import { diameterOf } from '../src/web/theme.js';
+import type { LayoutMode, LayoutStore } from '../src/web/layout-store.js';
+import { diameterOf, THEME } from '../src/web/theme.js';
 
 /**
  * P1-1 acceptance: after a graph_delta adds nodes, tapping a newcomer must
@@ -24,7 +24,10 @@ const h = vi.hoisted(() => {
 });
 
 /** Shared setup for every describe: fresh view + its fake cytoscape instance. */
-function mountView(opts?: { store?: LayoutStore }): {
+function mountView(opts?: {
+  store?: LayoutStore;
+  onLayoutModeChange?: (mode: LayoutMode) => void;
+}): {
   onFocusChange: ReturnType<typeof vi.fn>;
   view: ReturnType<typeof createGraphView>;
   cy: FakeCy;
@@ -38,9 +41,6 @@ function mountView(opts?: { store?: LayoutStore }): {
     tooltipEl: document.createElement('div'),
     ...opts
   });
-  // ADR 0002 §7.1: 产品默认是模块视图；遗留套件按文件视图（海报）跑，
-  // 模块视图行为由专门的 describe 显式测试。
-  view.setViewState({ viewMode: 'file' });
   return { onFocusChange, view, cy: h.instances[0]! };
 }
 
@@ -57,6 +57,8 @@ vi.mock('cytoscape', () => {
     removeClass(...names: string[]): Ele;
     toggleClass(name: string, force?: boolean): Ele;
     hasClass(name: string): boolean;
+    source(): { id(): string };
+    target(): { id(): string };
     closedNeighborhood(): { edges(): { addClass(): void; removeClass(): void }; addClass(): void };
   };
   type Def = { data: Record<string, unknown>; classes?: string; position?: Pos };
@@ -72,6 +74,10 @@ vi.mock('cytoscape', () => {
     removeClass: () => EMPTY_ELE,
     toggleClass: () => EMPTY_ELE,
     hasClass: () => false,
+    // 聚类通道 (ADR 0004) reads edge endpoints off the collection — a node-
+    // like stub is all detectCommunities needs.
+    source: () => ({ id: () => '' }),
+    target: () => ({ id: () => '' }),
     closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
   };
 
@@ -121,6 +127,8 @@ vi.mock('cytoscape', () => {
           return ele;
         },
         hasClass: (name: string) => classes.has(name),
+        source: () => ({ id: () => String(d.source ?? '') }),
+        target: () => ({ id: () => String(d.target ?? '') }),
         closedNeighborhood: () => ({ edges: () => ({ addClass() {}, removeClass() {} }), addClass() {} })
       };
       return ele;
@@ -146,8 +154,15 @@ vi.mock('cytoscape', () => {
     // traversal graph-view uses (empty/nonempty/forEach/not/addClass/
     // removeClass/remove), selector args are class filters.
     const collection = (list: Ele[]) => ({
+      __els: list,
       empty: () => list.length === 0,
       nonempty: () => list.length > 0,
+      filter(fn: (e: Ele) => boolean) {
+        return collection(list.filter(fn));
+      },
+      union(other: { __els?: Ele[] }) {
+        return collection([...list, ...(other?.__els ?? [])]);
+      },
       forEach(fn: (e: Ele) => void) {
         for (const e of [...list]) fn(e);
       },
@@ -178,10 +193,19 @@ vi.mock('cytoscape', () => {
       handlers.set(key, list);
     };
 
+    // 视口状态 (D5 标签节流)：默认模拟「fit 之后全场入镜」——一个足以覆盖
+    // 领地坐标的大盒。测试改 __view 再 __fire('zoom'/'pan') 复现缩放/平移。
+    // 模型视口 = [(-panX)/zoom, (width-panX)/zoom] ⇒ pan +5e6 罩住 ±5e6 全域。
+    const view = { zoom: 1, panX: 5_000_000, panY: 5_000_000, width: 10_000_000, height: 10_000_000 };
     const cy = {
+      __view: view,
       batch(fn: () => void) {
         fn();
       },
+      zoom: () => view.zoom,
+      pan: () => ({ x: view.panX, y: view.panY }),
+      width: () => view.width,
+      height: () => view.height,
       add(def: Def | Def[]) {
         for (const e of Array.isArray(def) ? def : [def]) {
           defs.set(String(e.data.id), e);
@@ -618,8 +642,19 @@ describe('区域化海报 wiring (2026-08-29)', () => {
   let view: ReturnType<typeof createGraphView>;
   let cy: FakeCy;
 
+  // 2026-09-01 R2 缺省翻转为聚类：罗盘管线不再默认接管，本套件显式递一份
+  // 记着 'regions' 的 store（对齐新语义：只有显式 regions 记录才走区域）。
+  const regionsStore = (): LayoutStore => ({
+    load: () => new Map(),
+    save: () => {},
+    update: () => {},
+    clear: () => {},
+    getMode: () => 'regions',
+    setMode: () => {}
+  });
+
   beforeEach(() => {
-    ({ view, cy } = mountView());
+    ({ view, cy } = mountView({ store: regionsStore() }));
   });
 
   type EleHandle = { nonempty(): boolean; data(key?: string): unknown; hasClass(name: string): boolean };
@@ -682,29 +717,38 @@ describe('区域化海报 wiring (2026-08-29)', () => {
 describe('layout persistence (Code-review 2026-08-29)', () => {
   // A functional fake: save/update/clear mutate the same map load() hands
   // out, so restore-after-save sequences behave like the real store.
-  function makeStore(seed: Record<string, { x: number; y: number }> = {}): LayoutStore & {
+  function makeStore(
+    seed: Record<string, { x: number; y: number }> = {},
+    mode?: LayoutMode
+  ): LayoutStore & {
     load: ReturnType<typeof vi.fn>;
     save: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     clear: ReturnType<typeof vi.fn>;
+    getMode: ReturnType<typeof vi.fn>;
+    setMode: ReturnType<typeof vi.fn>;
   } {
     const map = new Map(Object.entries(seed));
-    const load = vi.fn((_root: string, _mode: 'file' | 'module') => new Map(map));
-    const save = vi.fn(
-      (_root: string, positions: ReadonlyMap<string, { x: number; y: number }>, _mode: 'file' | 'module') => {
-        map.clear();
-        for (const [k, v] of positions) map.set(k, { ...v });
-      }
-    );
-    const update = vi.fn((_root: string, id: string, p: { x: number; y: number }, _mode: 'file' | 'module') => {
+    const modes = new Map<string, LayoutMode>();
+    if (mode !== undefined) modes.set('/proj', mode);
+    const load = vi.fn((_root: string) => new Map(map));
+    const save = vi.fn((_root: string, positions: ReadonlyMap<string, { x: number; y: number }>) => {
+      map.clear();
+      for (const [k, v] of positions) map.set(k, { ...v });
+    });
+    const update = vi.fn((_root: string, id: string, p: { x: number; y: number }) => {
       map.set(id, { ...p });
     });
-    const clear = vi.fn((_root: string, _mode?: 'file' | 'module') => map.clear());
-    return { load, save, update, clear } as unknown as LayoutStore & {
+    const clear = vi.fn((_root: string) => map.clear());
+    const getMode = vi.fn((_root: string): LayoutMode => modes.get('/proj') ?? 'regions');
+    const setMode = vi.fn((_root: string, m: LayoutMode) => modes.set('/proj', m));
+    return { load, save, update, clear, getMode, setMode } as unknown as LayoutStore & {
       load: ReturnType<typeof vi.fn>;
       save: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
       clear: ReturnType<typeof vi.fn>;
+      getMode: ReturnType<typeof vi.fn>;
+      setMode: ReturnType<typeof vi.fn>;
     };
   }
 
@@ -734,13 +778,11 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     const { view } = mountView({ store });
     view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
     expect(store.save).toHaveBeenCalledTimes(1);
-    const [root, positions, mode] = store.save.mock.calls[0] as [
+    const [root, positions] = store.save.mock.calls[0] as [
       string,
-      Map<string, { x: number; y: number }>,
-      'file' | 'module'
+      Map<string, { x: number; y: number }>
     ];
     expect(root).toBe('/proj');
-    expect(mode).toBe('file'); // mountView runs the suite in file mode
     expect([...positions.keys()].sort()).toEqual(['a.ts', 'b.ts']);
   });
 
@@ -749,7 +791,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     const { view, cy } = mountView({ store });
     view.setSnapshot(snapshotWith([node('a.ts')]));
     cy.__fire('dragfree|node', { target: { id: () => 'a.ts', position: () => ({ x: 50, y: 60 }) } });
-    expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 }, 'file');
+    expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 });
   });
 
   it('filter toggles re-render from the archive and never overwrite it', () => {
@@ -781,7 +823,11 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     expect(posOf(cy, 'a.ts')).toEqual({ x: 111, y: 222 });
     view.resetLayout();
     expect(store.clear).toHaveBeenCalledWith('/proj');
-    expect(posOf(cy, 'a.ts')).toEqual({ x: 0, y: 0 });
+    // 存档清空 → 旧位 {111,222} 拿不回，两只 stray 重逢 (0,0)。2026-09-01 D3
+    // 全场硬保证：重合对按 id 序沿 x 拆开，a.ts 吃 −need/2（need = d + ballGap）。
+    const need = diameterOf(1) + THEME.layout.ballGap;
+    expect(posOf(cy, 'a.ts').x).toBeCloseTo(-need / 2, 6);
+    expect(posOf(cy, 'a.ts').y).toBeCloseTo(0, 6);
   });
 });
 
@@ -790,7 +836,18 @@ describe('固定布局力 (2026-08-30 用户裁定: 四力不可调,滑杆通道
     h.layouts[h.layouts.length - 1] as Record<string, unknown>;
 
   it('every solve pins the fixed THEME.fcose constants', () => {
-    const { view } = mountView();
+    // 显式 regions store：2026-09-01 海报质量修正后聚类分支自带 fcose 覆盖
+    // （numIter 600 / gravity 1.2 / clusterIdealEdgeLength，钉在 聚类接线 套件）,
+    // 本套件钉的是共享 THEME.fcose——只有 regions 路径逐字吃到它。
+    const store: LayoutStore = {
+      load: () => new Map(),
+      save: () => {},
+      update: () => {},
+      clear: () => {},
+      getMode: () => 'regions',
+      setMode: () => {}
+    };
+    const { view } = mountView({ store });
     view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
     view.resetLayout();
     expect(lastLayout()).toEqual(
@@ -824,7 +881,9 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
       update: (_root, id, p) => {
         map.set(id, { ...p });
       },
-      clear: () => map.clear()
+      clear: () => map.clear(),
+      getMode: () => 'regions',
+      setMode: () => {}
     };
   }
 
@@ -867,7 +926,7 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
   });
 
   it('brand-new balls with no EXISTING neighbor get no seed (fcose owns them)', () => {
-    const { view, cy } = mountView();
+    const { view, cy } = mountView({ store: makeStore() });
     view.setSnapshot(snapshotWith([node('a.ts')]));
     view.applyDelta({
       addedNodes: [node('c.ts'), node('d.ts')],
@@ -876,9 +935,14 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
       removedEdges: []
     });
     // Each is the other's only neighbor and neither exists at seed time →
-    // no seed → the fake's default (0,0); strays dodge every post-pass.
-    expect(posOf(cy, 'c.ts')).toEqual({ x: 0, y: 0 });
-    expect(posOf(cy, 'd.ts')).toEqual({ x: 0, y: 0 });
+    // no seed → they land coincident at (0,0). 2026-09-01 D3: the global
+    // minimum-distance pass no longer leaves strays stacked — the pair is
+    // split apart, ≥ diameter+ballGap center-to-center.
+    const pc = posOf(cy, 'c.ts');
+    const pd = posOf(cy, 'd.ts');
+    expect(
+      Math.hypot(pc.x - pd.x, pc.y - pd.y)
+    ).toBeGreaterThanOrEqual(diameterOf(1) + THEME.layout.ballGap - 1e-6);
   });
 
   it('the archive beats the seed for a re-entering ball', () => {
@@ -899,10 +963,232 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
   });
 });
 
-describe('ADR 0002 模板模式: 模块视图 + 改动标记', () => {
-  // Module-table paths so groupByModule has real work to do; package.json
-  // is out of table (never renders in module view).
-  function moduleFixture(): GraphSnapshot {
+describe('聚类排列模式接线 (ADR 0004)', () => {
+  // Mode-aware store fake (the persistence suite's makeStore is scoped there).
+  function makeStore(
+    seed: Record<string, { x: number; y: number }> = {},
+    mode?: LayoutMode
+  ): LayoutStore & {
+    load: ReturnType<typeof vi.fn>;
+    save: ReturnType<typeof vi.fn>;
+    getMode: ReturnType<typeof vi.fn>;
+    setMode: ReturnType<typeof vi.fn>;
+  } {
+    const map = new Map(Object.entries(seed));
+    const modes = new Map<string, LayoutMode>();
+    if (mode !== undefined) modes.set('/proj', mode);
+    const load = vi.fn((_root: string) => new Map(map));
+    const save = vi.fn((_root: string, positions: ReadonlyMap<string, { x: number; y: number }>) => {
+      map.clear();
+      for (const [k, v] of positions) map.set(k, { ...v });
+    });
+    const getMode = vi.fn((_root: string): LayoutMode => modes.get('/proj') ?? 'regions');
+    const setMode = vi.fn((_root: string, m: LayoutMode) => modes.set('/proj', m));
+    return { load, save, getMode, setMode, update: vi.fn(), clear: vi.fn() } as unknown as LayoutStore & {
+      load: ReturnType<typeof vi.fn>;
+      save: ReturnType<typeof vi.fn>;
+      getMode: ReturnType<typeof vi.fn>;
+      setMode: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  function pathNode(path: string): ModuleNode {
+    return { id: path, path, language: 'ts', testState: 'untested', coveredBy: [], typeErrors: [] };
+  }
+  function clusterFixture(): GraphSnapshot {
+    return snapshotWith(
+      [
+        pathNode('src/web/main.ts'),
+        pathNode('src/web/util.ts'),
+        pathNode('src/server/http.ts'),
+        pathNode('tests/main.test.ts')
+      ],
+      [
+        { from: 'src/web/main.ts', to: 'src/web/util.ts' },
+        { from: 'src/server/http.ts', to: 'src/web/main.ts' },
+        { from: 'tests/main.test.ts', to: 'src/web/main.ts' }
+      ]
+    );
+  }
+
+  type EleHandle = {
+    nonempty(): boolean;
+    position(): { x: number; y: number };
+  };
+  const ele = (cy: FakeCy, id: string): EleHandle =>
+    (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
+
+  it('聚类求解喂的是 D1/D2 覆盖（numIter 600 / gravity 1.2 / clusterIdealEdgeLength）', () => {
+    const store = makeStore({}, 'cluster');
+    const { view } = mountView({ store });
+    view.setSnapshot(clusterFixture());
+    const opts = h.layouts[h.layouts.length - 1] as Record<string, unknown>;
+    expect(opts).toEqual(
+      expect.objectContaining({
+        name: 'fcose',
+        numIter: THEME.layout.cluster.fcose.numIter,
+        gravity: THEME.layout.cluster.fcose.gravity,
+        randomize: false,
+        nodeSeparation: 150
+      })
+    );
+    expect(typeof opts.idealEdgeLength).toBe('function');
+  });
+
+  it('snapshot resolves the per-root mode and announces it (store.getMode, not localStorage)', () => {
+    const onMode = vi.fn();
+    const store = makeStore({}, 'cluster');
+    const { view } = mountView({ store, onLayoutModeChange: onMode });
+    expect(view.getLayoutMode()).toBe('cluster'); // 快照前默认（2026-09-01 R2 翻转）
+    view.setSnapshot(clusterFixture());
+    expect(view.getLayoutMode()).toBe('cluster');
+    expect(onMode).toHaveBeenLastCalledWith('cluster');
+    expect(store.getMode).toHaveBeenCalledWith('/proj');
+  });
+
+  it('cluster render: no region plates, birth-point positions, archive untouched for solving', () => {
+    const store = makeStore({ 'src/web/main.ts': { x: 111, y: 222 } }, 'cluster');
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(clusterFixture());
+    // 区域模式会挂 plate:*——聚类通道整体跳过罗盘与题注。
+    expect(ele(cy, 'plate:web').nonempty()).toBe(false);
+    expect(ele(cy, 'plate:server').nonempty()).toBe(false);
+    // 求解零种子：archive 从不参与（load 未调，位置不是存档位也不是默认零点）。
+    expect(store.load).not.toHaveBeenCalled();
+    const p = ele(cy, 'src/web/main.ts').position();
+    expect(p).not.toEqual({ x: 111, y: 222 });
+    expect(Math.hypot(p.x, p.y)).toBeGreaterThan(0);
+    // D5 write-through：求解完照常回写最后稳定布局。
+    expect(store.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('setLayoutMode persists per-root, announces, and re-renders; same mode is a no-op', () => {
+    const onMode = vi.fn();
+    const store = makeStore({}, 'cluster');
+    const { view } = mountView({ store, onLayoutModeChange: onMode });
+    view.setSnapshot(clusterFixture());
+    onMode.mockClear();
+    view.setLayoutMode('cluster'); // 同值 → 不播报、不重渲
+    expect(onMode).not.toHaveBeenCalled();
+    expect(store.save).toHaveBeenCalledTimes(1);
+
+    view.setLayoutMode('regions');
+    expect(view.getLayoutMode()).toBe('regions');
+    expect(store.setMode).toHaveBeenCalledWith('/proj', 'regions');
+    expect(onMode).toHaveBeenLastCalledWith('regions');
+    expect(store.save).toHaveBeenCalledTimes(2); // 区域管线重解后又 write-through
+  });
+
+  it('back in regions mode the archive written by cluster solves replays (D5 互为种子)', () => {
+    const store = makeStore({}, 'cluster');
+    const { view, cy } = mountView({ store });
+    view.setSnapshot(clusterFixture());
+    const clusterPos = { ...ele(cy, 'src/web/main.ts').position() };
+    view.setLayoutMode('regions');
+    // 存档里是聚类落点（无 physics 基线 = cy 位置原样入档），区域回放拿回的
+    // 正是它——罗盘平移对无区域 strayed 成员只做刚体搬移，逐位对比不稳，
+    // 但 load 必须真的被调用（不再零种子）。
+    expect(store.load).toHaveBeenCalled();
+    expect(store.save).toHaveBeenCalledTimes(2);
+    const savedPoints = store.save.mock.calls[0]![1] as Map<string, { x: number; y: number }>;
+    expect(savedPoints.get('src/web/main.ts')).toEqual(clusterPos);
+  });
+});
+
+describe('标签节流 (2026-09-01 D5)', () => {
+  type CyWithView = {
+    __fire(key: string, evt: unknown): void;
+    __view: { zoom: number; panX: number; panY: number; width: number; height: number };
+    getElementById(id: string): { hasClass(name: string): boolean };
+  };
+
+  function labelSet(cy: FakeCy, ids: string[]): string[] {
+    const c = cy as unknown as CyWithView;
+    return ids.filter((id) => c.getElementById(id).hasClass('labeled'));
+  }
+
+  function starFixture(size: number): GraphSnapshot {
+    const leaves = Array.from({ length: size }, (_, i) => node(`l${String(i).padStart(2, '0')}.ts`));
+    const hub = node('hub.ts');
+    return snapshotWith(
+      [hub, ...leaves],
+      leaves.map((l) => ({ from: 'hub.ts', to: l.id }))
+    );
+  }
+
+  it('小图（≤ viewportMax 球）全开：每颗带 .labeled', () => {
+    const { view, cy } = mountView();
+    view.setSnapshot(starFixture(4));
+    const ids = ['hub.ts', ...Array.from({ length: 4 }, (_, i) => `l0${i}.ts`)];
+    expect(labelSet(cy, ids).length).toBe(5);
+  });
+
+  it('默认档 = 度数前 hubCount，平票按 id 升序（确定性可复算）', () => {
+    const { view, cy } = mountView();
+    view.setSnapshot(starFixture(40)); // 41 球 > viewportMax 40
+    const leaves = Array.from({ length: 40 }, (_, i) => `l${String(i).padStart(2, '0')}.ts`);
+    const labeled = labelSet(cy as unknown as FakeCy, ['hub.ts', ...leaves]);
+    expect(labeled.length).toBe(THEME.labels.hubCount);
+    expect(labeled).toContain('hub.ts');
+    // 40 颗度 1 叶子取前 23（id 升序决胜）：l00..l22 在、l23 不在。
+    expect(labeled).toContain('l22.ts');
+    expect(labeled).not.toContain('l23.ts');
+  });
+
+  it('放大只重判视口：罩住一颗球时全开=只有它', () => {
+    const { view, cy } = mountView();
+    view.setSnapshot(starFixture(40)); // >40 球默认档只有 24 个标签
+    const c = cy as unknown as CyWithView;
+    const p = (
+      cy as unknown as { getElementById(id: string): { position(): { x: number; y: number } } }
+    ).getElementById('l37.ts').position();
+    Object.assign(c.__view, { zoom: 2, panX: -(p.x - 2.5) * 2, panY: -(p.y - 2.5) * 2, width: 5, height: 5 });
+    c.__fire('zoom', {});
+    const leaves = Array.from({ length: 40 }, (_, i) => `l${String(i).padStart(2, '0')}.ts`);
+    const labeled = labelSet(cy, ['hub.ts', ...leaves]);
+    expect(labeled).toHaveLength(1);
+    expect(labeled[0]).toBe('l37.ts');
+  });
+
+  it('hub 集在结构变化时重算：applyDelta 新球以最小 id 挤掉末位 hub', () => {
+    const { view, cy } = mountView();
+    view.setSnapshot(starFixture(40));
+    view.applyDelta({
+      addedNodes: [node('AAA.ts')],
+      removedNodeIds: [],
+      addedEdges: [{ from: 'hub.ts', to: 'AAA.ts' }],
+      removedEdges: []
+    });
+    const c = cy as unknown as CyWithView;
+    expect(c.getElementById('AAA.ts').hasClass('labeled')).toBe(true);
+    expect(c.getElementById('l22.ts').hasClass('labeled')).toBe(false); // 被平票挤下
+    expect(c.getElementById('hub.ts').hasClass('labeled')).toBe(true);
+    const leaves = Array.from({ length: 40 }, (_, i) => `l${String(i).padStart(2, '0')}.ts`);
+    expect(labelSet(cy, [c ? 'AAA.ts' : '', 'hub.ts', ...leaves].filter(Boolean)).length).toBe(
+      THEME.labels.hubCount
+    );
+  });
+
+  it('label 走 class 通道：base 规则无字，.labeled/.focused 各自接回，题注板不受影响', () => {
+    const styles = (h.styles[0] ?? []) as Array<{
+      selector: string;
+      style?: Record<string, unknown>;
+    }>;
+    const base = styles.find((r) => r.selector === 'node');
+    expect(base?.style?.label).toBe('');
+    const labeled = styles.find((r) => r.selector === 'node.labeled');
+    expect(labeled?.style?.label).toBe('data(label)');
+    const focused = styles.find((r) => r.selector === 'node.focused');
+    expect(focused?.style?.label).toBe('data(label)');
+    const plate = styles.find((r) => r.selector === '.region-plate');
+    expect(plate?.style?.label).toBe('data(label)');
+  });
+});
+
+describe('ADR 0002 §7.2 改动标记: 三通道 + 新范围=新基线', () => {
+  // Module-table paths plus an out-of-table file: scope marks read the module
+  // table via deriveScopeMarks, so fixtures keep a mixed membership.
+  function markerFixture(): GraphSnapshot {
     return snapshotWith(
       [
         node('src/server/mcp.ts'),
@@ -913,98 +1199,28 @@ describe('ADR 0002 模板模式: 模块视图 + 改动标记', () => {
         node('package.json')
       ],
       [
-        { from: 'src/server/mcp.ts', to: 'src/server/index.ts' }, // intra-module
-        { from: 'src/server/mcp.ts', to: 'src/shared/types.ts' }, // cross-module
-        { from: 'src/shared/types.ts', to: 'src/server/mcp.ts' }, // cross-module back → module cycle
-        { from: 'src/web/main.ts', to: 'src/shared/types.ts' }, // cross-module
-        { from: 'src/web/main.ts', to: 'package.json' } // out-of-table target
+        { from: 'src/server/mcp.ts', to: 'src/server/index.ts' },
+        { from: 'src/server/mcp.ts', to: 'src/shared/types.ts' },
+        { from: 'src/shared/types.ts', to: 'src/server/mcp.ts' },
+        { from: 'src/web/main.ts', to: 'src/shared/types.ts' },
+        { from: 'src/web/main.ts', to: 'package.json' }
       ]
     );
   }
 
-  let onFocusChange: ReturnType<typeof vi.fn>;
   let view: ReturnType<typeof createGraphView>;
   let cy: FakeCy;
 
   beforeEach(() => {
-    ({ onFocusChange, view, cy } = mountView());
-    view.setViewState({ viewMode: 'module' }); // 显式回到产品默认视图
+    ({ view, cy } = mountView());
   });
 
-  const tap = (id: string): void => {
-    cy.__fire('tap|node', { target: { id: () => id } });
-  };
   type EleHandle = { nonempty(): boolean; data(key?: string): unknown; hasClass(name: string): boolean };
   const ele = (id: string): EleHandle =>
     (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
-  const visible = (id: string): boolean => ele(id).nonempty();
-  const dataOf = (id: string, key: string): unknown => ele(id).data(key);
-
-  it('默认视图就是模块视图: 表内文件成堆、表外文件不渲染', () => {
-    // mountView 为遗留套件强制文件模式——这里手工建 view 验证产品默认。
-    h.instances.length = 0;
-    const fresh = createGraphView(document.createElement('div'), {
-      onFocusChange: vi.fn(),
-      tooltipEl: document.createElement('div')
-    });
-    const c = h.instances[0]!;
-    fresh.setSnapshot(moduleFixture());
-    const e = (id: string): EleHandle =>
-      (c as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
-    expect(e('pile:mcp-service').nonempty()).toBe(true);
-    expect(e('pile:dashboard').nonempty()).toBe(true);
-    expect(e('pile:graph-engine').nonempty()).toBe(true);
-    expect(e('package.json').nonempty()).toBe(false); // 表外
-    expect(e('pile:mcp-service').data('label')).toBe('MCP 服务 · 2');
-    expect(e('pile:graph-engine').data('label')).toBe('依赖图引擎 · 1');
-  });
-
-  it('模块级边: 跨模块聚合重连、同模块与表外边消失、跨模块环保留', () => {
-    view.setSnapshot(moduleFixture());
-    expect(visible('pile:mcp-service->pile:shared-contract')).toBe(true);
-    expect(visible('pile:dashboard->pile:shared-contract')).toBe(true);
-    expect(visible('src/server/mcp.ts->src/server/index.ts')).toBe(false); // intra
-    expect(visible('src/web/main.ts->package.json')).toBe(false); // 表外端点
-    // 模块级环: mcp-service ↔ shared-contract 的文件边在抽象图上仍是环。
-    // DFS 从 mcp-service 出发，shared→mcp 是回边。
-    expect(ele('pile:shared-contract->pile:mcp-service').hasClass('cycle')).toBe(true);
-    expect(ele('pile:mcp-service->pile:shared-contract').hasClass('cycle')).toBe(false);
-  });
-
-  it('点堆题注 → 文件视图聚焦该功能类; 表内文件球消失到只剩该堆', () => {
-    view.setSnapshot(moduleFixture());
-    onFocusChange.mockClear();
-    tap('pile:mcp-service');
-    expect(visible('src/server/mcp.ts')).toBe(true);
-    expect(visible('src/server/index.ts')).toBe(true);
-    expect(visible('src/web/main.ts')).toBe(false);
-    expect(visible('src/shared/types.ts')).toBe(false);
-    expect(visible('pile:mcp-service')).toBe(false); // 题注只存在于模块视图
-    expect(onFocusChange).not.toHaveBeenCalled(); // 点题注不开详情
-  });
-
-  it('模块视图里点文件球 → 进入其功能类的文件视图并打开详情', () => {
-    view.setSnapshot(moduleFixture());
-    tap('src/web/main.ts');
-    expect(visible('src/web/main.ts')).toBe(true);
-    expect(visible('src/server/mcp.ts')).toBe(false); // 聚焦 dashboard
-    expect(onFocusChange).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'src/web/main.ts' }));
-  });
-
-  it('文件视图聚焦态下点空白 → 回到全部文件（海报模式）', () => {
-    view.setSnapshot(moduleFixture());
-    tap('pile:graph-engine');
-    expect(visible('src/server/incremental-graph.ts')).toBe(true);
-    expect(visible('src/web/main.ts')).toBe(false);
-    cy.__fire('tap', { target: cy });
-    expect(visible('src/web/main.ts')).toBe(true);
-    expect(visible('src/server/incremental-graph.ts')).toBe(true);
-  });
 
   it('改动标记: 范围紫环 / 已改紫 / 越界红角标（三条独立 class 通道）', () => {
-    view.setSnapshot(moduleFixture());
-    // 文件视图（海报）下跑标记：表外文件 package.json 只在文件视图渲染。
-    view.setViewState({ viewMode: 'file' });
+    view.setSnapshot(markerFixture());
     view.setEditScope({ modules: ['mcp-service'], files: ['package.json'] });
     expect(ele('src/server/mcp.ts').hasClass('in-scope')).toBe(true);
     expect(ele('src/server/index.ts').hasClass('in-scope')).toBe(true);
@@ -1025,7 +1241,7 @@ describe('ADR 0002 模板模式: 模块视图 + 改动标记', () => {
   });
 
   it('新范围 = 新基线: setEditScope 清掉已改/越界标记', () => {
-    view.setSnapshot(moduleFixture());
+    view.setSnapshot(markerFixture());
     view.setEditScope({ modules: ['mcp-service'], files: [] });
     view.setEditVerification({ edited: ['src/server/mcp.ts'], outOfScope: ['src/web/main.ts'], unreported: [] });
     expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(true);
@@ -1034,23 +1250,5 @@ describe('ADR 0002 模板模式: 模块视图 + 改动标记', () => {
     expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(false);
     expect(ele('src/web/main.ts').hasClass('out-of-scope')).toBe(false);
     expect(ele('src/server/incremental-graph.ts').hasClass('in-scope')).toBe(true);
-  });
-
-  it('模块视图存档按 module 模式分档: 存档位置优先于网格', () => {
-    const store: LayoutStore = {
-      load: () => new Map([['src/server/mcp.ts', { x: 111, y: 222 }]]),
-      save: () => undefined,
-      update: () => undefined,
-      clear: () => undefined
-    };
-    const fresh = mountView({ store });
-    fresh.view.setViewState({ viewMode: 'module' });
-    fresh.view.setSnapshot(moduleFixture());
-    const c = fresh.cy;
-    const p = (id: string): { x: number; y: number } =>
-      (c as unknown as { getElementById(id: string): { position(): { x: number; y: number } } }).getElementById(id).position();
-    expect(p('src/server/mcp.ts')).toEqual({ x: 111, y: 222 }); // 存档优先
-    // 无存档的球落到堆内网格（确定性）。
-    expect(p('src/web/main.ts')).toEqual({ x: -430, y: -108 });
   });
 });

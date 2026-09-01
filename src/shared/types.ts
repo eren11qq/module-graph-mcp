@@ -64,6 +64,13 @@ export interface GraphDelta {
   removedNodeIds: string[];
   addedEdges: Edge[];
   removedEdges: Edge[];
+  /**
+   * P0-2 (2026-08-31 audit): true when the window's directory walk hit at
+   * least one unreadable directory (EACCES/EMFILE). The engine then skips
+   * that round's node pruning so unreadable subtrees (and their notes) are
+   * not dropped; the dashboard shows the scan_error notice instead.
+   */
+  walkFailed?: boolean;
 }
 
 export interface GraphSnapshot {

@@ -313,8 +313,19 @@ interface WalkedFile {
   extension: SourceExtension;
 }
 
-async function walkSourceFiles(rootAbs: string, gitignore: GitignoreMatcher): Promise<WalkedFile[]> {
+interface WalkResult {
+  files: WalkedFile[];
+  /**
+   * P0-2: a readdir failure (EACCES/EMFILE/…) is NOT "the subtree is empty".
+   * Set when any directory could not be listed, so callers can keep the
+   * last known nodes instead of pruning them (and dropping notes/reviews).
+   */
+  failed: boolean;
+}
+
+async function walkSourceFiles(rootAbs: string, gitignore: GitignoreMatcher): Promise<WalkResult> {
   const found: WalkedFile[] = [];
+  let failed = false;
 
   const visit = async (dirRel: string): Promise<void> => {
     const absDir = dirRel.length === 0 ? rootAbs : `${rootAbs}/${dirRel}`;
@@ -322,6 +333,7 @@ async function walkSourceFiles(rootAbs: string, gitignore: GitignoreMatcher): Pr
     try {
       entries = await readdir(absDir, { withFileTypes: true });
     } catch {
+      failed = true;
       return;
     }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -350,7 +362,7 @@ async function walkSourceFiles(rootAbs: string, gitignore: GitignoreMatcher): Pr
 
   await visit('');
   found.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
-  return found;
+  return { files: found, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +376,12 @@ export class IncrementalGraph {
   private edges = new Map<string, Edge>();
   /** file id → internal import specifiers from its last parse (the parse cache). */
   private specifiers = new Map<string, string[]>();
+  /**
+   * P0-2: notes of removed nodes, stashed so a file that comes back (editor
+   * save via temp rename, a readdir hiccup) does not silently lose the
+   * user's report_note. Session-scoped: cleared on fullScan.
+   */
+  private retiredNotes = new Map<string, string>();
   /** Materialized on first read after a structural change; shared with readers. */
   private cachedSnapshot: GraphSnapshot | null = null;
 
@@ -381,7 +399,10 @@ export class IncrementalGraph {
   async fullScan(): Promise<void> {
     assertScannerContract();
     this.gitignore = await loadGitignore(this.rootAbs);
-    const files = await walkSourceFiles(this.rootAbs, this.gitignore);
+    const { files } = await walkSourceFiles(this.rootAbs, this.gitignore);
+    // A full rebuild is a fresh session: note tombstones from removed nodes
+    // must not resurrect stale notes after a restart or gitignore reload.
+    this.retiredNotes.clear();
 
     const nodes = new Map<string, ModuleNode>();
     const specifiers = new Map<string, string[]>();
@@ -420,7 +441,7 @@ export class IncrementalGraph {
     const beforeEdges = new Map(this.edges);
 
     // ---- plan phase (I/O only; throws leave the state untouched) ----
-    const walked = await walkSourceFiles(this.rootAbs, this.gitignore!);
+    const { files: walked, failed: walkFailed } = await walkSourceFiles(this.rootAbs, this.gitignore!);
     const walkedIds = new Set(walked.map((f) => f.relPath));
 
     const lastEventByPath = new Map<string, WatchedFileEvent>();
@@ -450,11 +471,12 @@ export class IncrementalGraph {
     for (const [rel, specs] of plan) {
       if (!this.nodes.has(rel)) {
         const ext = extensionOf(rel);
-        if (ext !== undefined) this.nodes.set(rel, freshNode(rel, ext));
+        if (ext !== undefined) this.nodes.set(rel, this.materializeNode(rel, ext));
       }
       this.specifiers.set(rel, specs);
     }
     for (const rel of absent) {
+      this.retire(rel);
       this.specifiers.delete(rel);
       this.nodes.delete(rel);
     }
@@ -463,7 +485,7 @@ export class IncrementalGraph {
     // edges skipped" treatment).
     for (const file of walked) {
       if (!this.nodes.has(file.relPath)) {
-        this.nodes.set(file.relPath, freshNode(file.relPath, file.extension));
+        this.nodes.set(file.relPath, this.materializeNode(file.relPath, file.extension));
       }
       if (!this.specifiers.has(file.relPath)) {
         try {
@@ -473,10 +495,18 @@ export class IncrementalGraph {
         }
       }
     }
-    for (const id of [...this.nodes.keys()]) {
-      if (!walkedIds.has(id)) {
-        this.nodes.delete(id);
-        this.specifiers.delete(id);
+    if (walkFailed) {
+      // P0-2: an unreadable directory made the walk incomplete — pruning now
+      // would delete every node under it and drop their notes/reviews with
+      // them. Skip this round's prune; the next successful walk catches up
+      // (unlink events above still remove genuinely deleted files).
+    } else {
+      for (const id of [...this.nodes.keys()]) {
+        if (!walkedIds.has(id)) {
+          this.retire(id);
+          this.nodes.delete(id);
+          this.specifiers.delete(id);
+        }
       }
     }
 
@@ -484,7 +514,9 @@ export class IncrementalGraph {
     this.edges = this.resolveAllEdges();
     this.cachedSnapshot = null;
 
-    return diff(beforeNodeIds, beforeEdges, this.nodes, this.edges);
+    const delta = diff(beforeNodeIds, beforeEdges, this.nodes, this.edges);
+    if (walkFailed) delta.walkFailed = true;
+    return delta;
   }
 
   /**
@@ -524,6 +556,29 @@ export class IncrementalGraph {
     return this.mutateNode(id, (node) => {
       node.note = note;
     });
+  }
+
+  /**
+   * P0-2: stash a removed node's note so the same file coming back keeps it.
+   * Notes are the only user-authored field the engine itself mutates (test
+   * states/type badges are remapped by the state layers; done reviews are
+   * re-attached from the persistent store), so this is the one that must
+   * survive the delete/recreate cycle.
+   */
+  private retire(id: string): void {
+    const node = this.nodes.get(id);
+    if (node?.note !== undefined) this.retiredNotes.set(id, node.note);
+  }
+
+  /** freshNode plus P0-2 note resurrection for files that were seen before. */
+  private materializeNode(id: string, ext: SourceExtension): ModuleNode {
+    const node = freshNode(id, ext);
+    const note = this.retiredNotes.get(id);
+    if (note !== undefined) {
+      node.note = note;
+      this.retiredNotes.delete(id);
+    }
+    return node;
   }
 
   /**

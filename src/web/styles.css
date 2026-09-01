@@ -77,6 +77,8 @@ body {
   transition: transform 120ms ease-out, color 120ms ease-out, background 120ms ease-out;
 }
 .segmented { display: inline-flex; gap: 2px; }
+/* 排列模式分段开关的组题注（聚类排列模式 2026-09-01）：与按钮同字号、弱色。 */
+.seg-cap { color: var(--muted); font-size: 11.5px; font-weight: 500; align-self: center; letter-spacing: .01em; }
 
 .tool-toggle:hover { color: var(--ink); }
 .tool-toggle:active { transform: scale(.97); }

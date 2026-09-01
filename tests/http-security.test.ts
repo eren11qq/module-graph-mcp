@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { request, type IncomingHttpHeaders } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { startHttpServer } from '../src/server/http.js';
+import { rootRelayToken, startHttpServer } from '../src/server/http.js';
 import { getFreePort } from './helpers/net.js';
 
 /**
@@ -129,8 +129,10 @@ describe('http security envelope (P0-1)', () => {
   it('rejects cross-site POSTs to /internal/broadcast by Origin (drive-by relay)', async () => {
     const body = JSON.stringify({ type: 'scan_error', message: 'forged' });
     expect((await post('/internal/broadcast', { origin: 'http://evil.example' }, body)).status).toBe(403);
-    // The dashboard's own page (and the Origin-less Node-fetch relay) still gets through.
-    expect((await post('/internal/broadcast', { origin: url }, body)).status).toBe(204);
+    // The dashboard's own page (and the Origin-less Node-fetch relay) still gets
+    // through — the relay now also demands the shared root token (P0-3).
+    const relayToken = rootRelayToken(root);
+    expect((await post(`/internal/broadcast?token=${relayToken}`, { origin: url }, body)).status).toBe(204);
   });
 
   it('sends nosniff on API and static responses', async () => {

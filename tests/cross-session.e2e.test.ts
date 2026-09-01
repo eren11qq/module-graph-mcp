@@ -102,6 +102,13 @@ function spawnInstance(port: number, root: string = ROOT): Instance {
   return inst;
 }
 
+/** P0-4: the startup token rides in the dashboard URL the server logs. */
+function dashboardToken(inst: Instance): string {
+  const m = inst.stderr.match(/dashboard\s+:\s+http:\/\/127\.0\.0\.1:\d+\?token=([0-9a-f]+)/);
+  if (m === null) throw new Error(`no dashboard URL with token in stderr; got:\n${inst.stderr}`);
+  return m[1]!;
+}
+
 /** Socket-level frame collector for the primary's dashboard websocket. */
 function collect(ws: WebSocket): { frames: GraphEvent[]; waitFor(type: string, timeoutMs?: number): Promise<GraphEvent> } {
   const frames: GraphEvent[] = [];
@@ -144,7 +151,8 @@ beforeAll(async () => {
   secondary = spawnInstance(primaryPort); // same preferred port → bumps to primaryPort + 1
   await secondary.waitUntilStderr('keeping this session headless');
 
-  ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws`);
+  const token = dashboardToken(primary);
+  ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws?token=${token}`);
   await new Promise<void>((res, rej) => {
     ws.once('open', () => res());
     ws.once('error', rej);
@@ -213,7 +221,7 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     expect(primary.stderr).toContain('browser auto-open suppressed');
 
     // Later tests collect relayed frames again — reopen the page socket.
-    ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws`);
+    ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws?token=${dashboardToken(primary)}`);
     await new Promise<void>((res, rej) => {
       ws.once('open', () => res());
       ws.once('error', rej);

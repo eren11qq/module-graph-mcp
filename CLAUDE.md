@@ -10,9 +10,9 @@ module-graph-mcp 的本地 agent 指令。本仓库是一个**本地 dashboard +
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
 | `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、context 统计（入出度 / 在环上 / 中心度）、源码全文（读取会让该球短暂亮起） |
 | `get_impact` | 改前看**爆炸半径**：upstream（谁依赖它）/ downstream（它依赖谁）按 BFS 深度分组，含各节点测试状态与类型错误数；direction 默认 both、maxDepth 默认 3 上限 10 |
-| `get_change_impact` | 改后看**变更证据链**：watcher 记录的最近变更文件 + 每个在图变更的波及面与风险级（波及在环上或高中心度 → high；受影响 >10 → medium；否则 low）；记录仅内存，重启即清 |
-| `declare_edit_scope` | 开工前声明**改动边界**：modules（功能模块 id，`get_dashboard_info` 会给合法清单）+ files（显式文件；表外文件只能走这里）。新声明覆盖旧声明；会话级，重启即清；空对象 = 清除范围 |
-| `report_edits` | 改完后上报实际改动文件；服务端用模块表展开声明范围 + watcher 磁盘事实交叉核对——**越界改动**（范围外，红角标 + 警示条）与**漏报**（watcher 看见但没上报）都判红，响应返回两份清单与 ok 标志 |
+| `get_change_impact` | 改后看**变更证据链**：watcher 记录的最近变更文件 + 每个在图变更的波及面与风险级（波及在环上或高中心度 → high；受影响 >10 → medium；否则 low）；记录落盘 `.module-graph/recent-changes.json`、重启回灌（容量 100，ticket 13 修法 B） |
+| `declare_edit_scope` | 开工前声明**改动边界**：modules（功能模块 id，`get_dashboard_info` 会给合法清单）+ files（显式文件；表外文件只能走这里）。新声明覆盖旧声明；会话级，重启即清；每次成功声明盖基线时刻 `declaredAt`（scope epoch）；空对象 = 清除范围 |
+| `report_edits` | 改完后上报实际改动文件；服务端用模块表展开声明范围 + watcher 磁盘事实交叉核对——**越界改动**（范围外，红角标 + 警示条）与**漏报**（watcher 看见但没上报）都判红；基线前的 watcher 残留归 `preexisting`（给人看、不算红、不影响 `ok`），自己上报的越界永不豁免。响应返回各清单与 ok 标志 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `get_health_report` | 确定性健康报告：固定整数权重表打分（高中心度=3、未测=2、类型错误=2、在环上=1、评审error=2，同分按 id 字典序），items 风险降序 + 中文简报 top 5 |
 | `report_note` | 给模块写备注（≤2000 字符；空串清除） |
