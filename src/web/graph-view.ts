@@ -3,17 +3,10 @@ import fcose from 'cytoscape-fcose';
 import type { Edge, EditScopeDecl, EditVerificationWire, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../shared/types.js';
 import { worstReviewVerdict } from './ai-review.js';
 import { applyViewState, deriveScopeMarks, type ViewState } from './graph-filters.js';
-import { applyRegionLayout, assignRegions, separateAllBalls, syncRegionPlates, type RegionId } from './graph-areas.js';
+import { assignRegions, solveRegionsPoster, syncRegionPlates, type RegionId } from './graph-areas.js';
+import type { GraphModel } from './graph-model.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
-import { detectCommunities } from './communities.js';
-import {
-  anchorClusterTerritories,
-  assignTestBalls,
-  fnv1a,
-  isTestPath,
-  refineClusterBodies,
-  seedClusterLayout
-} from './layout-cluster.js';
+import { fnv1a, solveClusterPoster } from './layout-cluster.js';
 import { createLayoutStore, type LayoutMode, type LayoutPoint, type LayoutStore } from './layout-store.js';
 import {
   MOTION,
@@ -552,46 +545,27 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   /**
-   * Single layout engine: force-directed fcose (randomize:false keeps balls
-   * in place) + the 区域化海报 pass. The pass order is a hard constraint:
-   * plates are removed first so they never enter fcose or the physics state
-   * map; the rigid region translation sits BETWEEN fcose.run() and
-   * physics.rebase(), because rebase snapshots whatever positions exist at
-   * call time as the drift bases — translated spots in, poster preserved.
-   * The layout archive is written right after rebase (still plate-free, and
-   * bases() is exactly the post-translation resting spots) and plates come
-   * back last, once everything has settled.
+   * Layout orchestration (candidate #4, 2026-09-03): each poster channel is
+   * ONE deep solve function — solveClusterPoster (layout-cluster) owns the
+   * four-stage cluster pipeline incl. the global min-distance guarantee,
+   * solveRegionsPoster (graph-areas) owns fcose + compass translation + the
+   * same guarantee. The pass ORDER lives inside the channel, not here.
+   * What remains is the view-side contract: plates never enter fcose or the
+   * physics state map (removed first, re-added last — regions only), and
+   * physics.rebase()/persistLayout() always run AFTER the solve so the
+   * separation landings become the drift bases and the write-through
+   * archive (ADR 0004 D3/D5).
    */
   function applyLayout(): void {
     cy.nodes('.region-plate').remove();
     if (cy.nodes().empty()) return;
-    // 聚类通道 (ADR 0004): 出生 → 逐簇精修 → 领地归位 → 全局最小距离硬保证。题注板永不进
-    // fcose/physics（开头统一 remove、结尾不 add 回来）；applyRegionLayout
-    // 与 syncRegionPlates 整体跳过——聚类只通过空间表达。求解不读存档
-    // （currentLayout 已返回空 Map），落定的静止基准照常 write-through。
     if (layoutMode === 'cluster') {
-      // 海报质量三修 (2026-09-01 R1/R3 实测裁定): 出生 → 逐簇 fcose 精修
-      // （每社区独立 eles，团形由簇内弹簧决定、跨簇边不拽球）→ 按真实
-      // 团形标定领地并刚体归位 → 全局分离兜底。THEME.fcose 共享对象不动，
-      // regions 分支逐行如旧。求解不读存档，落定的静止基准照常 write-through。
-      const clusters = clusterOfRenderedGraph();
-      seedClusterLayout(cy, clusters);
-      refineClusterBodies(cy, clusters);
-      anchorClusterTerritories(cy, clusters);
-      // 2026-09-01 用户裁定 D3: 全局分离（含跨聚类对）跑在 rebase 之前——
-      // 分离落点成 drift 基准 + 存档。per-cluster 求解 fit:false，整图入镜在此。
-      separateAllBalls(cy, THEME.layout.ballGap);
-      cy.fit(undefined, THEME.canvas.padding);
+      solveClusterPoster(cy);
       physics?.rebase();
       persistLayout();
       return;
     }
-    solveWithFcose();
-    applyRegionLayout(cy, regions);
-    // 全局分离必须在区内分离 + 罗盘平移之后：区内几何先喂包围盒算稳槽位，
-    // 再对全场兜底（游离球/跨区贴边对）。题注 syncRegionPlates 在分离后
-    // 按最终位置计算包围盒，位置仍正确。
-    separateAllBalls(cy, THEME.layout.ballGap);
+    solveRegionsPoster(cy, regions);
     physics?.rebase();
     persistLayout();
     syncRegionPlates(cy, regions);
@@ -648,37 +622,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     });
   }
 
-  function solveWithFcose(): void {
-    cy.layout({
-      name: 'fcose',
-      ...THEME.fcose,
-      fit: true,
-      padding: THEME.canvas.padding,
-      animate: false
-    } as cytoscape.LayoutOptions).run();
-  }
-
-  /**
-   * 当前渲染图（含过滤态）→ 确定性聚类：Louvain 输入只含 src 球 + 两端皆
-   * src 的边（2026-09-01 D3——测试球重边权会喂肥「测试热点」社区，划分先
-   * 排除它们）；测试球事后多数票挂靠（assignTestBalls）。无向投影在
-   * detectCommunities 内部完成，题注板在 applyLayout 开头已整体移除。
-   */
-  function clusterOfRenderedGraph(): Map<string, number> {
-    const srcIds: string[] = [];
-    const testIds: string[] = [];
-    cy.nodes().forEach((n: cytoscape.NodeSingular) => {
-      if (isTestPath(String(n.data('path') ?? n.id()))) testIds.push(n.id());
-      else srcIds.push(n.id());
-    });
-    const links: { from: string; to: string }[] = [];
-    cy.edges().forEach((e: cytoscape.EdgeSingular) => {
-      links.push({ from: e.source().id(), to: e.target().id() });
-    });
-    const clusters = detectCommunities(srcIds, links);
-    for (const [id, index] of assignTestBalls(testIds, clusters, links)) clusters.set(id, index);
-    return clusters;
-  }
 
   // -------------------------------------------------------------------------
   // Focus: hover = one-hop neighborhood stays lit, rest dims; click = lock

@@ -1,4 +1,4 @@
-import type { Core, NodeSingular } from 'cytoscape';
+import type { Core, LayoutOptions, NodeSingular } from 'cytoscape';
 import { THEME } from './theme.js';
 
 /**
@@ -13,11 +13,12 @@ import { THEME } from './theme.js';
  * they are re-placed on a deterministic grid anchored outside the non-orphan
  * main mass (边缘=外围), independent of fcose's scatter.
  *
- * Order is a hard constraint owned by graph-view.applyLayout: plates removed
- * → fcose → THIS translation → physics.rebase() → plates re-added. rebase
- * snapshots the translated spots as the drift bases, so ambient motion
- * orbits the poster instead of pulling it apart, and the plates never enter
- * fcose or the physics state map.
+ * Order is a hard constraint owned by solveRegionsPoster (this file,
+ * candidate #4 2026-09-03): plates removed (by the caller) → fcose → THIS
+ * translation → global separation → physics.rebase() → plates re-added.
+ * rebase snapshots the translated+separated spots as the drift bases, so
+ * ambient motion orbits the poster instead of pulling it apart, and the
+ * plates never enter fcose or the physics state map.
  *
  * Region membership is client-side only — node ids are directory-encoded
  * POSIX paths, so the prefix table below needs no protocol or shared-type
@@ -344,6 +345,27 @@ export function separateAllBalls(cy: Core, gap: number): void {
     });
   if (list.length < 2) return;
   cy.batch(() => separateTouching(list, gap));
+}
+
+/**
+ * 区域模式海报的完整求解 (candidate #4, 2026-09-03——序从 graph-view 收编进
+ * 本模块,regions 几何逐行不动, ADR 0004)。fcose 仍是唯一布局引擎
+ * (MODULE-DESIGN 裁定),这里只是驱动它:fcose(fit,randomize 按 THEME) →
+ * 罗盘刚体平移 → 全场最小距离硬保证。全局分离必须在区内分离 + 平移之后:
+ * 区内几何先喂包围盒算稳槽位,再对全场兜底(游离球/跨区贴边对)。题注
+ * syncRegionPlates 由调用方在本函数与 rebase/persist 之后按最终位置补。
+ * 前置:题注板已由调用方移除;fcose 扩展须在 cytoscape 实例上注册。
+ */
+export function solveRegionsPoster(cy: Core, regions: ReadonlyMap<string, RegionId>): void {
+  cy.layout({
+    name: 'fcose',
+    ...THEME.fcose,
+    fit: true,
+    padding: THEME.canvas.padding,
+    animate: false
+  } as LayoutOptions).run();
+  applyRegionLayout(cy, regions);
+  separateAllBalls(cy, THEME.layout.ballGap);
 }
 
 function groupByRegion(

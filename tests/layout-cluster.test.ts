@@ -1,19 +1,21 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import cytoscape from 'cytoscape';
+import type { NodeSingular } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import {
   anchorClusterTerritories,
   assignTestBalls,
   birthPoint,
+  clustersOfRenderedGraph,
   fnv1a,
   isTestPath,
   measureClusterBlobs,
   planTerritories,
   refineClusterBodies,
-  seedClusterLayout
+  seedClusterLayout,
+  solveClusterPoster
 } from '../src/web/layout-cluster.js';
-import { detectCommunities } from '../src/web/communities.js';
 import { separateAllBalls, separateTouching } from '../src/web/graph-areas.js';
 import { THEME } from '../src/web/theme.js';
 
@@ -243,33 +245,9 @@ function buildRealCy(nodes: Seed[], links: { from: string; to: string }[]): cyto
   return cy;
 }
 
-/** 与 graph-view.clusterOfRenderedGraph 同口径：src-only Louvain + 测试球多数票。 */
-function clustersOfGraph(cy: cytoscape.Core): Map<string, number> {
-  const srcIds: string[] = [];
-  const testIds: string[] = [];
-  cy.nodes().forEach((n) => {
-    const path = String(n.data('path') ?? n.id());
-    if (isTestPath(path)) testIds.push(n.id());
-    else srcIds.push(n.id());
-  });
-  const links: { from: string; to: string }[] = [];
-  cy.edges().forEach((e) => links.push({ from: e.source().id(), to: e.target().id() }));
-  const clusters = detectCommunities(srcIds, links);
-  for (const [id, index] of assignTestBalls(testIds, clusters, links)) clusters.set(id, index);
-  return clusters;
-}
-
-/** 与 graph-view.applyLayout 聚类分支同序：聚类 → 出生 → 逐簇精修 → 领地归位 → 全局分离。 */
-function solveClusterChannel(cy: cytoscape.Core): Map<string, number> {
-  const clusters = clustersOfGraph(cy);
-  seedClusterLayout(cy, clusters);
-  refineClusterBodies(cy, clusters);
-  anchorClusterTerritories(cy, clusters);
-  // 2026-09-01 用户裁定 D3: 球对最小距离由全场通道兜底（跨聚类对与孤儿也
-  // 保证边到边 ≥ ballGap）。
-  separateAllBalls(cy, THEME.layout.ballGap);
-  return clusters;
-}
+// candidate #4 (2026-09-03): 手抄的 clustersOfGraph / solveClusterChannel 已删——
+// 管线测试从此跑生产函数本身（layout-cluster.solveClusterPoster /
+// clustersOfRenderedGraph），「同序」注释不复存在，序漂移会被测试直接抓到。
 
 function positionsOf(cy: cytoscape.Core): Array<[string, number, number]> {
   const out: Array<[string, number, number]> = [];
@@ -314,7 +292,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
   it('converges: positions are finite and EVERY ball pair (cross-cluster + orphans included) keeps ballGap (D3)', () => {
     const { nodes, links } = toyRepo();
     const cy = buildRealCy(nodes, links);
-    solveClusterChannel(cy);
+    solveClusterPoster(cy);
     for (const [, x, y] of positionsOf(cy)) {
       expect(Number.isFinite(x)).toBe(true);
       expect(Number.isFinite(y)).toBe(true);
@@ -333,7 +311,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
   it('clusters stay separated: every pair of cluster bboxes keeps a ≥ 64px gap (验收 1)', () => {
     const { nodes, links } = toyRepo();
     const cy = buildRealCy(nodes, links);
-    const clusters = solveClusterChannel(cy);
+    const clusters = solveClusterPoster(cy);
     // 球径 24 → 球心包围盒 ±12；两盒间隙 = 分离轴上的欧氏净距。
     const boxes = new Map<number, { x0: number; y0: number; x1: number; y1: number }>();
     cy.nodes().forEach((n) => {
@@ -364,7 +342,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
   it('each cluster is one tight blob: intra edges ≤ ideal+2×ballGap, circumradius ≤ 3× area radius (验收 2 校准版)', () => {
     const { nodes, links } = toyRepo();
     const cy = buildRealCy(nodes, links);
-    const clusters = solveClusterChannel(cy);
+    const clusters = solveClusterPoster(cy);
   // 簇内理想边长 = ballGap + 两端半径(12+12)=56；实测团内落边 ≤91（二跳对），
   // 上限 ideal + 2×ballGap = 120：抓「团被撕开」的回归，余量吃确定性浮点。
   const ideal = THEME.layout.ballGap + BALL_DIAMETER;
@@ -392,7 +370,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
       { from: 'main.test.ts', to: 'web2' }
     ];
     const cy = buildRealCy(allNodes, [...links, ...testerLinks]);
-    const clusters = solveClusterChannel(cy);
+    const clusters = solveClusterPoster(cy);
     // 票面 = web 团：src-only Louvain 里 web1/web2 的社区。
     expect(clusters.get('main.test.ts')).toBe(clusters.get('web1'));
     const blobs = measureClusterBlobs(cy, clusters);
@@ -407,8 +385,8 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
     const { nodes, links } = toyRepo();
     const a = buildRealCy(nodes, links);
     const b = buildRealCy(nodes, links);
-    solveClusterChannel(a);
-    solveClusterChannel(b);
+    solveClusterPoster(a);
+    solveClusterPoster(b);
     expect(JSON.stringify(positionsOf(b))).toBe(JSON.stringify(positionsOf(a)));
     a.destroy();
     b.destroy();
@@ -417,7 +395,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
   it('同实例回到出生点再重解，结果与第一次逐位全等（fcose 无隐藏状态）', () => {
     const { nodes, links } = toyRepo();
     const cy = buildRealCy(nodes, links);
-    const clusters = clustersOfGraph(cy);
+    const clusters = clustersOfRenderedGraph(cy);
     const first = (() => {
       seedClusterLayout(cy, clusters);
       const seeds = positionsOf(cy);

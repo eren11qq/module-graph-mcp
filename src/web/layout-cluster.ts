@@ -1,16 +1,19 @@
 import type { Core, EdgeSingular, NodeSingular } from 'cytoscape';
 import { THEME, clusterFcoseOverrides, diameterOf } from './theme.js';
+import { detectCommunities } from './communities.js';
+import { separateAllBalls } from './graph-areas.js';
 
 /**
  * 聚类排列通道（聚类排列模式 2026-09-01，ADR 0004）：GitNexus 式确定性
- * 海报。管线四段（graph-view.applyLayout 聚类分支编排）：
+ * 海报。管线四段由本模块的 solveClusterPoster 统一编排（candidate #4,
+ * 2026-09-03——序从 graph-view 收编进来）：
  * ① seedClusterLayout — Louvain 社区按面积需求半径领黄金角螺旋地盘，成员
  *    在领地中心「出生」（fnv1a 确定性抖动）；
  * ② refineClusterBodies — 逐簇独立 eles 精修（2026-09-01 海报质量 R1 实测
  *    换轨：整图一次求解会把各团经弱桥糊回一坨，簇内弹簧才决定团形）；
  * ③ anchorClusterTerritories — 按真实团形重标定领地（planTerritories）并
  *    刚体平移归位（2026-09-01 R3）；
- * ④ separateAllBalls — 全场球对最小距离硬保证（graph-view 调，D3 裁定）。
+ * ④ separateAllBalls — 全场球对最小距离硬保证（D3 裁定，收尾于本通道）。
  * 无盘、无板、无孤儿坞（hull/折叠 = 非目标）。
  *
  * 出生点即种子：全链是 (聚类归属, path) 的纯函数、不读存档（D5 单档
@@ -299,6 +302,49 @@ export function anchorClusterTerritories(
       }
     });
   });
+}
+
+/**
+ * 当前渲染图（含过滤态）→ 确定性聚类：Louvain 输入只含 src 球 + 两端皆
+ * src 的边（2026-09-01 D3——测试球重边权会喂肥「测试热点」社区，划分先
+ * 排除它们）；测试球事后多数票挂靠（assignTestBalls）。无向投影在
+ * detectCommunities 内部完成。题注板须在调用前移除（applyLayout 开头统一
+ * remove）——本函数从 cy 现读现算，不持状态、不读存档。
+ */
+export function clustersOfRenderedGraph(cy: Core): Map<string, number> {
+  const srcIds: string[] = [];
+  const testIds: string[] = [];
+  cy.nodes().forEach((n: NodeSingular) => {
+    if (isTestPath(String(n.data('path') ?? n.id()))) testIds.push(n.id());
+    else srcIds.push(n.id());
+  });
+  const links: { from: string; to: string }[] = [];
+  cy.edges().forEach((e: EdgeSingular) => {
+    links.push({ from: e.source().id(), to: e.target().id() });
+  });
+  const clusters = detectCommunities(srcIds, links);
+  for (const [id, index] of assignTestBalls(testIds, clusters, links)) clusters.set(id, index);
+  return clusters;
+}
+
+/**
+ * 聚类海报的完整求解（ADR 0004 四段管线，序是本模块的硬约束）：
+ * 聚类 → 出生 → 逐簇精修 → 领地刚体归位 → 全场最小距离硬保证（D3——
+ * 分离落点即 drift 基准与存档落点，rebase/persist 由调用方在此之后跑）→
+ * 整图入镜。THEME.fcose 共享对象一字不动（clusterFcoseOverrides 只进
+ * ②）；求解不读存档，同图两次全量重解逐位全等。
+ * 前置：题注板已移除；fcose 扩展已在 cytoscape 实例注册。
+ * 返回本次求解的聚类归属（id → 下标），供管线级测试直接断言，无需再算第二遍。
+ */
+export function solveClusterPoster(cy: Core): Map<string, number> {
+  const clusters = clustersOfRenderedGraph(cy);
+  seedClusterLayout(cy, clusters);
+  refineClusterBodies(cy, clusters);
+  anchorClusterTerritories(cy, clusters);
+  // per-cluster 求解 fit:false，整图入镜在收尾。
+  separateAllBalls(cy, THEME.layout.ballGap);
+  cy.fit(undefined, THEME.canvas.padding);
+  return clusters;
 }
 
 /** 聚类下标 → 成员（按 id 升序、剔除题注板）。返回数组下标 = 聚类编号。 */
