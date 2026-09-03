@@ -113,11 +113,9 @@ export function verifyEdits(
   };
 }
 
-/** Agent 输入卫生：去空白、反斜杠转 POSIX、剥前导 ./；空输入返回 "". */
-export function normalizeFilePath(raw: string): string {
-  const p = raw.replace(/\\/g, '/').replace(/^\.\//, '').trim();
-  return p === './' || p === '/' ? '' : p;
-}
+// Agent 输入路径卫生已上移至 path-conventions.normalizeFilePath(单一事实源);
+// 保留再导出——mcp.ts 与 tests/edit-scope.test.ts 的 import 路径不变。
+export { normalizeFilePath } from './path-conventions.js';
 
 export interface EditScopeStore {
   declare(scope: DeclaredEditScope): void;

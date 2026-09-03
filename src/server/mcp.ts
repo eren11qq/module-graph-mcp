@@ -85,6 +85,16 @@ function textToolResult(value: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
 }
 
+/** 统一错误信封：一条 text + isError——所有失败路径共用,不再手搓字面量。 */
+function errorResult(text: string): ToolResult {
+  return { content: [{ type: 'text', text }], isError: true };
+}
+
+/** 读字符串数组参数:非数组视为空,非字符串元素静默丢弃。 */
+function readStringArray(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
+}
+
 export interface ToolDef {
   description: string;
   inputSchema: Record<string, unknown>;
@@ -182,7 +192,7 @@ export const READ_ONLY_BLOCKED_TOOLS: readonly string[] = [
  * must tell the agent how to fix its own parameters (ticket 10 checklist 4).
  */
 function suggestNodeIds(nodes: readonly ModuleNode[], badPath: string): string[] {
-  const posix = badPath.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  const posix = normalizeFilePath(badPath);
   const base = posix.slice(posix.lastIndexOf('/') + 1);
   const stemOf = (p: string): string => {
     const dot = p.lastIndexOf('.');
@@ -215,7 +225,7 @@ function notFoundResult(nodes: readonly ModuleNode[], rawPath: unknown): ToolRes
   ];
   if (suggestions.length > 0) lines.push(`did you mean: ${suggestions.join(', ')}?`);
   else lines.push('call get_module_graph to list all module ids first.');
-  return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
+  return errorResult(lines.join('\n'));
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +260,12 @@ const REVIEW_PLAYBOOK = [
   '- Include a one-line summary (max 500 chars) so the dashboard detail panel can show the conclusion.',
   '- Verdicts persist on disk: a server restart keeps them (re-review only when the code changes).'
 ].join('\n');
+
+/** update_review / end_review 共用守卫句——同一字节串,单一来源(探针盯文本)。 */
+const VERDICTS_ARRAY_ERROR = 'verdicts is required and must be an array (possibly empty).';
+
+/** declare_edit_scope 的 inScopeFiles 展开上限:大仓库不封顶会挤爆回复;计数保持精确。 */
+const EDIT_SCOPE_EXPAND_CAP = 200;
 
 /**
  * Shared argument handling of the two path-taking tools (get_module_details,
@@ -504,10 +520,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
         const body = typeof args.text === 'string' ? args.text : args.note;
         if (typeof body !== 'string') {
-          return {
-            content: [{ type: 'text', text: 'text is required and must be a string (empty string clears the note). `note` is accepted as an alias.' }],
-            isError: true
-          };
+          return errorResult('text is required and must be a string (empty string clears the note). `note` is accepted as an alias.');
         }
 
         const text = body.trim().slice(0, 2000);
@@ -592,19 +605,9 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const node = found.node;
         deps.onFileActivity?.(node.id);
 
-        if (!Array.isArray(args.verdicts)) {
-          return {
-            content: [{ type: 'text', text: 'verdicts is required and must be an array (possibly empty).' }],
-            isError: true
-          };
-        }
+        if (!Array.isArray(args.verdicts)) return errorResult(VERDICTS_ARRAY_ERROR);
         const outcome = lifecycle.update(node.id, node.path, args.verdicts);
-        if (!outcome.ok) {
-          return {
-            content: [{ type: 'text', text: 'no review in progress for this module — call begin_review first.' }],
-            isError: true
-          };
-        }
+        if (!outcome.ok) return errorResult('no review in progress for this module — call begin_review first.');
         return textToolResult({
           ok: true,
           id: node.id,
@@ -654,12 +657,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const node = found.node;
         deps.onFileActivity?.(node.id);
 
-        if (!Array.isArray(args.verdicts)) {
-          return {
-            content: [{ type: 'text', text: 'verdicts is required and must be an array (possibly empty).' }],
-            isError: true
-          };
-        }
+        if (!Array.isArray(args.verdicts)) return errorResult(VERDICTS_ARRAY_ERROR);
         const { done, verdictCount } = lifecycle.end(node.id, args.verdicts, args.summary);
         // 常驻: the completed conclusion is the one durable trace — persist it
         // (begin/update stay transient; an interrupted re-review keeps the
@@ -690,10 +688,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
       },
       execute(args) {
         if (typeof args.failed !== 'boolean') {
-          return {
-            content: [{ type: 'text', text: 'failed is required and must be a boolean (true = failing run).' }],
-            isError: true
-          };
+          return errorResult('failed is required and must be a boolean (true = failing run).');
         }
         if (deps.reportTestRun === undefined) {
           return textToolResult({ ok: true, failed: args.failed, note: 'no state pipeline wired; flag not applied' });
@@ -730,23 +725,14 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         additionalProperties: false
       },
       execute(args) {
-        const rawModules = Array.isArray(args.modules)
-          ? args.modules.filter((x): x is string => typeof x === 'string')
-          : [];
-        const rawFiles = Array.isArray(args.files) ? args.files.filter((x): x is string => typeof x === 'string') : [];
+        const rawModules = readStringArray(args.modules);
+        const rawFiles = readStringArray(args.files);
         const badModules = rawModules.filter((m) => !VALID_MODULE_IDS.includes(m as (typeof VALID_MODULE_IDS)[number]));
         if (badModules.length > 0) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text:
-                  `unknown functional module(s): ${badModules.join(', ')}. ` +
-                  `valid ids: ${VALID_MODULE_IDS.join(', ')} (see get_dashboard_info.modules).`
-              }
-            ],
-            isError: true
-          };
+          return errorResult(
+            `unknown functional module(s): ${badModules.join(', ')}. ` +
+              `valid ids: ${VALID_MODULE_IDS.join(', ')} (see get_dashboard_info.modules).`
+          );
         }
         const modules = [...new Set(rawModules)];
         const files = [...new Set(rawFiles.map(normalizeFilePath).filter((f) => f !== ''))];
@@ -754,16 +740,13 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         editScopeStore.declare(scope);
         const snap = graph.snapshot();
         const inScopeFiles = snap.nodes.map((n) => n.id).filter((id) => isInScope(id, scope));
-        // The expanded in-scope file list is capped — big repos would blow
-        // the reply otherwise; the count stays exact.
-        const EXPAND_CAP = 200;
         deps.broadcast?.({ type: 'edit_scope', scope });
         return textToolResult({
           ok: true,
           scope: { modules, files },
           inScopeFileCount: inScopeFiles.length,
-          inScopeFiles: inScopeFiles.slice(0, EXPAND_CAP),
-          ...(inScopeFiles.length > EXPAND_CAP ? { truncated: true } : {}),
+          inScopeFiles: inScopeFiles.slice(0, EDIT_SCOPE_EXPAND_CAP),
+          ...(inScopeFiles.length > EDIT_SCOPE_EXPAND_CAP ? { truncated: true } : {}),
           note: 'scope declared; report the actual edits with report_edits when done'
         });
       }
@@ -786,14 +769,9 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
       },
       execute(args) {
         if (!Array.isArray(args.files)) {
-          return {
-            content: [{ type: 'text', text: 'files is required and must be an array of POSIX file paths.' }],
-            isError: true
-          };
+          return errorResult('files is required and must be an array of POSIX file paths.');
         }
-        const reported = [
-          ...new Set(args.files.filter((x): x is string => typeof x === 'string').map(normalizeFilePath).filter((f) => f !== ''))
-        ];
+        const reported = [...new Set(readStringArray(args.files).map(normalizeFilePath).filter((f) => f !== ''))];
         const watcher = deps.recentChanges?.list() ?? [];
         // Ticket 13 (scope epoch): pass the timestamped records — verifyEdits
         // keeps changedAt < declaredAt as preexisting instead of judging it.
@@ -866,12 +844,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
         const direction = args.direction ?? 'both';
         if (typeof direction !== 'string' || !IMPACT_DIRECTIONS.includes(direction as ImpactDirection)) {
-          return {
-            content: [
-              { type: 'text', text: 'direction must be one of "upstream", "downstream", "both" (omitted means both).' }
-            ],
-            isError: true
-          };
+          return errorResult('direction must be one of "upstream", "downstream", "both" (omitted means both).');
         }
 
         const impact = computeImpact(snap, found.node.id, {

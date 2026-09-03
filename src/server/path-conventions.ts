@@ -20,3 +20,13 @@ export const LANGUAGE_BY_EXTENSION: Record<SourceExtension, ModuleNode['language
 
 /** Never entered at any depth; these produce neither nodes nor edges. */
 export const EXCLUDED_DIRECTORIES = new Set(['node_modules', 'dist', 'build', '.git']);
+
+/**
+ * Agent 输入路径卫生的单一事实源：去空白、反斜杠转 POSIX、剥前导 ./；
+ * 空输入（'./'、'/'）返回 ""。此前同一段三元式在 mcp.ts 与 edit-scope.ts
+ * 里逐字抄写三份——现在只住这里。
+ */
+export function normalizeFilePath(raw: string): string {
+  const p = raw.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  return p === './' || p === '/' ? '' : p;
+}
