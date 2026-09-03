@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import { runServerCli } from './helpers/mcp-cli.js';
 import { applyTokenBudget, estimateTokens } from '../src/server/response-budget.js';
 import { buildTools, McpStdioServer, READ_ONLY_BLOCKED_TOOLS, type GraphSnapshotSource, type McpToolDeps } from '../src/server/mcp.js';
 import type { ModuleNode } from '../src/shared/types.js';
@@ -195,27 +195,13 @@ describe('_maxTokens / defaultMaxTokens response budget (transport level)', () =
 
 describe('guardrail env fails loudly (spawn dist, like mcp-e2e)', () => {
   it('MODULE_GRAPH_MCP_READ_ONLY with a garbage value exits non-zero with a message', async () => {
-    const child = spawn(process.execPath, ['dist/server/index.js', '--root', 'test-fixtures/empty'], {
-      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1', MODULE_GRAPH_MCP_READ_ONLY: 'maybe' }
-    });
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString('utf8');
-    });
-    const code = await new Promise<number | null>((res) => child.on('exit', (c) => res(c)));
+    const { code, stderr } = await runServerCli(['--root', 'test-fixtures/empty'], { MODULE_GRAPH_MCP_READ_ONLY: 'maybe' });
     expect(code).not.toBe(0);
     expect(stderr).toContain('MODULE_GRAPH_MCP_READ_ONLY must be unset, "0" or "1"');
   });
 
   it('MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS with a non-integer exits non-zero', async () => {
-    const child = spawn(process.execPath, ['dist/server/index.js', '--root', 'test-fixtures/empty'], {
-      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1', MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS: 'lots' }
-    });
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString('utf8');
-    });
-    const code = await new Promise<number | null>((res) => child.on('exit', (c) => res(c)));
+    const { code, stderr } = await runServerCli(['--root', 'test-fixtures/empty'], { MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS: 'lots' });
     expect(code).not.toBe(0);
     expect(stderr).toContain('MODULE_GRAPH_MCP_DEFAULT_MAX_TOKENS must be a positive integer');
   });

@@ -18,9 +18,11 @@ import { dirname } from 'node:path';
 import type { JsonRpcResponse } from '../server/mcp.js';
 import type { McpClient, ToolCallOutcome } from './types.js';
 
-/** Grab a free loopback port and fully release it before returning. */
-// Small copy of tests/helpers/net.ts getFreePort: src/evals cannot import
-// from tests/ (tsconfig rootDir), so the helper is duplicated verbatim here.
+/**
+ * Grab a free loopback port and fully release it before returning.
+ * This is the ONE implementation (tsconfig rootDir keeps it on this side of
+ * the src/tests seam); tests/helpers/net.ts re-exports it from here.
+ */
 export async function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -50,6 +52,7 @@ class StdioMcpClient implements McpClient {
   private nextId = 1;
   private readonly replies: JsonRpcResponse[] = [];
   private readonly stderrTail: string[] = [];
+  private stderrAll = '';
   private exited = false;
 
   constructor(
@@ -72,8 +75,11 @@ class StdioMcpClient implements McpClient {
       }
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      // Keep only a bounded tail for failure diagnostics.
-      this.stderrTail.push(chunk.toString('utf8'));
+      // Keep a bounded tail for failure diagnostics, and the full text for
+      // stderr-observing e2e tests (startup banners, popup policy lines).
+      const s = chunk.toString('utf8');
+      this.stderrAll += s;
+      this.stderrTail.push(s);
       if (this.stderrTail.length > 50) this.stderrTail.shift();
     });
     child.on('exit', () => {
@@ -142,6 +148,29 @@ class StdioMcpClient implements McpClient {
     return tools.map((t) => String(t.name));
   }
 
+  /** Raw JSON-RPC request (auto id) — for probes/tests that need the reply envelope. */
+  async request(method: string, params?: Record<string, unknown>): Promise<JsonRpcResponse> {
+    const id = this.nextId++;
+    this.child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })}\n`);
+    return this.waitForReply(id);
+  }
+
+  /** Full stderr accumulated so far — for log-observing e2e assertions. */
+  stderr(): string {
+    return this.stderrAll;
+  }
+
+  /** Wait until the child's stderr contains `needle` (startup banners, popup-policy lines). */
+  async waitUntilStderr(needle: string, timeoutMs = 30_000): Promise<void> {
+    const started = Date.now();
+    for (;;) {
+      if (this.stderrAll.includes(needle)) return;
+      if (this.exited) throw new Error(`server exited before stderr contained "${needle}"; got:\n${this.stderrAll}`);
+      if (Date.now() - started > timeoutMs) throw new Error(`stderr never contained "${needle}"; got:\n${this.stderrAll}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
   async close(): Promise<void> {
     this.child.kill();
     await new Promise<void>((res) => {
@@ -156,8 +185,14 @@ class StdioMcpClient implements McpClient {
 }
 
 export interface SpawnedClient extends McpClient {
-  /** Loopback port the spawned dashboard bound (free-port picked by us). */
+  /** Loopback port the spawned dashboard bound (free-port picked by us, or the pinned one). */
   port: number;
+  /** Raw JSON-RPC request (auto id) — reply envelope visible, for wire-level assertions. */
+  request(method: string, params?: Record<string, unknown>): Promise<JsonRpcResponse>;
+  /** Full stderr text so far (human logs; the MCP channel is stdout). */
+  stderr(): string;
+  /** Wait until stderr contains `needle`. */
+  waitUntilStderr(needle: string, timeoutMs?: number): Promise<void>;
 }
 
 /**
@@ -183,6 +218,11 @@ export interface SpawnClientOptions {
    * MODULE_GRAPH_MCP_READ_ONLY=1.
    */
   env?: Record<string, string>;
+  /**
+   * Pin the preferred port instead of letting the picker choose one — for
+   * tests that must know the port up front (same-root bump/relay scenarios).
+   */
+  port?: number;
 }
 
 /**
@@ -191,7 +231,7 @@ export interface SpawnClientOptions {
  * process, never shared state between probes.
  */
 export async function spawnClient(fixtureRoot: string, options: SpawnClientOptions = {}): Promise<SpawnedClient> {
-  const port = await getFreePort();
+  const port = options.port ?? await getFreePort();
   const child = spawn(
     process.execPath,
     [serverEntryPath(), '--root', fixtureRoot, '--port', String(port)],

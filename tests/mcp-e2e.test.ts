@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { basename } from 'node:path';
 import { getFreePort } from './helpers/net.js';
+import { runServerCli } from './helpers/mcp-cli.js';
 
 /**
  * Ticket 01 acceptance: a real process must present itself as an MCP server
@@ -111,31 +112,13 @@ describe('MCP stdio end-to-end (Ticket 01)', () => {
 
 describe('argument validation (Ticket 01)', () => {
   it('rejects a missing --root directory with a clear non-zero exit', async () => {
-    const child = spawn(
-      process.execPath,
-      ['dist/server/index.js', '--root', 'test-fixtures/does-not-exist'],
-      { env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' } }
-    );
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString('utf8');
-    });
-    const code: number = await new Promise((resolve) => child.on('exit', resolve));
+    const { code, stderr } = await runServerCli(['--root', 'test-fixtures/does-not-exist']);
     expect(code).not.toBe(0);
     expect(stderr).toContain('--root must be an existing directory');
   });
 
   it('rejects an invalid --port value with a clear message', async () => {
-    const child = spawn(
-      process.execPath,
-      ['dist/server/index.js', '--port', '99999'],
-      { env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' } }
-    );
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString('utf8');
-    });
-    const code: number = await new Promise((resolve) => child.on('exit', resolve));
+    const { code, stderr } = await runServerCli(['--port', '99999']);
     expect(code).not.toBe(0);
     expect(stderr).toContain('--port must be an integer');
   });
@@ -146,14 +129,7 @@ describe('--version (G5: single version source)', () => {
     const require = createRequire(import.meta.url);
     const { version } = require('../package.json') as { version: string };
 
-    const child = spawn(process.execPath, ['dist/server/index.js', '--version'], {
-      env: { ...process.env, MODULE_GRAPH_NO_OPEN: '1' }
-    });
-    let stdout = '';
-    child.stdout.on('data', (d: Buffer) => {
-      stdout += d.toString('utf8');
-    });
-    const code: number = await new Promise((resolve) => child.on('exit', resolve));
+    const { code, stdout } = await runServerCli(['--version']);
     expect(code).toBe(0);
     expect(stdout).toBe(`${version}\n`);
   });

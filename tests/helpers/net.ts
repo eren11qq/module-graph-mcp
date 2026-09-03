@@ -1,14 +1,6 @@
-import net from 'node:net';
-
-/** Grab a free loopback port and fully release it before returning. */
-export async function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === 'string') return reject(new Error('no address'));
-      srv.close(() => resolve(addr.port));
-    });
-    srv.once('error', reject);
-  });
-}
+/**
+ * getFreePort 的实现在 src/evals/mcp-client.ts(tsconfig rootDir 决定了它住在
+ * src 侧;evals 探针与全部测试共用那一份)——这里只做再导出,调用方 import
+ * 路径不变,逐字副本消除。
+ */
+export { getFreePort } from '../../src/evals/mcp-client.js';
