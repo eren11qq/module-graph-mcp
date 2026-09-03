@@ -1,9 +1,11 @@
 /**
  * Bounded record of recently changed files (GitNexus port, plan step 3): the
  * evidence chain get_change_impact replays and report_edits cross-checks.
- * The watcher window records the RAW event paths (root-normalised) —
- * recording only the GraphDelta would miss the most common case, a pure
- * content edit of an already-known file, which produces an empty delta.
+ * The watcher window records the RAW event paths (root-normalised, filtered
+ * to source extensions — non-source files like the coverage report are
+ * watched for remap but never enter the evidence chain) — recording only
+ * the GraphDelta would miss the most common case, a pure content edit of
+ * an already-known file, which produces an empty delta.
  *
  * Ticket 13 修法 B（证据灭失加固）：给 rootPath 即落盘
  * `<root>/.module-graph/recent-changes.json`，与 reviews.json 同目录同卫生
@@ -16,6 +18,16 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { SOURCE_EXTENSIONS } from './path-conventions.js';
+
+/** Only source-extension ids enter the evidence chain: the coverage report
+ * (watched via extraWatchFiles) is a real file event but never a module id —
+ * recording it would put "I never touched this" noise into get_change_impact. */
+function isSourceId(id: string): boolean {
+  const dot = id.lastIndexOf('.');
+  const slash = id.lastIndexOf('/');
+  return dot > slash && (SOURCE_EXTENSIONS as readonly string[]).includes(id.slice(dot));
+}
 
 export interface RecentChange {
   /** Root-relative module id (same vocabulary as GraphSnapshot node ids). */
@@ -91,7 +103,7 @@ export function createRecentChanges(opts: RecentChangesOptions = {}): RecentChan
     for (const item of body.changes) {
       if (typeof item !== 'object' || item === null) continue;
       const c = item as Record<string, unknown>;
-      if (typeof c.id !== 'string' || c.id.length === 0) continue;
+      if (typeof c.id !== 'string' || c.id.length === 0 || !isSourceId(c.id)) continue;
       if (typeof c.changedAt !== 'number' || !Number.isFinite(c.changedAt)) continue;
       out.push({ id: c.id, changedAt: c.changedAt });
     }
@@ -145,7 +157,7 @@ export function createRecentChanges(opts: RecentChangesOptions = {}): RecentChan
     record(paths) {
       let touched = false;
       for (const p of paths) {
-        if (typeof p !== 'string' || p.length === 0) continue;
+        if (typeof p !== 'string' || p.length === 0 || !isSourceId(p)) continue;
         entries.delete(p);
         entries.set(p, Date.now());
         touched = true;

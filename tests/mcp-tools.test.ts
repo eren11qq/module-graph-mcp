@@ -98,7 +98,7 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
       'update_review'
     ]);
     expect(tools.get_module_details!.inputSchema.required).toEqual(['path']);
-    expect(tools.report_note!.inputSchema.required).toEqual(['path', 'text']);
+    expect(tools.report_note!.inputSchema.required).toEqual(['path']); // text 与别名 note 二选一，运行时校验
     expect(tools.begin_review!.inputSchema.required).toEqual(['path']);
     expect(tools.update_review!.inputSchema.required).toEqual(['path', 'verdicts']);
     expect(tools.end_review!.inputSchema.required).toEqual(['path', 'verdicts']);
@@ -230,6 +230,19 @@ describe('buildTools over a fake graph (Ticket 10, direct)', () => {
     expect(text).toContain('module not found');
     expect(text).toContain('did you mean: core/app.ts');
     expect(broadcasts.length).toBe(before);
+  });
+
+  it('report_note accepts `note` as an alias for `text` (text wins when both)', () => {
+    const { graph, tools } = build();
+    payload(tools.report_note.execute({ path: 'index.ts', note: 'via alias' }));
+    expect(graph.notes.get('index.ts')).toBe('via alias');
+
+    payload(tools.report_note.execute({ path: 'index.ts', note: 'alias', text: 'text wins' }));
+    expect(graph.notes.get('index.ts')).toBe('text wins');
+
+    const missing = tools.report_note.execute({ path: 'index.ts' });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain('text is required');
   });
 
   it('list_untested returns the exact untested inventory plus totals', () => {

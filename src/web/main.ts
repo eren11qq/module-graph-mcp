@@ -19,6 +19,7 @@ const tooltipEl = document.getElementById('tooltip') as HTMLElement;
 const detailContainer = document.getElementById('detail-card') as HTMLElement;
 const legendEl = document.getElementById('legend') as HTMLElement;
 const scanNotice = document.getElementById('scan-notice') as HTMLElement;
+const authNotice = document.getElementById('auth-notice') as HTMLElement;
 const connEl = document.getElementById('conn') as HTMLElement;
 const connTxt = document.getElementById('conn-txt') as HTMLElement;
 
@@ -204,9 +205,24 @@ function setLive(connected: boolean, text: string): void {
   connTxt.textContent = text;
 }
 
+/**
+ * 常驻横幅：访问令牌缺失或失效时整页都是空白，必须让用户看到原因
+ * 和正确的打开方式，而不是一条一闪而过的 toast。
+ */
+function showAuthNotice(message: string): void {
+  authNotice.textContent = message;
+  authNotice.hidden = false;
+}
+
+let wsAuthFailed = false;
+
 function connectWs(): void {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${protocol}://${location.host}/ws${TOKEN === '' ? '' : `?token=${encodeURIComponent(TOKEN)}`}`);
+  // 非 101 握手响应（401/404）走 error 事件：令牌无效/过期，不再无限重连。
+  ws.addEventListener('error', () => {
+    wsAuthFailed = true;
+  });
   ws.addEventListener('open', () => setLive(true, 'LIVE · WS 已连接'));
   ws.addEventListener('message', (evt) => {
     setLive(true, 'LIVE · WS 已连接');
@@ -220,6 +236,11 @@ function connectWs(): void {
     sink?.apply(msg as GraphEvent);
   });
   ws.addEventListener('close', () => {
+    if (wsAuthFailed) {
+      setLive(false, '访问被拒绝');
+      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
+      return; // 不重连：服务端重启换了 token，重连只会空转
+    }
     setLive(false, '离线 · 重连中…');
     setTimeout(connectWs, CHROME.wsRetryMs);
   });
@@ -228,13 +249,27 @@ function connectWs(): void {
 async function boot(): Promise<void> {
   applyTheme(storedTheme(), false);
 
+  if (TOKEN === '') {
+    // 无令牌：/api/* 与 WS 握手全部 401，页面必然空白——直接给指引，别白试。
+    setLive(false, '缺少令牌');
+    showAuthNotice(`此页面需要访问令牌：请用启动日志中的完整 dashboard 链接打开（URL 应含 ?token=…）。当前地址：${location.origin}${location.pathname}`);
+    return;
+  }
+
   try {
     const res = await fetch(`/api/graph${TOKEN === '' ? '' : `?token=${encodeURIComponent(TOKEN)}`}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const snapshot = (await res.json()) as GraphSnapshot;
     sink?.apply({ type: 'snapshot', snapshot });
   } catch (err) {
-    statusbar.flashEvent(`图数据未就绪（${err instanceof Error ? err.message : String(err)}）`);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === 'HTTP 401') {
+      // 令牌失效（服务重启换 token）：连接也是 401，别再发起。
+      setLive(false, '访问被拒绝');
+      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
+      return;
+    }
+    statusbar.flashEvent(`图数据未就绪（${message}）`);
   }
 
   connectWs();

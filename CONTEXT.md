@@ -36,8 +36,8 @@
 
 - **变更证据链（change evidence chain）** —— 改完之后回放的「你刚动了什么、波及了
   谁、多危险」：watcher 窗口记录的**原始事件路径**（空 delta 的纯内容修改也记）+
-  每个在图变更的波及面与风险级。get_change_impact 的产出；记录仅内存（上限 100
-  条），重启即清。
+  每个在图变更的波及面与风险级。get_change_impact 的产出；记录落盘
+  `<root>/.module-graph/recent-changes.json`（上限 100 条），重启自动回灌。
 
 - **只读模式（read-only）** —— 检查者可信的分权手段：`MODULE_GRAPH_MCP_READ_ONLY=1`
   启动时 5 个变更类工具不注册（tools/list 不可见），调用被拒并返回**专属审计错误**

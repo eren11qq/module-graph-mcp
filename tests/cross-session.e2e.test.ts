@@ -149,7 +149,7 @@ beforeAll(async () => {
   await primary.waitUntilStderr('dashboard    :');
 
   secondary = spawnInstance(primaryPort); // same preferred port → bumps to primaryPort + 1
-  await secondary.waitUntilStderr('keeping this session headless');
+  await secondary.waitUntilStderr('relaying tool events there');
 
   const token = dashboardToken(primary);
   ws = new WebSocket(`ws://127.0.0.1:${primaryPort}/ws?token=${token}`);
@@ -174,7 +174,7 @@ describe('two sessions, one dashboard (cross-session relay)', () => {
     // The heart of the popup policy: restoring every project at app open
     // must not pop a single tab until a session actually does something.
     expect(primary.stderr).not.toContain('browser auto-open suppressed');
-    expect(secondary.stderr).toContain(`same-root instance already serves this dashboard at http://127.0.0.1:${primaryPort}`);
+    expect(secondary.stderr).toContain(`same-root instance serves this dashboard at http://127.0.0.1:${primaryPort} — relaying tool events there`);
   }, 15000);
 
   it('a read on the secondary lights the ball; the popup waits for the page to close', async () => {

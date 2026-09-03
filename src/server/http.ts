@@ -238,7 +238,11 @@ function handle(
     // Deliberately unauthenticated: the same-root band walk probes it to
     // learn which port holds this root's dashboard.
     sendHead(resp, 200, { 'content-type': 'application/json; charset=utf-8' });
-    resp.end(JSON.stringify(info));
+    // Port must be the ACTUAL listening port: when the preferred port is
+    // busy the server bumps to the next free one, and a stale configured
+    // port would mislead external consumers (scripts / humans) into the
+    // wrong address — the band walk itself only reads rootPath.
+    resp.end(JSON.stringify({ ...info, port: boundPort() }));
     return;
   }
 

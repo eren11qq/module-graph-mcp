@@ -10,7 +10,7 @@
 - **视图控制**：搜索框（大小写不敏感匹配路径与文件名）、「只看未测」过滤、**[模块视图 | 文件视图]** 分段切换（ADR 0002：默认模块视图——文件球按功能类成堆、堆与堆之间连模块级边；点堆进入该功能类的文件视图；文件视图未聚焦时即海报模式）
 - **MCP 查询**：agent 可拉全图、查单模块详情、列未测模块、写备注（备注实时出现在 dashboard 详情面板）
 - **健康报告**：MCP `get_health_report` 工具与 `GET /api/report` 验收报告页——固定整数权重表打分（高中心度 / 未测 / 类型错误 / 在环上 / 评审 error），items 风险降序、同分按 id 字典序，中文简报 top 5；报告页支持 `?focus=<module-id>` 深链高亮（服务端拼装 HTML，无脚本无新依赖）
-- **爆炸半径与变更证据链**（GitNexus 移植）：改代码前 `get_impact` 看一个模块的波及面（upstream/downstream 按 BFS 深度分组、含测试状态与类型错误数）；改完后 `get_change_impact` 回放 watcher 记录的最近变更（仅内存、上限 100 条）并逐变更给出风险级（波及在环上或高中心度 → high；受影响 >10 → medium；否则 low）；`get_module_details` 响应新增 `context` 统计（入出度 / 在环上 / 归一化中心度）
+- **爆炸半径与变更证据链**（GitNexus 移植）：改代码前 `get_impact` 看一个模块的波及面（upstream/downstream 按 BFS 深度分组、含测试状态与类型错误数）；改完后 `get_change_impact` 回放 watcher 记录的最近变更（落盘 `.module-graph/recent-changes.json`、上限 100 条、重启自动回灌）并逐变更给出风险级（波及在环上或高中心度 → high；受影响 >10 → medium；否则 low）；`get_module_details` 响应新增 `context` 统计（入出度 / 在环上 / 归一化中心度）
 - **AI 检查通道**：agent 审查前调 `begin_review` → 球边缘呼吸脉冲 + 面板「检查中」（响应内嵌评审 playbook：三色 verdicts 定义、分批节奏与配对纪律）；过程中 `update_review` 可分批推送部分 verdicts，源码行实时逐行上色；完成后 `end_review` → 逐行三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环（红环 = 有 error、黄环 = 有 unsure、绿环 = 全 confident）+ 详情面板「AI 已检查」徽章；检查约 10 分钟无活动自动回落
 - **探索可见**：agent 每读一个模块（`get_module_details`），对应球以紫色「查看」脉冲亮 3 秒、ticker 闪「AI 正在查看 …」——浏览文件不再是黑箱
 - **多会话一页**：同仓库新会话不再重复弹浏览器页（也不会闪控制台黑框）；它的 AI 活动（查看脉冲 / 检查脉冲）自动转发到第一个 dashboard 页上
@@ -104,7 +104,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 | `get_module_graph` | 全图：文件级节点（测试状态 / 类型错误 / AI 评审）+ import 边 |
 | `get_module_details` | 单模块详情：状态、coveredBy、类型错误、AI 评审、入出边、context 统计（入出度 / 在环上 / 中心度）、源码全文（>512KB 截断并标注 `truncated`）、备注；每次读取让该球短暂亮起紫色脉冲 |
 | `get_impact` | 爆炸半径：upstream（谁依赖它）/ downstream（它依赖谁）按 BFS 深度分组（同深度按 id 字典序），每项含测试状态与类型错误数；`direction` 默认 both、`maxDepth` 默认 3 上限 10（非法回退 3）；未知 path 走自解释错误 |
-| `get_change_impact` | 变更证据链：watcher 记录的最近变更文件（`{id, changedAt, inGraph}`）+ 每个在图变更的波及面（both 方向、深度 3）与风险级；返回 `overallRisk` 与中文启发式说明；记录仅内存（上限 100 条），服务重启即清 |
+| `get_change_impact` | 变更证据链：watcher 记录的最近变更文件（`{id, changedAt, inGraph}`）+ 每个在图变更的波及面（both 方向、深度 3）与风险级；返回 `overallRisk` 与中文启发式说明；记录落盘 `.module-graph/recent-changes.json`（上限 100 条），服务重启自动回灌 |
 | `get_dashboard_info` | dashboard 浏览器地址、被监视根目录、节点/边计数：agent 每会话先调它核实监视的树对不对，并把链接给用户 |
 | `list_untested` | 所有「未测」模块 id + 计数 |
 | `get_health_report` | 确定性健康报告：固定整数权重表打分（高中心度=3、未测=2、类型错误=2、在环上=1、评审 error=2，同分按 id 字典序），items 风险降序 + 中文简报 top 5 |
@@ -133,7 +133,7 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 }
 ```
 
-- **不传 `--root`**：服务端回退到子进程 cwd。**打开 ZCode 不弹页**——每个项目一个进程照常启动，但只有该项目会话的 agent **首次打开某个文件**（面向文件的 MCP 工具）或第一条指名该文件的同根转发事件到达时才弹浏览器，同一文件只弹一次；同一仓库跨会话共用一个窗口：后续会话静默（无头），其 AI 活动转发到第一页，且其 `get_dashboard_info` 直接返回主实例的链接，agent 交给用户的永远是那一页。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
+- **不传 `--root`**：服务端回退到子进程 cwd。**打开 ZCode 不弹页**——每个项目一个进程照常启动，但只有该项目会话的 agent **首次打开某个文件**（面向文件的 MCP 工具）或第一条指名该文件的同根转发事件到达时才弹浏览器，同一文件只弹一次；同一仓库跨会话共用一个窗口：后续会话静默（无头），其 AI 活动（查看脉冲 / 检查脉冲 / 备注更新）转发到第一个 dashboard 页；`get_dashboard_info` 返回的是**该实例自己的** tokenized 链接（P0-4 安全设计：主实例的随机 token 不跨进程共享，副实例无法代开主实例链接）——任何实例的链接都指向同一棵监视树，转发让主实例页面照常显示副会话的活动。`--open` / `--no-open` 可强制行为（env `MODULE_GRAPH_NO_OPEN=1` 等价后者）。
 - agent 侧约定：会话内先调 `get_dashboard_info` 核实 `rootPath` 与 dashboard 链接；若监视的树不对，在该项目的 `<repo>/.zcode/config.json` 里用同名的 workspace 级条目（`--root` 传绝对路径）覆盖。
 - 基线扫描期间握手**不会**被阻塞：`get_dashboard_info` / `get_module_graph` 即时应答并带 `scanning: true`；依赖图内容的工具（begin_review / get_module_details 等）自动等基线落定（上限 20s）再作答。
 

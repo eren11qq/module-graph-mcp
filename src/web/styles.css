@@ -307,6 +307,16 @@ body {
 }
 #scan-notice[hidden] { display: none; }
 
+/* 常驻横幅：缺少/失效的访问令牌（页面会一直空白，必须让用户看到原因） */
+#auth-notice {
+  position: fixed; z-index: 50; top: 0; left: 0; right: 0;
+  padding: 8px 16px; text-align: center;
+  background: var(--panel); color: var(--warn);
+  border-bottom: 1px solid var(--warn);
+  font-size: 12.5px; box-shadow: var(--shadow-card);
+}
+#auth-notice[hidden] { display: none; }
+
 /* hover tooltip:节点相对路径 */
 #tooltip {
   position: fixed; z-index: 40;

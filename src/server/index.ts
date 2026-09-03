@@ -280,13 +280,16 @@ async function main(): Promise<void> {
     if (holderPort !== null) {
       relayTargetPort = holderPort;
       relayForward = makeForwarder(holderPort, rootPath);
+      // Log even under --no-open / --open: a silent headless demotion hides
+      // that this session's AI activity still shows on the primary tab.
+      log(`same-root instance serves this dashboard at http://127.0.0.1:${holderPort} — relaying tool events there (this instance: ${url})`);
     }
     if (noOpen || open) return;
     if (shouldAutoOpen({ noOpen, forceOpen: open, portBumped, sameRootHolder: holderPort !== null })) {
       armed = true;
       log(`auto-open armed: the dashboard opens when this project's agent first opens a file`);
-    } else {
-      log(`same-root instance already serves this dashboard at http://127.0.0.1:${holderPort} — keeping this session headless (${url})`);
+    } else if (holderPort !== null) {
+      log(`auto-open stays off: the same-root dashboard tab already covers this project`);
     }
   });
 

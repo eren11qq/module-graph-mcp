@@ -281,7 +281,7 @@ function resolveRequestedNode(
  * the project's presentation convention — the response fields stay English.
  */
 const CHANGE_IMPACT_HEURISTICS =
-  '风险级启发式：波及节点任一在依赖环上，或属高中心度（度数 top-20%）→ high；受影响节点 > 10 → medium；否则 low。overallRisk 取各变更的最大级。变更记录仅存内存（上限 100 条，最新写入优先，超出逐出最旧），服务重启即清。';
+  '风险级启发式：波及节点任一在依赖环上，或属高中心度（度数 top-20%）→ high；受影响节点 > 10 → medium；否则 low。overallRisk 取各变更的最大级。变更记录落盘 .module-graph/recent-changes.json（上限 100 条，最新写入优先，超出逐出最旧），服务重启自动回灌，单会话内超出容量的滑窗残余缺口除外。';
 
 /** riskLevel vocabulary + total order for the overall rollup. */
 type RiskLevel = 'high' | 'medium' | 'low';
@@ -486,9 +486,13 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           text: {
             type: 'string',
             description: 'Note text (max 2000 chars). Empty string clears the note.'
+          },
+          note: {
+            type: 'string',
+            description: 'Alias for `text` (the tool is named report_note, so callers often guess `note`). When both are given, `text` wins.'
           }
         },
-        required: ['path', 'text'],
+        required: ['path'],
         additionalProperties: false
       },
       execute(args) {
@@ -498,14 +502,15 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
         const node = found.node;
         deps.onFileActivity?.(node.id);
 
-        if (typeof args.text !== 'string') {
+        const body = typeof args.text === 'string' ? args.text : args.note;
+        if (typeof body !== 'string') {
           return {
-            content: [{ type: 'text', text: 'text is required and must be a string (empty string clears the note).' }],
+            content: [{ type: 'text', text: 'text is required and must be a string (empty string clears the note). `note` is accepted as an alias.' }],
             isError: true
           };
         }
 
-        const text = args.text.trim().slice(0, 2000);
+        const text = body.trim().slice(0, 2000);
         const previous = node.note;
         graph.setNote(node.id, text.length > 0 ? text : undefined);
         if (node.note !== previous) {

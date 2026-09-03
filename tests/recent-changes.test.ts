@@ -31,9 +31,13 @@ describe('createRecentChanges — bounded record semantics', () => {
       rc.record(['a.ts', 'b.ts', null, undefined, '']);
       expect(rc.list().map((c) => c.id)).toEqual(['a.ts', 'b.ts']); // same ms → id ascending
 
+      // non-source files (coverage report etc.) never enter the evidence chain
+      rc.record(['coverage/coverage-summary.json', 'README.md', 'c.tsx', 'd.js']);
+      expect(rc.list().map((c) => c.id)).toEqual(['a.ts', 'b.ts', 'c.tsx', 'd.js']); // same ms → id ascending; non-source skipped
+
       vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
       rc.record(['c.ts']);
-      expect(rc.list().map((c) => c.id)).toEqual(['c.ts', 'a.ts', 'b.ts']); // strictly newer first
+      expect(rc.list().map((c) => c.id)).toEqual(['c.ts', 'a.ts', 'b.ts', 'c.tsx', 'd.js']); // strictly newer first; tsx/js keep old-timestamp order
 
       const listed = rc.list();
       expect(listed[0]!.changedAt).toBe(Date.parse('2026-01-01T00:00:01Z'));
@@ -153,6 +157,21 @@ describe('createRecentChanges — disk persistence (evidence survives restart)',
     expect(ids).toHaveLength(RECENT_CHANGES_CAP);
     expect(ids[0]).toBe('f104.ts'); // newest first
     expect(ids).not.toContain('f0.ts'); // oldest five dropped
+  });
+
+  it('restoring drops legacy non-source entries from disk', () => {
+    writeStore(
+      JSON.stringify({
+        version: 1,
+        changes: [
+          { id: 'src/a.ts', changedAt: 1 },
+          { id: 'coverage/coverage-summary.json', changedAt: 2 },
+          { id: 'README.md', changedAt: 3 }
+        ]
+      })
+    );
+    const rc = createRecentChanges({ rootPath: dir });
+    expect(rc.list().map((c) => c.id)).toEqual(['src/a.ts']);
   });
 });
 
