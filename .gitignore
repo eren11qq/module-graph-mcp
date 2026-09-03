@@ -7,3 +7,8 @@ coverage/
 .codegraph/
 
 .module-graph/
+.kilo/plans/
+.scratch/
+修改清单.md
+docs/*.prototype.*
+docs/serena-notes.md
