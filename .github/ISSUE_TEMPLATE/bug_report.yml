@@ -1,0 +1,27 @@
+# Fix this issue first
+
+- [ ] I searched existing issues and this is not a duplicate.
+- [ ] I am running the latest `main` (re-run the install script to upgrade).
+
+<!-- 请尽量填全，复现不了的 bug 很难修 -->
+
+**What happened**
+<!-- 观察到什么 -->
+
+**Steps to reproduce**
+
+1. `module-graph --root ...`（或贴出你的启动命令 / MCP 注册配置）
+2. …
+
+**Expected**
+<!-- 你预期发生什么 -->
+
+**Actual**
+<!-- 实际发生了什么；dashboard 截图 / 终端 stderr 日志都会大有帮助 -->
+
+**Environment**
+
+- OS: 
+- Node version (`node --version`): 
+- module-graph version (`module-graph --version`): 
+- Client (Claude Code / Kilo / ZCode / …): 
