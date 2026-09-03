@@ -19,15 +19,38 @@
 
 ## 快速开始
 
-前置：Node ≥ 20。
+前置：Node ≥ 20、git。一条命令装好（克隆到 `~/.module-graph-mcp`、构建、把 `module-graph` 命令放进 PATH）：
 
 ```bash
-git clone <本仓库> module-graph-mcp
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/eren11qq/module-graph-mcp/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/eren11qq/module-graph-mcp/main/install.ps1 | iex
+```
+
+装完直接跑（仓库自带的 demo 项目，`--open` 启动即弹页）：
+
+```bash
+module-graph --root ~/.module-graph-mcp/test-fixtures/sample-app --open
+```
+
+要监视自己的项目，把 `--root` 指向该目录；升级重跑同一条命令即可。
+
+<details>
+<summary>手动安装（开发 / 贡献者，从源码）</summary>
+
+```bash
+git clone https://github.com/eren11qq/module-graph-mcp.git
 cd module-graph-mcp
 npm install
 npm run build          # tsc 编译服务端 + vite 打包前端到 dist/server/public
 node dist/server/index.js --root ./test-fixtures/sample-app
 ```
+
+</details>
 
 启动**不弹浏览器**——桌面端（如 ZCode）打开时会为每个项目拉起一个 server 进程，弹窗按**文件粒度**后移：agent 通过面向文件的 MCP 工具（`get_module_details` / `begin_review` / `update_review` / `end_review` / `report_note`）**打开某个文件**时，才为该文件自动打开 dashboard（默认 `http://127.0.0.1:24282`，端口被占自动 +1）；同一文件只弹一次，agent 没打开过的文件绝不弹（`get_dashboard_info` / `get_module_graph` 等无文件工具不触发）。**同仓库一个窗口**：被占端口按「端口带扫描」找同根实例——找到则本进程保持无头、永不弹页，其工具事件转发到主实例页面（转发事件指名的文件同样按文件粒度触发主实例弹窗）；整个端口带都是异根/空闲时本进程 armed。只想复现界面 demo，用仓库自带的 `test-fixtures/sample-app` 加 `--open` 即可。要监视自己的项目，把 `--root` 指向该目录。
 
@@ -60,7 +83,7 @@ node dist/server/index.js --root ./test-fixtures/sample-app
 
 ## 注册为 MCP server
 
-单进程双通道：注册进 MCP 客户端不影响浏览器 dashboard（同一进程同时服务 stdio 与 HTTP）。路径请换成你机器上的绝对路径。
+单进程双通道：注册进 MCP 客户端不影响浏览器 dashboard（同一进程同时服务 stdio 与 HTTP）。路径请换成你机器上的绝对路径——用一键脚本装过的话，入口就是 `~/.module-graph-mcp/dist/server/index.js`。
 
 ### Claude Code
 
