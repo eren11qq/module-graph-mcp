@@ -12,7 +12,9 @@ import { getFreePort } from './helpers/net.js';
  * the band-walk /api/info) and the /ws handshake reject requests without it,
  * so a same-machine low-privilege process can no longer read source files it
  * has no right to see. Static assets stay public — the shell itself must load
- * to read the token out of its own URL.
+ * to read the token out of its own URL — and the HTML entry points self-heal:
+ * a missing/stale token 302s to the same path carrying the current one, so a
+ * bare http://127.0.0.1:PORT/ just works instead of dead-ending on a notice.
  */
 
 let root = '';
@@ -88,10 +90,36 @@ describe('P0-4 startup-token auth on /api/* and /ws', () => {
     expect((await fetch(`${base}/api/graph?token=${token}`)).status).toBe(200);
   });
 
-  it('rejects /api/report without the token', async () => {
+  it('self-heals HTML entry points: missing or stale tokens 302 to the same path with the current token', async () => {
     const base = url.replace(/\?.*$/, '');
-    expect((await fetch(`${base}/api/report`)).status).toBe(401);
+    for (const entry of ['/', '/index.html', '/api/report']) {
+      const res = await fetch(`${base}${entry}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get('location') ?? '', base).searchParams.get('token')).toBe(token);
+      // A stale token is REPLACED, not appended, and other params survive.
+      const stale = await fetch(`${base}${entry}?token=deadbeef&focus=a.ts`, { redirect: 'manual' });
+      expect(stale.status).toBe(302);
+      const loc = new URL(stale.headers.get('location') ?? '', base);
+      expect(loc.searchParams.get('token')).toBe(token);
+      expect(loc.searchParams.get('focus')).toBe('a.ts');
+      expect(loc.searchParams.getAll('token').length).toBe(1);
+    }
+    // Following the redirect lands on the real 200 shell / report.
+    expect((await fetch(`${base}/`)).status).toBe(200);
   });
+
+  it('never redirects a request that already carries the token', async () => {
+    const base = url.replace(/\?.*$/, '');
+    expect((await fetch(`${base}/?token=${token}`, { redirect: 'manual' })).status).toBe(200);
+  });
+
+  it('self-healed /api/report actually serves the report page', async () => {
+    const base = url.replace(/\?.*$/, '');
+    const res = await fetch(`${base}/api/report`); // fetch follows the 302
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+  });
+
 
   it('rejects WebSocket upgrades without the token and accepts them with it', async () => {
     const base = url.replace(/\?.*$/, '');

@@ -66,7 +66,7 @@ user's dashboard:
 ## 其它约定
 
 - 人类可读日志走 stderr，stdout 属于 MCP JSON-RPC 通道。
-- 弹窗策略：server 启动**不弹浏览器**；agent 通过面向文件的 MCP 工具（`get_module_details` / `begin_review` / `update_review` / `end_review` / `report_note`）打开某文件、或同根 relay 事件指名该文件时才弹，且**只在没有已连接的 dashboard 页面时弹**（WS 有 OPEN 客户端即跳过、不记 poppedFiles，页面关掉后后续文件可重新弹），同一文件每进程至多弹一次；没打开过的文件绝不弹（`get_dashboard_info` / `get_module_graph` 等无文件工具不触发），`--open` 仍无条件启动即弹。Linux 启动器候选链：`wslview` →（WSL 下插）`cmd.exe /c start ""` → `xdg-open` → `gio open`，逐个 spawn 失败兜底、全败只记 stderr。同一仓库跨会话共用一个窗口：副实例无头转发（其 AI 活动实时出现在主实例页面）；`get_dashboard_info` 返回各实例自身的 tokenized 链接——P0-4 安全设计下 token 不跨实例共享，主实例的链接无法由副实例代开。
+- 弹窗策略：server 启动**不弹浏览器**；agent 通过面向文件的 MCP 工具（`get_module_details` / `begin_review` / `update_review` / `end_review` / `report_note`）打开某文件、或同根 relay 事件指名该文件时才弹，且**只在没有已连接的 dashboard 页面时弹**（WS 有 OPEN 客户端即跳过、不记 poppedFiles，页面关掉后后续文件可重新弹），同一文件每进程至多弹一次；没打开过的文件绝不弹（`get_dashboard_info` / `get_module_graph` 等无文件工具不触发），`--open` 仍无条件启动即弹。Linux 启动器候选链：`wslview` →（WSL 下插）`cmd.exe /c start ""` → `xdg-open` → `gio open`，逐个 spawn 失败兜底、全败只记 stderr。同一仓库跨会话共用一个窗口：副实例无头转发（其 AI 活动实时出现在主实例页面）；`get_dashboard_info` 返回各实例自身的 tokenized 链接——P0-4 安全设计下 token 不跨实例共享，主实例的链接无法由副实例代开。token 自愈：HTML 入口（`/`、`/index.html`、`/api/report`）缺 token / 旧 token 会被服务端 302 补成当前 token，裸 `http://127.0.0.1:<port>/` 直接可用，用户无需复制启动日志链接；`/api/*` 数据面与 `/ws` 仍 401 拒绝。
 - 构建 / 测试：`npm run build`（先 build 再 `npm test`，e2e 会 spawn dist 产物）、`npm test`。
 - evals 基准：`npm run evals`（同样先 build）——逐任务冷启动探针，不变量断言 + maxMs/maxBytes 硬门槛（响应体积超限即红，ADR 0001）；新增/修改 MCP 工具必须同步更新 `src/evals/tasks/` 的对应探针任务，注册表 ⇄ 磁盘双向对账（tests/evals-structure.test.ts）。
 - 设计文档：`docs/MODULE-DESIGN.md`（Standards 轴度量基准，接口表以它为准）；工单在 `.scratch/module-graph-mcp/issues/`。

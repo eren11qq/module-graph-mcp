@@ -246,6 +246,28 @@ function handle(
     return;
   }
 
+  // P0-4 self-heal: the HTML entry points read the startup token out of their
+  // own URL, so a missing/stale token must not dead-end the user on the
+  // auth-notice page — 302 to the same path with the CURRENT token instead
+  // (openBrowser, bookmarks, and bare http://127.0.0.1:PORT/ all just work,
+  // and a restart's new token is picked up on the next navigation). This
+  // leaks nothing to drive-by pages: the redirect target is only visible to
+  // the navigating browser itself (cross-origin fetches get opaque responses,
+  // iframes can't read location, and resource-timing strips cross-origin
+  // queries), while /api/* data and WS handshakes below still 401 without it.
+  if (
+    token !== undefined &&
+    (req.method === 'GET' || req.method === 'HEAD') &&
+    (pathname === '/' || pathname === '/index.html' || pathname === '/api/report') &&
+    tokenFromUrl(req.url) !== token
+  ) {
+    const target = new URL(req.url ?? '/', 'http://127.0.0.1');
+    target.searchParams.set('token', token);
+    sendHead(resp, 302, { location: `${target.pathname}?${target.searchParams}`, 'cache-control': 'no-store' });
+    resp.end();
+    return;
+  }
+
   // P0-4: every other /api/* endpoint requires the startup token.
   if (pathname.startsWith('/api/') && !apiTokenOk(req.url, token)) {
     sendHead(resp, 401, { 'content-type': 'text/plain; charset=utf-8' });

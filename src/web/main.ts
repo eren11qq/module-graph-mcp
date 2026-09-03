@@ -214,6 +214,24 @@ function showAuthNotice(message: string): void {
   authNotice.hidden = false;
 }
 
+const REAUTH_TS_KEY = 'mg-reauth-at';
+
+/**
+ * 令牌失效自愈：重新导航到入口路径，服务端 302 会把当前 token 拼回 URL。
+ * 节流守卫防死循环——服务端仍拒绝时（5 秒内二次失效）退回人工指引。
+ */
+function selfReauth(): boolean {
+  try {
+    const last = Number(sessionStorage.getItem(REAUTH_TS_KEY) ?? '0');
+    if (Date.now() - last < 5000) return false;
+    sessionStorage.setItem(REAUTH_TS_KEY, String(Date.now()));
+  } catch {
+    return false;
+  }
+  location.replace(location.pathname);
+  return true;
+}
+
 let wsAuthFailed = false;
 
 function connectWs(): void {
@@ -237,9 +255,11 @@ function connectWs(): void {
   });
   ws.addEventListener('close', () => {
     if (wsAuthFailed) {
+      // 服务端重启换了 token：先自助重新导航，入口会被 302 带回新 token 页面。
+      if (selfReauth()) return;
       setLive(false, '访问被拒绝');
-      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
-      return; // 不重连：服务端重启换了 token，重连只会空转
+      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。刷新本页即可；若仍失败请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
+      return; // 不重连：自助重导航已节流
     }
     setLive(false, '离线 · 重连中…');
     setTimeout(connectWs, CHROME.wsRetryMs);
@@ -250,9 +270,11 @@ async function boot(): Promise<void> {
   applyTheme(storedTheme(), false);
 
   if (TOKEN === '') {
-    // 无令牌：/api/* 与 WS 握手全部 401，页面必然空白——直接给指引，别白试。
+    // 正常导航不会走到这里：无 token 的入口请求会被服务端 302 补上。走到这里
+    // 说明绕过了服务端（如离线打开的旧快照），先自救一次，仍失败给指引。
+    if (selfReauth()) return;
     setLive(false, '缺少令牌');
-    showAuthNotice(`此页面需要访问令牌：请用启动日志中的完整 dashboard 链接打开（URL 应含 ?token=…）。当前地址：${location.origin}${location.pathname}`);
+    showAuthNotice(`此页面需要访问令牌：请刷新本页（服务端会自动补全 ?token=…）；若仍失败请用启动日志中的完整 dashboard 链接打开。当前地址：${location.origin}${location.pathname}`);
     return;
   }
 
@@ -264,9 +286,10 @@ async function boot(): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message === 'HTTP 401') {
-      // 令牌失效（服务重启换 token）：连接也是 401，别再发起。
+      // 令牌失效（服务重启换 token）：自助重导航让 302 换发新 token。
+      if (selfReauth()) return;
       setLive(false, '访问被拒绝');
-      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
+      showAuthNotice(`访问令牌无效或已过期（服务可能已重启）。刷新本页即可；若仍失败请用启动日志中的完整 dashboard 链接重新打开：${location.origin}${location.pathname}?token=…`);
       return;
     }
     statusbar.flashEvent(`图数据未就绪（${message}）`);
