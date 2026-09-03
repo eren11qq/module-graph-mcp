@@ -38,7 +38,12 @@ function harness() {
     clearFocus: () => viewCalls.push('clearFocus'),
     resetView: () => {},
     setTheme: () => {},
-    cycleCount: () => 2
+    cycleCount: () => 2,
+    setEditScope: () => {},
+    setEditVerification: () => {},
+    resetLayout: () => {},
+    getLayoutMode: () => 'cluster',
+    setLayoutMode: () => {}
   };
   const counts: Array<[number, number, number, string]> = [];
   const bands: Array<Record<TestState, number>> = [];
@@ -46,7 +51,8 @@ function harness() {
   const statusbar: Statusbar = {
     setCounts: (nodes, edges, cycles, rootPath) => counts.push([nodes, edges, cycles, rootPath]),
     setBand: (band) => bands.push({ ...band }),
-    flashEvent: (text) => flashes.push(text)
+    flashEvent: (text) => flashes.push(text),
+    warn: () => {}
   };
   const legendRenders: LegendCounts[] = [];
   const legend = {
@@ -60,7 +66,8 @@ function harness() {
     clear: () => clears++
   };
   const scanNotice = document.createElement('div');
-  const filters: LegendFilters = { hiddenStates: new Set<TestState>(), hideReviewed: false };
+  // 测试侧可变假体:hiddenStates 用 Set 本体(接口读侧是 ReadonlySet),hideReviewed 保持 boolean。
+  const filters: LegendFilters & { hiddenStates: Set<TestState> } = { hiddenStates: new Set<TestState>(), hideReviewed: false };
 
   const sink = createFrameSink({
     model,

@@ -442,10 +442,10 @@ function realCy(nodes: { id: string; x: number; y: number; d?: number }[]): Core
 }
 
 function edgeGap(cy: Core, a: string, b: string): number {
-  const pa = (cy.getElementById(a) as never).position() as { x: number; y: number };
-  const pb = (cy.getElementById(b) as never).position() as { x: number; y: number };
-  const ra = (Number((cy.getElementById(a) as never).data('diameter')) || 0) / 2;
-  const rb = (Number((cy.getElementById(b) as never).data('diameter')) || 0) / 2;
+  const pa = (cy.getElementById(a) as unknown as NodeSingular).position() as { x: number; y: number };
+  const pb = (cy.getElementById(b) as unknown as NodeSingular).position() as { x: number; y: number };
+  const ra = (Number((cy.getElementById(a) as unknown as NodeSingular).data('diameter')) || 0) / 2;
+  const rb = (Number((cy.getElementById(b) as unknown as NodeSingular).data('diameter')) || 0) / 2;
   return Math.hypot(pa.x - pb.x, pa.y - pb.y) - ra - rb;
 }
 
@@ -468,7 +468,7 @@ describe('separateAllBalls (全场最小距离硬保证 D3)', () => {
     cy.add({ data: { id: 'plate:server', path: 'plate', diameter: 200 }, classes: 'region-plate', position: { x: 8, y: 0 } });
     // 题注板与球重合也不许推动球（板被剔除，剩下单球 < 2 → 直接返回）。
     separateAllBalls(cy, THEME.layout.ballGap);
-    const p = (cy.getElementById('src/server/s.ts') as never).position() as { x: number; y: number };
+    const p = (cy.getElementById('src/server/s.ts') as unknown as NodeSingular).position() as { x: number; y: number };
     expect(p).toEqual({ x: 0, y: 0 });
     cy.destroy();
   });
@@ -479,9 +479,9 @@ describe('separateAllBalls (全场最小距离硬保证 D3)', () => {
       { id: 'b', x: 500, y: 0 },
       { id: 'c', x: 0, y: -500 }
     ]);
-    const before = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as never).position() }));
+    const before = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as unknown as NodeSingular).position() }));
     separateAllBalls(cy, THEME.layout.ballGap);
-    const after = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as never).position() }));
+    const after = ['a', 'b', 'c'].map((id) => ({ ...(cy.getElementById(id) as unknown as NodeSingular).position() }));
     expect(after).toEqual(before);
     cy.destroy();
   });

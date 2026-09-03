@@ -214,7 +214,7 @@ describe('P0-3 relay hardening (2026-08-31 audit)', () => {
     });
     expect(res.status).toBe(204);
 
-    const ev = (await relayed) as { type: string; node: Record<string, unknown> };
+    const ev = (await relayed) as unknown as { type: string; node: Record<string, unknown> };
     expect(ev.node.id).toBe('src/a.ts');
     expect(ev.node.note).toBeUndefined();
     expect(ev.node.aiReview).toBeUndefined();

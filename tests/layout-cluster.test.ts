@@ -192,7 +192,7 @@ describe('separateTouching (保底分离内核)', () => {
       ],
       []
     );
-    const list = [cy.getElementById('u') as never, cy.getElementById('v') as never];
+    const list = [cy.getElementById('u') as unknown as NodeSingular, cy.getElementById('v') as unknown as NodeSingular];
     const before = list.map((n) => ({ ...n.position() }));
     separateTouching(list, THEME.layout.ballGap);
     expect(list.map((n) => ({ ...n.position() }))).toEqual(before);
@@ -207,11 +207,11 @@ describe('separateTouching (保底分离内核)', () => {
       ],
       []
     );
-    const list = [cy.getElementById('u') as never, cy.getElementById('v') as never];
+    const list = [cy.getElementById('u') as unknown as NodeSingular, cy.getElementById('v') as unknown as NodeSingular];
     for (const n of list) n.data('diameter', 40);
     separateTouching(list, THEME.layout.ballGap);
-    const pu = (cy.getElementById('u') as never).position() as { x: number; y: number };
-    const pv = (cy.getElementById('v') as never).position() as { x: number; y: number };
+    const pu = (cy.getElementById('u') as unknown as NodeSingular).position() as { x: number; y: number };
+    const pv = (cy.getElementById('v') as unknown as NodeSingular).position() as { x: number; y: number };
     expect(Math.hypot(pv.x - pu.x, pv.y - pu.y)).toBeGreaterThanOrEqual(40 + THEME.layout.ballGap - 1e-6);
     cy.destroy();
   });
@@ -427,7 +427,7 @@ describe('聚类通道真实管线（headless cytoscape + fcose）', () => {
       return { seeds, settled: positionsOf(cy) };
     })();
     // 重播出生（seedClusterLayout 是纯函数——直接把点按回原位），再解一次。
-    for (const [id, x, y] of first.seeds) (cy.getElementById(id) as never).position({ x, y });
+    for (const [id, x, y] of first.seeds) (cy.getElementById(id) as unknown as NodeSingular).position({ x, y });
     refineClusterBodies(cy, clusters);
     anchorClusterTerritories(cy, clusters);
     separateAllBalls(cy, THEME.layout.ballGap);

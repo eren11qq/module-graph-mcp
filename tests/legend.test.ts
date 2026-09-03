@@ -39,7 +39,7 @@ describe('createLegend — render surface', () => {
     expect(container.querySelectorAll('.legend-row[data-state]')).toHaveLength(4);
     const passing = container.querySelector('[data-state="passing"]')!;
     expect(passing.querySelector('.cnt')!.textContent).toBe('2');
-    expect(passing.querySelector('.dot')!.style.background).not.toBe('');
+    expect((passing.querySelector('.dot') as HTMLElement).style.background).not.toBe('');
     expect(container.querySelector('.review-row')!.querySelectorAll('.dot')).toHaveLength(3);
     const reviewCnts = [...container.querySelectorAll('.review-row .cnt')].map((el) => el.textContent);
     expect(reviewCnts).toEqual(['1', '2', '3']);

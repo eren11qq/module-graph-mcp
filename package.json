@@ -11,7 +11,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && tsc -p tsconfig.tests.json",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
     "dev": "tsc --watch & vite build --watch",
     "typecheck:web": "tsc -p src/web",
     "start": "node dist/server/index.js --root .",

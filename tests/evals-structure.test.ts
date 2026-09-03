@@ -56,7 +56,7 @@ describe('evals directory guard (decision #5①)', () => {
       const mod = (await import(`../${join(TASKS_DIR, file).replace(/\\/g, '/').replace(/\.ts$/, '.js')}`)) as Record<string, unknown>;
       const exported = mod.task;
       expect(isLegalTask(exported), `${file} must export a legal EvalTask as "task"`).toBe(true);
-      expect(exported!.id, `${file} id must equal its file stem`).toBe(file.replace(/\.ts$/, ''));
+      expect((exported as { id: string }).id, `${file} id must equal its file stem`).toBe(file.replace(/\.ts$/, ''));
     }
   });
 

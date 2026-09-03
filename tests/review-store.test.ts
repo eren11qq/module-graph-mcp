@@ -31,7 +31,9 @@ function done(over: Partial<AiReview> = {}): AiReview {
 }
 
 function fakeGraph(nodes: string[]): { graph: ReviewGraph; nodesById: Map<string, ModuleNode> } {
-  const nodesById = new Map(nodes.map((id) => [id, { id, path: id, language: 'ts' as const, testState: 'untested' as const, coveredBy: [], typeErrors: [] }]));
+  const nodesById = new Map<string, ModuleNode>(
+    nodes.map((id): [string, ModuleNode] => [id, { id, path: id, language: 'ts', testState: 'untested', coveredBy: [], typeErrors: [] }])
+  );
   return {
     nodesById,
     graph: {

@@ -80,7 +80,7 @@ function snapshot(nodes: ModuleNode[], edges: Edge[]): Pick<GraphSnapshot, 'root
 describe('buildHealthReport', () => {
   it('sums the fixed weight table; same input → same report', () => {
     const snap = snapshot(
-      [node({ id: 'a.ts', testState: 'ok' }), node({ id: 'b.ts' })],
+      [node({ id: 'a.ts', testState: 'passing' }), node({ id: 'b.ts' })],
       [edge('a.ts', 'b.ts'), edge('b.ts', 'a.ts')]
     );
     const first = buildHealthReport(snap);
@@ -88,7 +88,7 @@ describe('buildHealthReport', () => {
     expect(second).toEqual(first);
 
     // 2 nodes → top 20% = max(1, ceil(0.4)) = 1 high-centrality module:
-    // both have degree 2, the id tie-break picks a.ts. a.ts is 'ok' (tested),
+    // both have degree 2, the id tie-break picks a.ts. a.ts is 'passing' (tested),
     // so its score is centrality + cycle; b.ts stays untested.
     const a = first.items.find((i) => i.id === 'a.ts')!;
     const b = first.items.find((i) => i.id === 'b.ts')!;
@@ -105,10 +105,10 @@ describe('buildHealthReport', () => {
         node({ id: 'a.ts' }),
         node({
           id: 'm.ts',
-          testState: 'ok',
+          testState: 'passing',
           aiReview: { status: 'done', verdicts: [{ line: 2, verdict: 'error', message: 'bug' }], reviewedAt: 1 }
         }),
-        node({ id: 'clean.ts', testState: 'ok', aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } })
+        node({ id: 'clean.ts', testState: 'passing', aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } })
       ],
       []
     );

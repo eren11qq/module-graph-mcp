@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { worstReviewVerdict, REVIEW_RING_LABELS } from '../src/web/ai-review.js';
-import type { AiReview } from '../shared/types.js';
+import type { AiReview } from '../src/shared/types.js';
 
 /**
  * AI 评审环判定纯函数（code-review 2026-08-29）：最差 verdict 定环色，

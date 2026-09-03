@@ -9,6 +9,7 @@ import { COVERAGE_REPORT_CANDIDATES } from '../src/server/coverage.js';
 import type { GraphEvent } from '../src/shared/types.js';
 import { getFreePort } from './helpers/net.js';
 import { makeTempProject } from './helpers/temp-project.js';
+import { PIPELINE_WAIT_MS } from './helpers/wait-budget.js';
 
 /**
  * Ticket 08 wiring acceptance: the coverage mapper (06) and the typecheck
@@ -56,7 +57,7 @@ async function openClient(base: string): Promise<ClientHandle> {
       if (already) return Promise.resolve(already);
       return new Promise((resolve, reject) => {
         waiters.push({ pred, resolve });
-        setTimeout(() => reject(new Error(`waitFor timeout: ${what}`)), 8000);
+        setTimeout(() => reject(new Error(`waitFor timeout: ${what}`)), PIPELINE_WAIT_MS);
       });
     },
     close: () => ws.close()
@@ -68,7 +69,7 @@ const isNodeUpdate = (e: GraphEvent): e is Extract<GraphEvent, { type: 'node_upd
 
 async function startStatesPipeline(root: string, opts: {
   runTypecheck?: NonNullable<LiveReloadOptions['runTypecheckFn']>;
-} = {}): Promise<{ url: string; teardown(): Promise<void> }> {
+} = {}): Promise<{ url: string; graph: IncrementalGraph; live: ReturnType<typeof startLiveReload>; teardown(): Promise<void> }> {
   const graph = new IncrementalGraph(root);
   const started = await startHttpServer({
     preferredPort: await getFreePort(),
@@ -162,10 +163,12 @@ describe('state pipeline wiring (Ticket 08 over 06/07)', () => {
           return {
             status: 'errors',
             errorsByFile: new Map([['a.ts', [{ line: 1, code: 'TS2322', message: 'Type string is not assignable to type number.' }]]]),
-            totalErrors: 1
+            totalErrors: 1,
+            globalMessages: [],
+            durationMs: 1
           };
         }
-        return { status: 'ok', errorsByFile: new Map(), totalErrors: 0 };
+        return { status: 'ok', errorsByFile: new Map(), totalErrors: 0, globalMessages: [], durationMs: 0 };
       }
     });
     const client = await openClient(url);

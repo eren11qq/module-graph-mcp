@@ -67,11 +67,11 @@ describe('P0-2 note persistence', () => {
       // Make ONLY the blocked/ directory unreadable from here on.
       const { readdir } = await import('node:fs/promises');
       const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
-      vi.mocked(readdir).mockImplementation((path: string | URL, opts?: unknown) => {
+      vi.mocked(readdir).mockImplementation((path, options) => {
         if (String(path).endsWith('/blocked')) {
           return Promise.reject(Object.assign(new Error('permission denied'), { code: 'EACCES' }));
         }
-        return actual.readdir(path, opts);
+        return actual.readdir(path, options);
       });
 
       // A normal save elsewhere in the tree triggers a window whose walk
@@ -87,7 +87,7 @@ describe('P0-2 note persistence', () => {
 
       // Recovery: once the directory is readable again, pruning works
       // normally and the node is still there (it exists on disk).
-      vi.mocked(readdir).mockImplementation((path: string | URL, opts?: unknown) => actual.readdir(path, opts));
+      vi.mocked(readdir).mockImplementation((path, options) => actual.readdir(path, options));
       await graph.applyEvents([{ path: join(root, 'a.ts'), kind: 'change' }]);
       expect(graph.snapshot().nodes.find((n) => n.id === 'blocked/inner.ts')).toBeDefined();
     } finally {

@@ -67,7 +67,7 @@ function build() {
     broadcast: (event) => broadcasts.push(event as { type: string; node?: { id: string; note?: string } }),
     readSourceFile: (rootPath, requested) => {
       expect(rootPath).toBe('/proj');
-      return { ok: true, path: requested, content: SOURCE_TEXT, sizeBytes: SOURCE_TEXT.length };
+      return { ok: true, path: requested, content: SOURCE_TEXT, sizeBytes: SOURCE_TEXT.length, truncated: false };
     }
   });
   return { graph, broadcasts, tools };
@@ -273,7 +273,7 @@ describe('begin_review / end_review — the AI check channel (Ticket 12)', () =>
     const nodeEvents = (): ModuleNode[] =>
       built.broadcasts
         .filter((e) => e.type === 'node_update')
-        .map((e) => (e as { node: ModuleNode }).node);
+        .map((e) => (e as unknown as { node: ModuleNode }).node);
     return { ...built, nodeEvents };
   }
 
@@ -380,7 +380,7 @@ describe('update_review — partial verdicts while checking (code-review 2026-08
     const nodeEvents = (): ModuleNode[] =>
       built.broadcasts
         .filter((e) => e.type === 'node_update')
-        .map((e) => (e as { node: ModuleNode }).node);
+        .map((e) => (e as unknown as { node: ModuleNode }).node);
     return { ...built, nodeEvents };
   }
 
@@ -534,7 +534,7 @@ describe('begin_review checking timeout — tool-level wiring pins', () => {
     const nodeEvents = (): ModuleNode[] =>
       built.broadcasts
         .filter((e) => e.type === 'node_update')
-        .map((e) => (e as { node: ModuleNode }).node);
+        .map((e) => (e as unknown as { node: ModuleNode }).node);
     const nonNodeEvents = (): Array<{ type: string; id?: string; path?: string }> =>
       built.broadcasts.filter((e) => e.type !== 'node_update') as Array<{ type: string; id?: string; path?: string }>;
     return { ...built, nodeEvents, nonNodeEvents };
