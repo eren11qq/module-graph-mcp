@@ -1,0 +1,12 @@
+# Normalize line endings: LF in the repository
+* text=auto eol=lf
+
+# Windows PowerShell installer must keep CRLF
+*.ps1 text eol=crlf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff2 binary
