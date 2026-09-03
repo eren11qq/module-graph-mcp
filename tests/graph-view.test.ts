@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createGraphView } from '../src/web/graph-view.js';
+import { createGraphView, type GraphView } from '../src/web/graph-view.js';
+import { createGraphModel, type GraphModel } from '../src/web/graph-model.js';
 import type { Edge, GraphDelta, GraphSnapshot, ModuleNode, TestState } from '../src/shared/types.js';
 import type { LayoutMode, LayoutStore } from '../src/web/layout-store.js';
 import { diameterOf, THEME } from '../src/web/theme.js';
@@ -23,25 +24,56 @@ const h = vi.hoisted(() => {
   return { instances, styles, layouts };
 });
 
-/** Shared setup for every describe: fresh view + its fake cytoscape instance. */
+/** Shared setup for every describe: fresh model+view + their fake cytoscape instance. */
 function mountView(opts?: {
   store?: LayoutStore;
   onLayoutModeChange?: (mode: LayoutMode) => void;
 }): {
   onFocusChange: ReturnType<typeof vi.fn>;
-  view: ReturnType<typeof createGraphView>;
+  model: GraphModel;
+  view: GraphView;
   cy: FakeCy;
 } {
   h.instances.length = 0;
   h.styles.length = 0;
   h.layouts.length = 0;
   const onFocusChange = vi.fn();
+  const model = createGraphModel();
   const view = createGraphView(document.createElement('div'), {
+    model,
     onFocusChange,
     tooltipEl: document.createElement('div'),
     ...opts
   });
-  return { onFocusChange, view, cy: h.instances[0]! };
+  // candidate #5: graph-view 的原始终态读 model——测试侧走配对替身,
+  // 与 frame-sink 的次序一致:先 model.foldX,后 view.applyX。
+  const paired: GraphView = {
+    setSnapshot: (s) => {
+      model.foldSnapshot(s);
+      view.setSnapshot(s);
+    },
+    applyDelta: (d) => {
+      model.foldDelta(d);
+      view.applyDelta(d);
+    },
+    applyNodeUpdate: (n) => {
+      model.foldNodeUpdate(n);
+      view.applyNodeUpdate(n);
+    },
+    setViewState: (p) => view.setViewState(p),
+    focusNode: (id) => view.focusNode(id),
+    pulseViewing: (id) => view.pulseViewing(id),
+    setEditScope: (s) => view.setEditScope(s),
+    setEditVerification: (v) => view.setEditVerification(v),
+    clearFocus: () => view.clearFocus(),
+    resetView: () => view.resetView(),
+    resetLayout: () => view.resetLayout(),
+    getLayoutMode: () => view.getLayoutMode(),
+    setLayoutMode: (m) => view.setLayoutMode(m),
+    setTheme: (k) => view.setTheme(k),
+    cycleCount: () => view.cycleCount()
+  };
+  return { onFocusChange, model, view: paired, cy: h.instances[0]! };
 }
 
 vi.mock('cytoscape', () => {

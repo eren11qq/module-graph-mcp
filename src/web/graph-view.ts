@@ -25,6 +25,13 @@ import { createPhysics, type Physics } from './physics.js';
 cytoscape.use(fcose);
 
 export interface GraphViewOptions {
+  /**
+   * 唯一图状态源 (candidate #5, 2026-09-03): view 不再自持第二份
+   * node/edge 副本——setSnapshot / applyDelta / applyNodeUpdate 只是
+   * 「重渲染信号 + DOM patch 提示」,原始终态一律从 model 读。
+   * 调用次序与 frame-sink 一致:先 model.foldX,后 view.applyX。
+   */
+  model: GraphModel;
   /** Locked focus changed (null = nothing locked); drives the detail panel. */
   onFocusChange(node: ModuleNode | null): void;
   /** Hover tooltip element; receives the node's relative path. */
@@ -102,6 +109,7 @@ const edgeIdOf = (e: Edge): string => `${e.from}->${e.to}`;
 // 一处定义），此处只 import。
 
 export function createGraphView(container: HTMLElement, opts: GraphViewOptions): GraphView {
+  const model = opts.model;
   const cy = cytoscape({
     container,
     wheelSensitivity: THEME.interaction.wheelSensitivity,
@@ -156,14 +164,21 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     if (points.size > 0) store.save(currentRoot, points);
   }
 
-  let currentNodes = new Map<string, ModuleNode>();
-  let currentEdges = new Map<string, Edge>();
+  // 原始图状态只住 model (candidate #5)——degrees/backEdgeIds/regions 是
+  // 本视图的派生态,从 model 现算,不再是第二份图。
   let degrees = new Map<string, { in: number; out: number }>();
   let backEdgeIds = new Set<string>();
   // 区域化海报 (graph-areas): node id → compass region, always derived from
   // the VISIBLE graph (the pipelined one in renderVisible, the full map on
   // the incremental applyDelta path).
   let regions = new Map<string, RegionId>();
+  // 三条改动标记通道 (candidate #5 顺手收编):批处理纯函数的结果缓存,
+  // renderVisible / applyDelta 在 model 到目标态后整体重算一次——
+  // 不再逐球 deriveScopeMarks([n],…).get(n.id)。
+  let scopeMarks: ReturnType<typeof deriveScopeMarks> = new Map();
+  function refreshScopeMarks(): void {
+    scopeMarks = deriveScopeMarks(model.nodes(), editScope, editedIds, outOfScopeIds);
+  }
   let lockedId: string | null = null;
   let entered = false; // entrance choreography (pre → fade-in) runs once, on first load
   // Ticket 11 + theme.html legend filter: the view owns the mutable copies;
@@ -221,7 +236,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     if (n.aiReview?.status === 'checking') classes.push('checking');
     // ADR 0002 §7.2: 范围环 / 已改紫 / 越界红角标——三条独立 class 通道，
     // 与测试球色、类型错误环、评审环、viewing 紫脉冲互不冲突。
-    const marks = deriveScopeMarks([n], editScope, editedIds, outOfScopeIds).get(n.id);
+    const marks = scopeMarks.get(n.id);
     if (marks?.inScope) classes.push('in-scope');
     if (marks?.edited) classes.push('edited');
     if (marks?.outOfScope) classes.push('out-of-scope');
@@ -260,8 +275,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   /** Cycle-arc set over the current graph, kept in sync by setSnapshot/applyDelta. */
   function refreshCycleFlags(): void {
     backEdgeIds = findBackEdges({
-      nodes: [...currentNodes.keys()].map((id) => ({ id })),
-      links: [...currentEdges.values()].map((e) => ({ from: e.from, to: e.to }))
+      nodes: model.nodes().map((n) => ({ id: n.id })),
+      links: model.edges().map((e) => ({ from: e.from, to: e.to }))
     });
   }
 
@@ -275,8 +290,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     layoutMode = store.getMode(next.rootPath);
     opts.onLayoutModeChange?.(layoutMode);
 
-    currentNodes = new Map(next.nodes.map((n) => [n.id, n]));
-    currentEdges = new Map(next.edges.map((e) => [edgeIdOf(e), e]));
+    // 数据已在 model 里 (caller 先 foldSnapshot)——本函数只是重渲染信号。
     renderVisible();
   }
 
@@ -318,14 +332,15 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 
   /**
    * Full re-render of the visible graph: view pipeline (图例过滤 → 只看未测 →
-   * 隐藏已评审 → 搜索) over currentNodes/currentEdges, then layout + element
+   * 隐藏已评审 → 搜索) over the model's raw state, then layout + element
    * swap. With every control off this renders the plain graph, so setSnapshot
    * is just bookkeeping + renderVisible.
    */
   function renderVisible(): void {
-    const visible = applyViewState([...currentNodes.values()], [...currentEdges.values()], viewState);
+    const visible = applyViewState(model.nodes(), model.edges(), viewState);
     degrees = rebuildDegrees(visible.nodes, visible.edges);
     refreshRegions(visible.nodes, visible.edges);
+    refreshScopeMarks();
 
     const firstRender = !entered;
     entered = true;
@@ -366,23 +381,19 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       return;
     }
 
-    // 1) Bookkeeping: the internal graph mirrors the target state first, so
-    //    cycle detection and fresh-node placement see the final picture.
+    // 1) Bookkeeping: model 已由 caller 先 foldDelta 落到目标态 (frame-sink
+    //    配对序),这里只维护视图派生态——degrees 增量,环标记与区域整体重算。
     for (const e of delta.removedEdges) {
-      currentEdges.delete(edgeIdOf(e));
       bumpDegree(e.from, 'out', -1);
       bumpDegree(e.to, 'in', -1);
     }
     for (const id of delta.removedNodeIds) {
-      currentNodes.delete(id);
       degrees.delete(id);
     }
     for (const n of delta.addedNodes) {
-      currentNodes.set(n.id, n);
       if (!degrees.has(n.id)) degrees.set(n.id, { in: 0, out: 0 });
     }
     for (const e of delta.addedEdges) {
-      currentEdges.set(edgeIdOf(e), e);
       if (!degrees.has(e.from)) degrees.set(e.from, { in: 0, out: 0 });
       if (!degrees.has(e.to)) degrees.set(e.to, { in: 0, out: 0 });
       bumpDegree(e.from, 'out', 1);
@@ -392,7 +403,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     // A node's region is a pure function of (path, incident edges), so a
     // region can only flip through an edge add/remove — the fresh map here
     // covers both the new elements below and the region pass in applyLayout.
-    refreshRegions([...currentNodes.values()], [...currentEdges.values()]);
+    refreshRegions(model.nodes(), model.edges());
+    refreshScopeMarks();
 
     // Ticket 11: while any view control reshapes the graph, the incremental
     // DOM path no longer matches what should be visible — fall back to a
@@ -411,7 +423,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     const saved = currentLayout();
     // 新球种子落点 (Code-review 2026-08-29): 两阶段——先在 batch 之前收种子,
     // 此时同批新球尚未入 cy,「已存在邻居」自然只含老球,新球之间互不耦合。
-    // 邻居 = currentEdges(已是目标态)中 touch 它且对端元素 nonempty 的边;
+    // 邻居 = model 边集(已是目标态)中 touch 它且对端元素 nonempty 的边;
     // 无任何已存在邻居(全新孤立球)→ 不设种子,交给 fcose/孤儿坞。种子 =
     // 邻居质心 + FNV-1a(path) 确定性偏移(角度 0–359°,半径 30–70px,避开
     // 球径 ~20–40px)。存档有位置的球永远存档优先。
@@ -421,7 +433,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       let sumX = 0;
       let sumY = 0;
       let count = 0;
-      for (const e of currentEdges.values()) {
+      for (const e of model.edges()) {
         const otherId = e.from === n.id ? e.to : e.to === n.id ? e.from : null;
         if (otherId === null) continue;
         const el = cy.getElementById(otherId);
@@ -495,7 +507,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   function applyNodeUpdate(node: ModuleNode): void {
-    currentNodes.set(node.id, node);
+    // model 已由 caller 先 foldNodeUpdate——这里只做 DOM patch / 重渲染。
     // With controls on, a state change can change what is visible (未测
     // filter, legend-hidden states) — re-render instead of patching one ball.
     if (filtersActive()) {
@@ -642,11 +654,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     });
   }
 
-  // currentNodes (not a frozen snapshot) is the single source of truth here:
-  // applyDelta/applyNodeUpdate keep it in sync, so taps on nodes that arrived
+  // model (not a frozen snapshot) is the single source of truth here:
+  // foldDelta/foldNodeUpdate keep it in sync, so taps on nodes that arrived
   // after the initial snapshot still resolve (detail panel must open).
   function findNode(id: string): ModuleNode | null {
-    return currentNodes.get(id) ?? null;
+    return model.node(id) ?? null;
   }
 
   cy.on('mouseover', 'node', (evt) => {

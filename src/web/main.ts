@@ -57,6 +57,7 @@ async function loadSource(path: string): Promise<{ content: string; truncated?: 
 const detailPanel = createDetailPanel(detailContainer, loadSource);
 
 const view = createGraphView(cyContainer, {
+  model,
   tooltipEl,
   physics: true,
   onFocusChange: (node) => sink?.setFocus(node),
