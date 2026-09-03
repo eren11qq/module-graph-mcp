@@ -4,13 +4,12 @@ import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
 import type { ReviewStore } from './review-store.js';
 import { buildHealthReport } from './health-report.js';
 import {
+  CHANGE_IMPACT_HEURISTICS,
   computeImpact,
   createGraphStats,
-  DEFAULT_IMPACT_DEPTH,
   IMPACT_DIRECTIONS,
-  type GraphStats,
-  type ImpactDirection,
-  type ImpactNode
+  scoreChanges,
+  type ImpactDirection
 } from './impact.js';
 import type { RecentChanges } from './recent-changes.js';
 import {
@@ -278,55 +277,16 @@ function resolveRequestedNode(
 ): { node: ModuleNode } | { failure: ToolResult } {
   const rawPath = args.path;
   if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
-    return {
-      failure: {
-        content: [{ type: 'text', text: 'path is required and must be a non-empty string, e.g. "src/index.ts".' }],
-        isError: true
-      }
-    };
+    return { failure: errorResult('path is required and must be a non-empty string, e.g. "src/index.ts".') };
   }
-  const posix = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  const posix = normalizeFilePath(rawPath);
   const node = snap.nodes.find((n) => n.id === posix);
   if (!node) return { failure: notFoundResult(snap.nodes, rawPath) };
   return { node };
 }
 
-/**
- * The change-impact risk rules, embedded in both the get_change_impact reply
- * and its tool description (single source, like REVIEW_PLAYBOOK). Chinese by
- * the project's presentation convention — the response fields stay English.
- */
-const CHANGE_IMPACT_HEURISTICS =
-  '风险级启发式：波及节点任一在依赖环上，或属高中心度（度数 top-20%）→ high；受影响节点 > 10 → medium；否则 low。overallRisk 取各变更的最大级。变更记录落盘 .module-graph/recent-changes.json（上限 100 条，最新写入优先，超出逐出最旧），服务重启自动回灌，单会话内超出容量的滑窗残余缺口除外。';
-
-/** riskLevel vocabulary + total order for the overall rollup. */
-type RiskLevel = 'high' | 'medium' | 'low';
-const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
-/** Plan-pinned threshold: more than this many affected nodes ⇒ medium. */
-const MEDIUM_RISK_AFFECTED_THRESHOLD = 10;
-
-/**
- * Risk of one change, from the affected set plus the graph stats: any
- * on-cycle or high-centrality node dominates (high), then the size
- * threshold, then low. Reasons are presentation strings (Chinese).
- */
-function assessChangeRisk(affected: readonly ImpactNode[], stats: GraphStats): { level: RiskLevel; reasons: string[] } {
-  const onCycle = affected.filter((n) => stats.inCycle.has(n.id));
-  const central = affected.filter((n) => stats.highCentrality.has(n.id));
-  if (onCycle.length > 0 || central.length > 0) {
-    return {
-      level: 'high',
-      reasons: [
-        ...onCycle.map((n) => `波及节点在依赖环上：${n.id}`),
-        ...central.map((n) => `波及节点属高中心度（度数 top-20%）：${n.id}`)
-      ]
-    };
-  }
-  if (affected.length > MEDIUM_RISK_AFFECTED_THRESHOLD) {
-    return { level: 'medium', reasons: [`受影响节点 ${affected.length} 个（> ${MEDIUM_RISK_AFFECTED_THRESHOLD}）`] };
-  }
-  return { level: 'low', reasons: [] };
-}
+// 变更证据链的风险判定与启发式文本已迁入 impact.ts(scoreChanges /
+// CHANGE_IMPACT_HEURISTICS,候选 #6)——域数学住图数学模块,MCP 层只整形。
 
 export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): Record<string, ToolDef> {
   const readSource = deps.readSourceFile ?? readSourceFile;
@@ -876,34 +836,11 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
             note: 'no recent-changes pipeline wired in this deployment'
           });
         }
-        const recorded = deps.recentChanges.list();
-        const ids = new Set(snap.nodes.map((n) => n.id));
-        const changes = recorded.map((c) => ({ id: c.id, changedAt: c.changedAt, inGraph: ids.has(c.id) }));
-
-        const stats = statsFor();
-        const impacts: Array<{
-          changeId: string;
-          affectedCount: number;
-          affected: ImpactNode[];
-          riskLevel: RiskLevel;
-          riskReasons: string[];
-        }> = [];
-        let overall: RiskLevel = 'low';
-        for (const c of recorded) {
-          if (!ids.has(c.id)) continue; // deleted or outside the graph: nothing to score
-          const impact = computeImpact(snap, c.id, { direction: 'both', maxDepth: DEFAULT_IMPACT_DEPTH });
-          if (!impact.ok) continue;
-          const risk = assessChangeRisk(impact.affected, stats);
-          impacts.push({
-            changeId: c.id,
-            affectedCount: impact.affected.length,
-            affected: impact.affected,
-            riskLevel: risk.level,
-            riskReasons: risk.reasons
-          });
-          if (RISK_ORDER[risk.level] > RISK_ORDER[overall]) overall = risk.level;
-        }
-        return textToolResult({ changes, impacts, overallRisk: overall, heuristics: CHANGE_IMPACT_HEURISTICS });
+        // 打分全在图数学模块的纯函数里 (impact.scoreChanges);此处只剩整形。
+        return textToolResult({
+          ...scoreChanges(snap, deps.recentChanges.list(), statsFor()),
+          heuristics: CHANGE_IMPACT_HEURISTICS
+        });
       }
     }
   };

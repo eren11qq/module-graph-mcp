@@ -178,3 +178,87 @@ export function createGraphStats(
     return cached;
   };
 }
+
+// ---------------------------------------------------------------------------
+// 变更证据链打分层 (candidate #6, 2026-09-03——从 mcp.ts 的 get_change_impact
+// 工具体搬回图数学):「你刚动了什么、波及了谁、多危险」全是 (nodes, edges,
+// stats, recorded) 的纯函数;MCP 层只留解析 + 整形。风险判定与启发式文本
+// 同源——CHANGE_IMPACT_HEURISTICS 是响应 heuristics 字段的唯一出处。
+// ---------------------------------------------------------------------------
+
+/** riskLevel vocabulary + total order for the overall rollup. */
+export type RiskLevel = 'high' | 'medium' | 'low';
+const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+/** Plan-pinned threshold: more than this many affected nodes ⇒ medium. */
+const MEDIUM_RISK_AFFECTED_THRESHOLD = 10;
+
+/**
+ * The change-impact risk rules, embedded in the get_change_impact reply
+ * (single source, like REVIEW_PLAYBOOK). Chinese by the project's
+ * presentation convention — the response fields stay English.
+ */
+export const CHANGE_IMPACT_HEURISTICS =
+  '风险级启发式：波及节点任一在依赖环上，或属高中心度（度数 top-20%）→ high；受影响节点 > 10 → medium；否则 low。overallRisk 取各变更的最大级。变更记录落盘 .module-graph/recent-changes.json（上限 100 条，最新写入优先，超出逐出最旧），服务重启自动回灌，单会话内超出容量的滑窗残余缺口除外。';
+
+/**
+ * Risk of one change, from the affected set plus the graph stats: any
+ * on-cycle or high-centrality node dominates (high), then the size
+ * threshold, then low. Reasons are presentation strings (Chinese).
+ */
+function assessChangeRisk(affected: readonly ImpactNode[], stats: GraphStats): { level: RiskLevel; reasons: string[] } {
+  const onCycle = affected.filter((n) => stats.inCycle.has(n.id));
+  const central = affected.filter((n) => stats.highCentrality.has(n.id));
+  if (onCycle.length > 0 || central.length > 0) {
+    return {
+      level: 'high',
+      reasons: [
+        ...onCycle.map((n) => `波及节点在依赖环上：${n.id}`),
+        ...central.map((n) => `波及节点属高中心度（度数 top-20%）：${n.id}`)
+      ]
+    };
+  }
+  if (affected.length > MEDIUM_RISK_AFFECTED_THRESHOLD) {
+    return { level: 'medium', reasons: [`受影响节点 ${affected.length} 个（> ${MEDIUM_RISK_AFFECTED_THRESHOLD}）`] };
+  }
+  return { level: 'low', reasons: [] };
+}
+
+export interface ScoredChange {
+  changeId: string;
+  affectedCount: number;
+  affected: ImpactNode[];
+  riskLevel: RiskLevel;
+  riskReasons: string[];
+}
+
+/**
+ * Score the whole evidence chain in one pass: `changes` = per-record
+ * in-graph presence; `impacts` = per in-graph change its blast radius
+ * (both directions, DEFAULT_IMPACT_DEPTH) plus risk; `overallRisk` = max
+ * over the changes. Deterministic given the recorded order.
+ */
+export function scoreChanges(
+  snap: Pick<GraphSnapshot, 'nodes' | 'edges'>,
+  recorded: ReadonlyArray<{ id: string; changedAt: number }>,
+  stats: GraphStats
+): { changes: Array<{ id: string; changedAt: number; inGraph: boolean }>; impacts: ScoredChange[]; overallRisk: RiskLevel } {
+  const ids = new Set(snap.nodes.map((n) => n.id));
+  const changes = recorded.map((c) => ({ id: c.id, changedAt: c.changedAt, inGraph: ids.has(c.id) }));
+  const impacts: ScoredChange[] = [];
+  let overall: RiskLevel = 'low';
+  for (const c of recorded) {
+    if (!ids.has(c.id)) continue; // deleted or outside the graph: nothing to score
+    const impact = computeImpact(snap, c.id, { direction: 'both', maxDepth: DEFAULT_IMPACT_DEPTH });
+    if (!impact.ok) continue;
+    const risk = assessChangeRisk(impact.affected, stats);
+    impacts.push({
+      changeId: c.id,
+      affectedCount: impact.affected.length,
+      affected: impact.affected,
+      riskLevel: risk.level,
+      riskReasons: risk.reasons
+    });
+    if (RISK_ORDER[risk.level] > RISK_ORDER[overall]) overall = risk.level;
+  }
+  return { changes, impacts, overallRisk: overall };
+}

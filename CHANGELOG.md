@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
+
+* mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`
+* `tests/` 类型门：新增 `tsconfig.tests.json`（`npm run build` 链尾执行），修 49 处积压 seam 漂移——GraphView/Statusbar fake 补齐缺员、`'ok'`→`'passing'` 词表跟上、stale 注释与 cast 收编
+* cold-start stdio client 合并：`src/evals/mcp-client.ts` 成唯一实现（+`request`/`stderr`/`waitUntilStderr`/钉端口），cross-session 与 review-persistence e2e 弃手搓副本共用之；`getFreePort` 单一实现 + helpers 再导出；`runServerCli` 收编 5 处退出码仪式（mcp-e2e 的 Ticket-01 原始分帧验收照旧保留）
+* 海报管线各成一个深 module：`layout-cluster.solveClusterPoster` / `graph-areas.solveRegionsPoster`——「separate 先于 rebase/persist」的序从五文件注释收进通道内部，layout-cluster.test 手抄管线删除、直跑生产函数（ADR 0004 几何零触碰）
+* graph-view 放下第二份图状态：`currentNodes`/`currentEdges` 副本删除，原始终态只读 `graph-model`（`model` 注入 GraphViewOptions，配对序 = 先 fold 后 apply）；`deriveScopeMarks` 逐球单喂改批量缓存
+* 变更风险判定搬回图数学：`impact.scoreChanges` 纯函数 + `CHANGE_IMPACT_HEURISTICS` 唯一文本来源，`get_change_impact` 工具体只剩解析 + 整形；新增 scoreChanges 风险矩阵直测（impact.test.ts）
+
 ## [0.1.0]
 
 ### 新增 —— Dashboard

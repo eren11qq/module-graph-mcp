@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHANGE_IMPACT_HEURISTICS,
   computeImpact,
   computeGraphStats,
   createGraphStats,
   DEFAULT_IMPACT_DEPTH,
-  MAX_IMPACT_DEPTH
+  MAX_IMPACT_DEPTH,
+  scoreChanges
 } from '../src/server/impact.js';
 import { buildHealthReport } from '../src/server/health-report.js';
 import type { Edge, GraphSnapshot, ModuleNode } from '../src/shared/types.js';
@@ -168,5 +170,53 @@ describe('computeGraphStats / createGraphStats', () => {
     const report = buildHealthReport(DIAMOND);
     expect(report.items.map((i) => i.id)).toEqual(['a', 'b', 'c', 'd']); // centrality 3/2/2/1... a first
     expect(report.items[0]!.flags).toMatchObject({ highCentrality: true, onCycle: false });
+  });
+});
+
+describe('scoreChanges — 变更证据链打分（候选 #6:纯函数,不再藏在工具体里）', () => {
+  const rec = (id: string, changedAt = 100): { id: string; changedAt: number } => ({ id, changedAt });
+
+  it('maps every record with inGraph presence; only in-graph changes are scored', () => {
+    const r = scoreChanges(CYCLE, [rec('x'), rec('gone.ts', 200)], computeGraphStats(CYCLE));
+    expect(r.changes).toEqual([
+      { id: 'x', changedAt: 100, inGraph: true },
+      { id: 'gone.ts', changedAt: 200, inGraph: false }
+    ]);
+    expect(r.impacts.map((i) => i.changeId)).toEqual(['x']);
+  });
+
+  it('波及在环上 ⇒ high with Chinese reasons; overallRisk takes the max', () => {
+    const r = scoreChanges(CYCLE, [rec('x')], computeGraphStats(CYCLE));
+    expect(r.impacts[0]!.riskLevel).toBe('high');
+    expect(r.impacts[0]!.riskReasons.some((s) => s.startsWith('波及节点在依赖环上：y'))).toBe(true);
+    expect(r.overallRisk).toBe('high');
+  });
+
+  it('a lone ball scores low with empty reasons and no impact beyond presence', () => {
+    const only = snap([node('solo')], []);
+    const r = scoreChanges(only, [rec('solo')], computeGraphStats(only));
+    expect(r.impacts).toEqual([{ changeId: 'solo', affectedCount: 0, affected: [], riskLevel: 'low', riskReasons: [] }]);
+    expect(r.overallRisk).toBe('low');
+  });
+
+  it('受影响 > 10 with no on-cycle/high-centrality ball ⇒ medium (plan-pinned threshold)', () => {
+    // hub + 15 片叶子 (叶子度数 1);80 节度数 2 的无关链把 high-centrality 名额
+    // (top-20% = 20 席) 全部吃掉:hub 自己在 top 里,但爆发半径只含叶子。
+    const nodes = [node('hub'), ...Array.from({ length: 15 }, (_, i) => node(`leaf-${i}`))];
+    const edges: Edge[] = nodes.slice(1).map((l) => ({ from: 'hub', to: l.id }));
+    for (let i = 0; i < 80; i++) nodes.push(node(`n${String(i).padStart(2, '0')}`));
+    for (let i = 0; i < 79; i++) edges.push({ from: `n${String(i).padStart(2, '0')}`, to: `n${String(i + 1).padStart(2, '0')}` });
+    const s = snap(nodes, edges);
+    const stats = computeGraphStats(s);
+    const r = scoreChanges(s, [rec('hub')], stats);
+    expect(r.impacts[0]!.affectedCount).toBe(15);
+    expect(r.impacts[0]!.riskLevel).toBe('medium');
+    expect(r.impacts[0]!.riskReasons).toEqual(['受影响节点 15 个（> 10）']);
+  });
+
+  it('empty records score an empty chain; the heuristics constant is the single text source', () => {
+    const r = scoreChanges(DIAMOND, [], computeGraphStats(DIAMOND));
+    expect(r).toEqual({ changes: [], impacts: [], overallRisk: 'low' });
+    expect(CHANGE_IMPACT_HEURISTICS).toContain('overallRisk 取各变更的最大级');
   });
 });
