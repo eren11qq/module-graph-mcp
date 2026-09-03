@@ -25,7 +25,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@ai-hero/sandcastle": "^0.12.0",
     "chokidar": "^5.0.0",
     "ws": "^8.21.3"
   },
