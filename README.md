@@ -17,15 +17,7 @@
 
 ## How It Works
 
-单个 Node 进程持有依赖图与状态机，同时向两侧输出：
-
-```mermaid
-flowchart LR
-  R[被监视项目根目录] -- chokidar 监听 + 增量解析 --> S[module-graph 单进程<br/>依赖图 + 状态机]
-  S -- stdio JSON-RPC --> A[编码 Agent / MCP 客户端]
-  S -- HTTP 127.0.0.1 + WebSocket --> D[浏览器 Dashboard<br/>力导向图 / 健康报告页]
-  A -- 评审结论 / 改动申报 / 测试结果 --> S
-```
+单个 Node 进程持有依赖图与状态机，同时向两侧输出：向上经 **stdio JSON-RPC** 服务编码 Agent / MCP 客户端（评审结论、改动申报、测试结果由此回流），向下经 **HTTP 127.0.0.1 + WebSocket** 推浏览器 Dashboard（力导向图 / 健康报告页）；被监视项目根目录经 chokidar 监听 + 增量解析源源喂图。
 
 静态分析 `ts / tsx / js / jsx` 的 import，构建**文件级依赖图**：球色 = 测试状态，红环 = 类型错误，红色虚线弧 = 循环依赖。它不替代 agent 的内置工具，而是补上 agent 缺的那块**结构性信任**：agent 负责 speed，module-graph 负责 trust。
 
