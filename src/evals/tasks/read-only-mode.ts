@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe: MODULE_GRAPH_MCP_READ_ONLY=1 hides exactly the seven mutation tools
@@ -22,9 +22,12 @@ export const task: EvalTask = {
   id: 'read-only-mode',
   description: 'MODULE_GRAPH_MCP_READ_ONLY=1 hides the mutation tools and refuses their calls with the audit error',
   maxMs: 600,
-  maxBytes: 4000,
+  // 候选 #3 (2026-09-05): this probe used to drop its listTools reply — the
+  // seven visible tool schemas, its single biggest response — plus the
+  // initialize handshake. Measured honest: 7054B; 8000 is the new hairline.
+  maxBytes: 8000,
   spawnEnv: { MODULE_GRAPH_MCP_READ_ONLY: '1' },
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const names = await client.listTools();
     for (const blocked of MUTATION_TOOLS) {
       check(!names.includes(blocked), `read-only leak: ${blocked} is still listed`);
@@ -56,6 +59,5 @@ export const task: EvalTask = {
     // Analysis still works end-to-end in the same session.
     const info = await client.callTool('get_health_report');
     check(!info.failed, `analysis tool broke in read-only mode: ${info.rpcError?.message ?? info.text}`);
-    return { bytes: refused.bytes + scopeRefused.bytes + editsRefused.bytes + info.bytes };
   }
 };

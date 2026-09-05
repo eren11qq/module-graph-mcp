@@ -28,7 +28,10 @@
 
 - **playbook** —— 评审方法论的内嵌文本：begin_review 的响应里带着稳定的三色
   verdicts 定义（confident / unsure / error）、update_review 分批节奏与 end_review
-  配对纪律。关键节逐字断言；改文本必须连带探针同一 PR。
+  配对纪律。关键节逐字断言；改文本必须连带探针同一 PR。预算数字（每行最后一条
+  生效 / 500 条 / 200 / 500 字符）不手抄——从 review-lifecycle 的常量插值，
+  探针按常量断言防回硬码（候选 #10，2026-09-05）；磁盘复活的评审经
+  `normalizeVerdicts` 清洗，与 end_review 活路径恒等（候选 #2，同日）。
 
 - **爆炸半径（blast radius）** —— 改一个文件之前先看的波及面：upstream（谁依赖它）
   与 downstream（它依赖谁）按 BFS 深度分组，每项带测试状态与类型错误数。
@@ -113,3 +116,15 @@
   hover 详情本就走独立 tooltip，题注板不受节流影响。
 - **write-through 单档** —— 两模式共用一份「最后稳定布局」：任何模式求解落定后
   都回写存档，切模式 = 用对方的落点当种子重排（不推翻 ADR 0003 的单档裁定）。
+
+---
+
+## 2026-09-05 落盘卫生轮（grilling 定案；架构评审候选 #1）
+
+- **落盘卫生层（dot-module store）** —— `<root>/.module-graph/` 下 JSON 状态
+  文件的统一读写仪式：目录创建、自忽略 `.gitignore` 自举、tmp+rename 原子写、
+  坏文件即空、schema version 信封、warn-once 闩、写失败降级仅内存（全路径
+  绝不 throw）。**只管仪式，不管语义**——各状态文件自身的解码（reviews 的
+  done-only、changes 的容量截断）与合并规则（墓碑并集 / per-id max）留在
+  消费者；目录名 `DOT_MODULE_DIR` 单一事实源，server 消费者与信任探针的
+  fixture 清理共用。住 `src/server/dot-module-store.ts`。

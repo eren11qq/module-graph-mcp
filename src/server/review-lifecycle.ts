@@ -37,9 +37,14 @@ export interface ReviewLifecycleDeps {
 /** Verdict vocabulary, owned here because verdict cleaning is owned here. */
 export const AI_VERDICTS: readonly AiVerdict[] = ['confident', 'unsure', 'error'];
 
-const MAX_VERDICT_ENTRIES = 500;
-const MAX_VERDICT_MESSAGE = 200;
-const MAX_REVIEW_SUMMARY = 500;
+// The verdict-shape budgets, single source for the whole review pipeline:
+// the lifecycle cleans live input, review-store re-cleans disk revivals with
+// THE SAME function, and mcp.ts interpolates these numbers into every
+// user-visible text (tool descriptions, playbook) — a number may not be
+// retyped anywhere (architecture review 2026-09-05, candidates #2/#10).
+export const MAX_VERDICT_ENTRIES = 500;
+export const MAX_VERDICT_MESSAGE = 200;
+export const MAX_REVIEW_SUMMARY = 500;
 /** Interface knowledge: after this long an unanswered begin retires itself. */
 export const REVIEW_CHECKING_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -61,8 +66,11 @@ export interface EndResult {
  * unknown verdicts are dropped silently (a partial review beats none);
  * messages are truncated; per line the LAST entry wins; output is sorted by
  * line and capped at MAX_VERDICT_ENTRIES.
+ *
+ * Exported because the disk reviver (review-store) must produce the EXACT
+ * same shape as the live path — one cleaner, no forks (候选 #2).
  */
-function normalizeVerdicts(raw: unknown): AiReviewEntry[] {
+export function normalizeVerdicts(raw: unknown): AiReviewEntry[] {
   if (!Array.isArray(raw)) return [];
   const byLine = new Map<number, AiReviewEntry>();
   for (const item of raw) {

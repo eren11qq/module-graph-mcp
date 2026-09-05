@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### 重构 —— 架构评审第二轮（候选 #1「落盘卫生层」，2026-09-05）
+
+* 新增 `src/server/dot-module-store.ts`：`<root>/.module-graph/*.json` 的统一 fs 仪式（mkdir、自忽略 .gitignore 自举、tmp+rename 原子写、坏文件即空、version 信封、warn-once 闩、失败降级不 throw）收编 review-store 与 recent-changes 的两份逐字抄本；`DOT_MODULE_DIR` 成目录名单一事实源，evals run.ts 的 fixture 清理不再手抄字面量；解码与合并语义（墓碑并集 / per-id max / 容量截断）刻意留在消费者
+* review-store / recent-changes 换接线，对外 interface 与两文件盘上 schema 逐字节不变（旧 reviews.json / recent-changes.json 原样可读）；顺手修复：`recent-changes.clear()` 曾是目录里唯一非原子写手，现走同一条 tmp+rename 路
+* 协议钉自两消费者测试套件回收进 `tests/dot-module-store.test.ts`（仪式只证一次；消费者套件留领域钉与降级接线钉）；词条进 CONTEXT.md（落盘卫生层），MODULE-DESIGN 行/Seam 表/Depth 评估同步
+
+### 重构 —— 架构评审第二轮（候选 #2 + #10「清洗器归一 / 常量单源」，2026-09-05）
+
+* review-store 的第二清洗器 `cleanReview` 删除逐字 fork：verdict 解码改委托 `review-lifecycle.normalizeVerdicts`（已实证分叉——旧实现丢行排序、丢每行最后一条生效、丢 500 条上限、200/500 截断手抄、`AI_VERDICTS` 自声明），磁盘复活评审与 end_review 活路径恒等；新增「落盘复活形状恒等」红先钉（乱序/同行重复/超限 + 503→500 逐出）
+* 预算数字单源：`MAX_VERDICT_ENTRIES` / `MAX_VERDICT_MESSAGE` / `MAX_REVIEW_SUMMARY` 自 review-lifecycle 导出，mcp.ts 的 playbook 文本、begin/update/end 描述、`report_note` 上限（`MAX_NOTE_LENGTH=2000`）全部模板插值——对外字节零变化；playbook-present 探针改为按常量断言，回硬码/删数字即红（ADR 0001 文本-探针同 PR 纪律延续）
+* CONTEXT.md playbook 词条、MODULE-DESIGN 三行同步；对外 interface、`reviews.json` schema、全部 wire 字节不变
+
+### 重构 —— 架构评审第二轮（候选 #3「字节记账下沉」，2026-09-05）
+
+* evals 的 maxBytes 红线从 convention 变结构：`mcp-client.ts` 加 `bytesSeen()`（stdout 每个字节必经计数，含 initialize 握手、listTools 全量 schema、扫描重试的每一份中间回复、不可解析垃圾行）与 `countExternal()`（HTTP 探针的非 stdio 流量入同一本账）；`ToolCallOutcome.bytes`、`ProbeResult` 删除，16 个探针的 `bytes +=` 手抄全部退役——忘加一行即静默放松红线的病根拔掉（红先钉 tests/evals-client-bytes.test.ts：握手入账 / listTools 入账 / 外账合并三点）
+* 诚实表首跑照出两处结构性漏计，`dashboard-info-reports-root`（1500→3000，实测 2259）与 `read-only-mode`（4000→8000，实测 7054，旧数从未计 listTools）按全量读数重校——预算上限虽升，度量口径为全量真值，ADR 0001 可见性增强；其余 14 预算不动全绿
+* run.ts 失败路径也回报 `bytesSeen()`（崩溃前的线费不再显示为 0）；对外 wire、server 行为零变化
+
 ### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
 
 * mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`

@@ -1,6 +1,12 @@
 import { StringDecoder } from 'node:string_decoder';
 import { readSourceFile, type SourceReadResult } from './source-reader.js';
-import { AI_VERDICTS, createReviewLifecycle } from './review-lifecycle.js';
+import {
+  AI_VERDICTS,
+  createReviewLifecycle,
+  MAX_REVIEW_SUMMARY,
+  MAX_VERDICT_ENTRIES,
+  MAX_VERDICT_MESSAGE
+} from './review-lifecycle.js';
 import type { ReviewStore } from './review-store.js';
 import { buildHealthReport } from './health-report.js';
 import {
@@ -242,7 +248,10 @@ function notFoundResult(nodes: readonly ModuleNode[], rawPath: unknown): ToolRes
  * the agent the three-color verdict vocabulary, the update cadence and the
  * begin/end pairing rule. The section headers are part of the contract —
  * the playbook-present evals probe asserts them byte-for-byte; edit only
- * with the probe (and CLAUDE.md) in the same change.
+ * with the probe (and CLAUDE.md) in the same change. The budget numbers are
+ * interpolated from review-lifecycle (候选 #10): retyping them here would
+ * fork the contract — the probe asserts the interpolated phrasing, so a
+ * hardcoded re-introduction trips it.
  */
 const REVIEW_PLAYBOOK = [
   '## Review playbook',
@@ -253,12 +262,15 @@ const REVIEW_PLAYBOOK = [
   '### Cadence',
   '- begin_review marks the module checking; the dashboard ball pulses.',
   '- update_review pushes partial verdicts in batches while you read; on the same line the new entry wins, so dashboard rows paint live.',
-  '- end_review lands the final verdicts (max 500 entries, last entry per line wins; message max 200 chars).',
+  `- end_review lands the final verdicts (max ${MAX_VERDICT_ENTRIES} entries, last entry per line wins; message max ${MAX_VERDICT_MESSAGE} chars).`,
   '### Closure',
   '- ALWAYS pair a begin_review with an end_review for the same path — an empty verdicts array means "reviewed, all clear".',
-  '- Include a one-line summary (max 500 chars) so the dashboard detail panel can show the conclusion.',
+  `- Include a one-line summary (max ${MAX_REVIEW_SUMMARY} chars) so the dashboard detail panel can show the conclusion.`,
   '- Verdicts persist on disk: a server restart keeps them (re-review only when the code changes).'
 ].join('\n');
+
+/** report_note 的备注长度上限(候选 #10):描述文本与工具体 slice 共用此常数。 */
+const MAX_NOTE_LENGTH = 2000;
 
 /** update_review / end_review 共用守卫句——同一字节串,单一来源(探针盯文本)。 */
 const VERDICTS_ARRAY_ERROR = 'verdicts is required and must be an array (possibly empty).';
@@ -451,7 +463,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     report_note: {
       description:
-        'Attach a free-form note to a module (max 2000 chars). The note appears live in the dashboard detail panel for that node. Pass an empty text to clear the note.',
+        `Attach a free-form note to a module (max ${MAX_NOTE_LENGTH} chars). The note appears live in the dashboard detail panel for that node. Pass an empty text to clear the note.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -461,7 +473,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           },
           text: {
             type: 'string',
-            description: 'Note text (max 2000 chars). Empty string clears the note.'
+            description: `Note text (max ${MAX_NOTE_LENGTH} chars). Empty string clears the note.`
           },
           note: {
             type: 'string',
@@ -483,7 +495,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           return errorResult('text is required and must be a string (empty string clears the note). `note` is accepted as an alias.');
         }
 
-        const text = body.trim().slice(0, 2000);
+        const text = body.trim().slice(0, MAX_NOTE_LENGTH);
         const previous = node.note;
         graph.setNote(node.id, text.length > 0 ? text : undefined);
         if (node.note !== previous) {
@@ -542,7 +554,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           verdicts: {
             type: 'array',
             description:
-              'Per-line verdicts found so far: { line: 1-based number, verdict: "confident"|"unsure"|"error", message?: string (max 200 chars) }',
+              `Per-line verdicts found so far: { line: 1-based number, verdict: "confident"|"unsure"|"error", message?: string (max ${MAX_VERDICT_MESSAGE} chars) }`,
             items: {
               type: 'object',
               properties: {
@@ -579,7 +591,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
 
     end_review: {
       description:
-        'Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max 500 entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts persist on disk (.module-graph/reviews.json): they survive restarts, so a re-review is only needed when the code changed.',
+        `Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max ${MAX_VERDICT_ENTRIES} entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts persist on disk (.module-graph/reviews.json): they survive restarts, so a re-review is only needed when the code changed.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -590,7 +602,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           verdicts: {
             type: 'array',
             description:
-              'Per-line verdicts: { line: 1-based number, verdict: "confident"|"unsure"|"error", message?: string (max 200 chars) }',
+              `Per-line verdicts: { line: 1-based number, verdict: "confident"|"unsure"|"error", message?: string (max ${MAX_VERDICT_MESSAGE} chars) }`,
             items: {
               type: 'object',
               properties: {
@@ -604,7 +616,7 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
           },
           summary: {
             type: 'string',
-            description: 'Optional one-line overall conclusion (max 500 chars).'
+            description: `Optional one-line overall conclusion (max ${MAX_REVIEW_SUMMARY} chars).`
           }
         },
         required: ['path', 'verdicts'],

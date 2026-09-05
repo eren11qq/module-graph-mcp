@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe: the per-call `_maxTokens` guardrail. A tiny budget cuts the reply
@@ -12,7 +12,7 @@ export const task: EvalTask = {
   description: '_maxTokens cuts an over-budget reply to the marker; a generous budget passes it through intact',
   maxMs: 500,
   maxBytes: 6000,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const cut = await client.callTool('get_health_report', { _maxTokens: 30 });
     check(!cut.failed, `budgeted call must still succeed: ${cut.rpcError?.message ?? cut.text}`);
     check(cut.text.includes('response truncated'), `marker missing: ${cut.text.slice(0, 120)}`);
@@ -24,6 +24,5 @@ export const task: EvalTask = {
     check(!intact.failed, `generous budget broke the call: ${intact.rpcError?.message ?? intact.text}`);
     const p = intact.payload as { totalModules?: number } | undefined;
     check(p?.totalModules === 7, `pass-through reply not parseable: ${intact.text.slice(0, 80)}`);
-    return { bytes: cut.bytes + intact.bytes };
   }
 };

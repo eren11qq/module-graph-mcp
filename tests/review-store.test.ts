@@ -155,6 +155,57 @@ describe('createReviewStore — load rules', () => {
   });
 });
 
+describe('createReviewStore — disk-revive shape identity (候选 #2)', () => {
+  // The end_review live path sorts verdicts by line, lets the last entry per
+  // line win, caps at 500 entries and truncates message/summary. The reviver
+  // must produce EXACTLY that shape — a disk-resurrected ring must not look
+  // different from one that never left memory (第二轮架构评审候选 #2: the
+  // store's private cleaner had forked from the lifecycle's).
+  it('messy hand-written verdicts revive in the exact end_review live shape', async () => {
+    const root = await tempRoot();
+    await writeStoreFile(root, {
+      version: 1,
+      reviews: {
+        'src/a.ts': {
+          status: 'done',
+          verdicts: [
+            { line: 10, verdict: 'error', message: 'first loses' },
+            { line: 2, verdict: 'confident' },
+            { line: 10, verdict: 'unsure', message: 'second wins' },
+            { line: 1, verdict: 'error', message: 'x'.repeat(250) }
+          ],
+          summary: 's'.repeat(600)
+        }
+      }
+    });
+    const b = createReviewStore({ rootPath: root });
+    const { graph, nodesById } = fakeGraph(['src/a.ts']);
+    b.attachInto(graph);
+    expect(nodesById.get('src/a.ts')!.aiReview).toEqual({
+      status: 'done',
+      verdicts: [
+        { line: 1, verdict: 'error', message: 'x'.repeat(200) },
+        { line: 2, verdict: 'confident' },
+        { line: 10, verdict: 'unsure', message: 'second wins' }
+      ],
+      summary: 's'.repeat(500)
+    });
+  });
+
+  it('revive caps at the same 500 entries as the live path (lowest line numbers win)', async () => {
+    const root = await tempRoot();
+    const raw = Array.from({ length: 503 }, (_, i) => ({ line: i + 1, verdict: 'confident' }));
+    await writeStoreFile(root, { version: 1, reviews: { 'src/a.ts': { status: 'done', verdicts: raw } } });
+    const b = createReviewStore({ rootPath: root });
+    const { graph, nodesById } = fakeGraph(['src/a.ts']);
+    b.attachInto(graph);
+    const revived = nodesById.get('src/a.ts')!.aiReview!.verdicts;
+    expect(revived.length).toBe(500);
+    expect(revived[0]!.line).toBe(1);
+    expect(revived[499]!.line).toBe(500);
+  });
+});
+
 describe('createReviewStore — concurrency', () => {
   it('two processes writing different files both survive (read-merge-write)', async () => {
     const root = await tempRoot();
@@ -187,16 +238,10 @@ describe('createReviewStore — concurrency', () => {
 });
 
 describe('createReviewStore — hygiene', () => {
-  it('writes atomically under .module-graph/ and gitignores the dir by default', async () => {
-    const root = await tempRoot();
-    const a = createReviewStore({ rootPath: root });
-    a.set('src/a.ts', done());
-    const gitignore = await readFile(join(root, '.module-graph', '.gitignore'), 'utf8');
-    expect(gitignore).toContain('*');
-    expect(gitignore).toContain('!.gitignore');
-    expect((await readFile(storeFile(root), 'utf8')).trim().length).toBeGreaterThan(0);
-  });
-
+  // The fs ceremony itself (gitignore bootstrap, atomic tmp+rename, corrupt
+  // handling, warn latch) is pinned ONCE in dot-module-store.test.ts — the
+  // pins here were recycled from this file in the 2026-09-05 store round.
+  // What stays: that THIS consumer degrades correctly through the store.
   it('a root that cannot be written degrades to in-memory with a single warning, never throws', async () => {
     const root = await tempRoot();
     // A regular file where the .module-graph dir would go: mkdir fails ENOTDIR.

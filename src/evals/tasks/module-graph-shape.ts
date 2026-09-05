@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /** The hand-tallied sample-app inventory (mirrors tests/graph-engine.test.ts). */
 const EXPECTED_NODE_IDS = [
@@ -42,7 +42,7 @@ export const task: EvalTask = {
   description: 'get_module_graph returns exactly the sample-app 7-node/8-edge inventory (cycle pair included)',
   maxMs: 3000,
   maxBytes: 4000,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     let res = await client.callTool('get_module_graph');
     check(!res.failed, `get_module_graph failed: ${res.rpcError?.message ?? res.text}`);
     let p = res.payload as {
@@ -67,6 +67,5 @@ export const task: EvalTask = {
       check(pairs.includes(`${from}->${to}`), `missing edge ${from}->${to}`);
     }
     check(!nodeIds.some((id) => id.includes('garbage')), 'garbage.txt leaked into the graph');
-    return { bytes: res.bytes };
   }
 };

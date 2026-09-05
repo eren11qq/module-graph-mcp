@@ -17,7 +17,7 @@
  * 与裸管线保持旧行为）。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createDotModuleStore, DOT_MODULE_DIR, errText, type DotModuleStore } from './dot-module-store.js';
 import { SOURCE_EXTENSIONS } from './path-conventions.js';
 
 /** Only source-extension ids enter the evidence chain: the coverage report
@@ -56,7 +56,6 @@ export interface RecentChangesOptions {
   log?(msg: string): void;
 }
 
-const STORE_DIR = '.module-graph';
 const STORE_FILE = 'recent-changes.json';
 const SCHEMA_VERSION = 1;
 
@@ -71,34 +70,28 @@ export function createRecentChanges(opts: RecentChangesOptions = {}): RecentChan
   // without scanning for a minimum.
   const entries = new Map<string, number>();
   const log = opts.log ?? (() => {});
-  let warned = false;
-  const warnOnce = (msg: string): void => {
-    if (warned) return;
-    warned = true;
-    log(`changes      : ${msg}`);
-  };
 
-  const dir = opts.rootPath ? `${opts.rootPath.replace(/\\/g, '/').replace(/\/+$/, '')}/${STORE_DIR}` : null;
-  const file = dir ? `${dir}/${STORE_FILE}` : null;
+  const store: DotModuleStore | null = opts.rootPath
+    ? createDotModuleStore({
+        rootPath: opts.rootPath,
+        fileName: STORE_FILE,
+        version: SCHEMA_VERSION,
+        log: (m) => log(`changes      : ${m}`)
+      })
+    : null;
 
   /** Disk view: valid entries oldest-first, truncated to the cap. No file / corrupt / unreadable → empty. */
   function readDisk(): RecentChange[] {
-    if (file === null) return [];
-    let raw: string;
-    try {
-      raw = readFileSync(file, 'utf8');
-    } catch {
+    if (store === null) return [];
+    const r = store.loadRaw();
+    if (r.status === 'empty') {
+      if (r.reason === 'corrupt') {
+        store.warn(`ignoring corrupt ${DOT_MODULE_DIR}/${STORE_FILE} (treating as empty)`);
+      }
       return [];
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      warnOnce(`ignoring corrupt ${STORE_DIR}/${STORE_FILE} (treating as empty)`);
-      return [];
-    }
-    const body = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as PersistedFile;
-    if (body.version !== SCHEMA_VERSION || !Array.isArray(body.changes)) return [];
+    const body = r.body as PersistedFile;
+    if (!Array.isArray(body.changes)) return [];
     const out: RecentChange[] = [];
     for (const item of body.changes) {
       if (typeof item !== 'object' || item === null) continue;
@@ -111,45 +104,38 @@ export function createRecentChanges(opts: RecentChangesOptions = {}): RecentChan
     return out.slice(-RECENT_CHANGES_CAP);
   }
 
-  if (dir !== null) {
+  if (store !== null) {
     const disk = readDisk();
     if (disk.length > 0) {
       for (const c of disk) entries.set(c.id, c.changedAt);
-      log(`changes      : restored ${disk.length} recent change${disk.length === 1 ? '' : 's'} from ${STORE_DIR}/${STORE_FILE}`);
+      log(`changes      : restored ${disk.length} recent change${disk.length === 1 ? '' : 's'} from ${DOT_MODULE_DIR}/${STORE_FILE}`);
     }
   }
 
   /**
-   * Atomically mirror memory to disk, merged with the current disk view so a
-   * same-root sibling process' records survive (newest wins per id, total
-   * capped). Sync write: watcher windows are debounced bursts of a small
-   * file; no shutdown flush hook needed.
+   * Mirror memory to disk, merged with the current disk view so a same-root
+   * sibling process' records survive (newest wins per id, total capped); the
+   * store writes it atomically (tmp → rename). Sync write: watcher windows
+   * are debounced bursts of a small file; no shutdown flush hook needed.
    */
   function persist(): void {
-    if (file === null || dir === null) return;
-    try {
-      const merged = new Map<string, number>();
-      for (const c of readDisk()) merged.set(c.id, c.changedAt);
-      for (const [id, changedAt] of entries) {
-        const known = merged.get(id);
-        if (known === undefined || known <= changedAt) merged.set(id, changedAt);
-      }
-      const retained = [...merged.entries()]
-        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
-        .slice(-RECENT_CHANGES_CAP);
-      mkdirSync(dir, { recursive: true });
-      if (!existsSync(`${dir}/.gitignore`)) {
-        writeFileSync(`${dir}/.gitignore`, `*\n!.gitignore\n`, 'utf8');
-      }
-      const body: PersistedFile = {
-        version: SCHEMA_VERSION,
-        changes: retained.map(([id, changedAt]) => ({ id, changedAt }))
-      };
-      const tmp = `${file}.tmp`;
-      writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
-      renameSync(tmp, file);
-    } catch (err) {
-      warnOnce(`persist failed (${err instanceof Error ? err.message : String(err)}), keeping changes in memory only`);
+    if (store === null) return;
+    const merged = new Map<string, number>();
+    for (const c of readDisk()) merged.set(c.id, c.changedAt);
+    for (const [id, changedAt] of entries) {
+      const known = merged.get(id);
+      if (known === undefined || known <= changedAt) merged.set(id, changedAt);
+    }
+    const retained = [...merged.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+      .slice(-RECENT_CHANGES_CAP);
+    const body: PersistedFile = {
+      version: SCHEMA_VERSION,
+      changes: retained.map(([id, changedAt]) => ({ id, changedAt }))
+    };
+    const r = store.saveRaw(body);
+    if (!r.ok) {
+      store.warn(`persist failed (${errText(r.err)}), keeping changes in memory only`);
     }
   }
 
@@ -176,11 +162,13 @@ export function createRecentChanges(opts: RecentChangesOptions = {}): RecentChan
     },
     clear() {
       entries.clear();
-      try {
-        if (file !== null && existsSync(file)) writeFileSync(file, `${JSON.stringify({ version: SCHEMA_VERSION, changes: [] })}\n`, 'utf8');
-      } catch (err) {
-        warnOnce(`clear failed (${err instanceof Error ? err.message : String(err)})`);
-      }
+      // 无文件 = 无可清（收编前如此）；有文件则经 store 原子写空——clear
+      // 曾是目录里唯一的非原子写手,现与 persist 同路(tmp → rename)。
+      if (store === null) return;
+      const r0 = store.loadRaw();
+      if (r0.status === 'empty' && r0.reason === 'missing') return;
+      const r = store.saveRaw({ version: SCHEMA_VERSION, changes: [] });
+      if (!r.ok) store.warn(`clear failed (${errText(r.err)})`);
     }
   };
 }

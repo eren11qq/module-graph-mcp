@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe: get_impact answers both directions over the fixture graph with the
@@ -13,7 +13,7 @@ export const task: EvalTask = {
   description: 'get_impact walks exact upstream/downstream depth groups and the fixture cycle converges',
   maxMs: 600,
   maxBytes: 4500,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const upstream = await client.callTool('get_impact', { path: 'utils/format.ts', direction: 'upstream' });
     check(!upstream.failed, `get_impact upstream failed: ${upstream.rpcError?.message ?? upstream.text}`);
     const up = upstream.payload as { affected?: Array<{ depth: number; id: string; testState?: string; typeErrorCount?: number }> };
@@ -38,6 +38,5 @@ export const task: EvalTask = {
     const unknown = await client.callTool('get_impact', { path: 'no/such/file.ts' });
     check(unknown.failed, 'unknown path must be a structured error, not a crash');
     check(unknown.text.includes('module not found'), `not-found guidance missing: ${unknown.text.slice(0, 80)}`);
-    return { bytes: upstream.bytes + downstream.bytes + unknown.bytes };
   }
 };

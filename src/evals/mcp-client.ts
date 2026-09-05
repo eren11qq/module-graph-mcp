@@ -54,6 +54,13 @@ class StdioMcpClient implements McpClient {
   private readonly stderrTail: string[] = [];
   private stderrAll = '';
   private exited = false;
+  // 候选 #3 (2026-09-05): the byte budget is metered HERE, where every wire
+  // byte necessarily passes — probes assert, they do not account. Raw chunk
+  // length (not re-encoded text): the honest count of what the server wrote,
+  // garbage lines included. countExternal folds off-wire fetches (HTTP probes)
+  // into the same number so there is exactly one budget to forget.
+  private stdoutBytes = 0;
+  private externalBytes = 0;
 
   constructor(
     private readonly child: ReturnType<typeof spawn>,
@@ -61,6 +68,7 @@ class StdioMcpClient implements McpClient {
   ) {
     let buf = '';
     child.stdout?.on('data', (chunk: Buffer) => {
+      this.stdoutBytes += chunk.length;
       buf += chunk.toString('utf8');
       let nl: number;
       while ((nl = buf.indexOf('\n')) !== -1) {
@@ -116,15 +124,8 @@ class StdioMcpClient implements McpClient {
       `${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })}\n`
     );
     const reply = await this.waitForReply(id);
-    const bytes = Buffer.byteLength(JSON.stringify(reply), 'utf8');
     if (reply.error !== undefined) {
-      return {
-        payload: undefined,
-        text: '',
-        failed: true,
-        rpcError: reply.error,
-        bytes
-      };
+      return { payload: undefined, text: '', failed: true, rpcError: reply.error };
     }
     const content = (reply.result as { content?: Array<{ type: string; text?: string }> } | undefined)?.content ?? [];
     const first = content.find((c) => c.type === 'text' && typeof c.text === 'string');
@@ -136,7 +137,7 @@ class StdioMcpClient implements McpClient {
       payload = undefined;
     }
     const isError = (reply.result as { isError?: unknown } | undefined)?.isError === true;
-    return { payload, text, failed: isError, bytes };
+    return { payload, text, failed: isError };
   }
 
   async listTools(): Promise<string[]> {
@@ -153,6 +154,16 @@ class StdioMcpClient implements McpClient {
     const id = this.nextId++;
     this.child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })}\n`);
     return this.waitForReply(id);
+  }
+
+  /** 候选 #3: total bytes metered — every stdout wire byte plus probe-deposited off-wire fetches. */
+  bytesSeen(): number {
+    return this.stdoutBytes + this.externalBytes;
+  }
+
+  /** 候选 #3: charge non-stdio traffic (HTTP bodies) to the same budget. */
+  countExternal(byteCount: number): void {
+    this.externalBytes += byteCount;
   }
 
   /** Full stderr accumulated so far — for log-observing e2e assertions. */

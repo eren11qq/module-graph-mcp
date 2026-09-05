@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe: the health report ranks the fixture's KNOWN problem first, and the
@@ -11,7 +11,7 @@ export const task: EvalTask = {
   description: 'get_health_report ranks the untested high-centrality cycle module first, deterministically',
   maxMs: 500,
   maxBytes: 4000,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const res = await client.callTool('get_health_report');
     check(!res.failed, `get_health_report failed: ${res.rpcError?.message ?? res.text}`);
     const p = res.payload as {
@@ -34,6 +34,5 @@ export const task: EvalTask = {
     const brief = p.brief ?? '';
     check(brief.includes('共 7 个模块'), `brief lacks the header: ${brief.slice(0, 80)}`);
     check(brief.includes('core/emitter.ts（6 分：高中心度、未测、在环上）'), `brief lacks the ranked top line: ${brief.slice(0, 200)}`);
-    return { bytes: res.bytes };
   }
 };

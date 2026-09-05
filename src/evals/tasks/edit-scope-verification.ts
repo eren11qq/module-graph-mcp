@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe (ADR 0002 / MODULE-DESIGN §7.2): the declare_edit_scope /
@@ -14,7 +14,7 @@ export const task: EvalTask = {
   description: 'declare_edit_scope/report_edits admit declared files, flag out-of-scope edits and reject unknown modules',
   maxMs: 1500,
   maxBytes: 4500,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const info = await client.callTool('get_dashboard_info');
     check(!info.failed, `get_dashboard_info failed: ${info.rpcError?.message ?? info.text}`);
     const modules = (info.payload as { modules?: Array<{ id: string; label: string; files: string[] }> }).modules;
@@ -61,7 +61,5 @@ export const task: EvalTask = {
     const after = afterClear.payload as { scopeDeclared?: boolean; ok?: boolean; outOfScope?: Array<{ id: string }> };
     check(after.scopeDeclared === false && after.ok === false, `cleared scope must not admit files: ${afterClear.text}`);
     check(after.outOfScope?.some((e) => e.id === 'core/app.ts'), `cleared scope: core/app.ts must be out-of-scope: ${afterClear.text}`);
-
-    return { bytes: info.bytes + declared.bytes + clean.bytes + dirty.bytes + badModule.bytes + cleared.bytes + afterClear.bytes };
   }
 };

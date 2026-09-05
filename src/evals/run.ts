@@ -14,6 +14,7 @@
 
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DOT_MODULE_DIR } from '../server/dot-module-store.js';
 import { spawnClient, repoRoot } from './mcp-client.js';
 import { ALL_TASKS } from './tasks/registry.js';
 import type { EvalTask } from './types.js';
@@ -33,7 +34,7 @@ async function runTask(task: EvalTask, fixtureRoot: string): Promise<TaskOutcome
   // 常驻 hermeticity: the review store writes <root>/.module-graph/reviews.json;
   // probes must stay zero-shared (CONTEXT.md), so every task starts with a
   // pristine fixture — task N's ended review must never leak into task N+1.
-  await rm(join(fixtureRoot, '.module-graph'), { recursive: true, force: true });
+  await rm(join(fixtureRoot, DOT_MODULE_DIR), { recursive: true, force: true });
   const started = performance.now();
   const client = await spawnClient(fixtureRoot, task.spawnEnv ? { env: task.spawnEnv } : {});
   try {
@@ -41,7 +42,9 @@ async function runTask(task: EvalTask, fixtureRoot: string): Promise<TaskOutcome
       const timer = setTimeout(() => reject(new Error(`probe exceeded the ${WATCHDOG_MS}ms watchdog`)), WATCHDOG_MS);
       timer.unref?.();
     });
-    const { bytes } = await Promise.race([task.probe(client, fixtureRoot), watchdog]);
+    await Promise.race([task.probe(client, fixtureRoot), watchdog]);
+    // 候选 #3: the runner reads the client's meter — probes cannot under-report.
+    const bytes = client.bytesSeen();
     const ms = performance.now() - started;
     if (ms > task.maxMs) {
       return { id: task.id, ok: false, ms, bytes, detail: `took ${Math.round(ms)}ms > maxMs ${task.maxMs}` };
@@ -52,7 +55,9 @@ async function runTask(task: EvalTask, fixtureRoot: string): Promise<TaskOutcome
     return { id: task.id, ok: true, ms, bytes };
   } catch (err) {
     const ms = performance.now() - started;
-    return { id: task.id, ok: false, ms, bytes: 0, detail: err instanceof Error ? err.message : String(err) };
+    // Report what the meter saw before the throw — zero would hide a probe
+    // that blew up after charging the wire.
+    return { id: task.id, ok: false, ms, bytes: client.bytesSeen(), detail: err instanceof Error ? err.message : String(err) };
   } finally {
     await client.close();
   }

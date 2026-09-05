@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /**
  * Probe ①: get_dashboard_info hands back the watched root it was spawned with.
@@ -19,8 +19,11 @@ export const task: EvalTask = {
   id: 'dashboard-info-reports-root',
   description: 'get_dashboard_info reports the spawned fixture root and a loopback dashboard URL plus the ADR 0002 module table',
   maxMs: 3000,
-  maxBytes: 1500,
-  async probe(client): Promise<ProbeResult> {
+  // 候选 #3 (2026-09-05): the honest client meter also charges the initialize
+  // handshake and EVERY scan-settle retry reply (the old hand-sum counted only
+  // the last). Measured 2259B; 3000 keeps the ADR 0001 hairline within ~33%.
+  maxBytes: 3000,
+  async probe(client): Promise<void> {
     let res = await client.callTool('get_dashboard_info');
     check(!res.failed, `get_dashboard_info failed: ${res.rpcError?.message ?? res.text}`);
     let p = res.payload as {
@@ -45,6 +48,7 @@ export const task: EvalTask = {
         /^http:\/\/127\.0\.0\.1:\d+\?token=[0-9a-f]{32}$/.test(p.dashboardUrl),
       `dashboardUrl not a loopback URL with the startup token: ${String(p.dashboardUrl)}`
     );
+
     check(p.nodeCount === 7 && p.edgeCount === 8, `counts wrong: nodes=${String(p.nodeCount)} edges=${String(p.edgeCount)}`);
     // ADR 0002 §7.1: the module table rides get_dashboard_info (单一事实源).
     check(Array.isArray(p.modules) && p.modules.length === 6, `modules list missing: ${JSON.stringify(p.modules)}`);
@@ -52,6 +56,5 @@ export const task: EvalTask = {
       p.modules!.every((m) => typeof m.id === 'string' && typeof m.label === 'string' && Array.isArray(m.files)),
       `module entry shape wrong: ${JSON.stringify(p.modules)}`
     );
-    return { bytes: res.bytes };
   }
 };

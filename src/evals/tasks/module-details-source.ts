@@ -1,4 +1,4 @@
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 
 /** Probe ③: get_module_details returns the full envelope incl. source text. */
 export const task: EvalTask = {
@@ -6,7 +6,7 @@ export const task: EvalTask = {
   description: 'get_module_details on utils/format.ts carries state, edges and the real source text',
   maxMs: 500,
   maxBytes: 1500,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const res = await client.callTool('get_module_details', { path: 'utils/format.ts' });
     check(!res.failed, `get_module_details failed: ${res.rpcError?.message ?? res.text}`);
     const p = res.payload as {
@@ -24,6 +24,5 @@ export const task: EvalTask = {
     check(p.source?.truncated === false, 'source must not be truncated for a small fixture file');
     check(Array.isArray(p.outgoingDependencies) && p.outgoingDependencies.length === 0, 'format.ts is a leaf: no outgoing deps');
     check(Array.isArray(p.incomingDependents) && p.incomingDependents.includes('core/app.ts'), 'missing incoming edge from core/app.ts');
-    return { bytes: res.bytes };
   }
 };

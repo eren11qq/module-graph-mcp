@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { dashboardToken } from '../mcp-client.js';
-import { check, type EvalTask, type ProbeResult } from '../types.js';
+import { check, type EvalTask } from '../types.js';
 import type { SpawnedClient } from '../mcp-client.js';
 
 /** Poll until the baseline scan has filled the report (deadline-bounded). */
@@ -33,11 +33,10 @@ export const task: EvalTask = {
   description: 'GET /api/report serves the ranked HTML report; ?focus= highlights the module row',
   maxMs: 800,
   maxBytes: 16000,
-  async probe(client): Promise<ProbeResult> {
+  async probe(client): Promise<void> {
     const port = (client as SpawnedClient).port;
     // P0-4: /api/* is authenticated with the startup token from the dashboard URL.
     const token = await dashboardToken(client);
-    let bytes = 0;
 
     const plain = await fetchReportWhenReady(port, `?token=${token}`);
     check(plain.status === 200, `status ${plain.status}, expected 200`);
@@ -47,7 +46,8 @@ export const task: EvalTask = {
     check(plain.body.includes('权重表') && plain.body.includes('排名'), 'page lacks the weights/ranking sections');
     check(plain.body.includes('id="module-core/emitter.ts"'), 'page lacks the top module anchor');
     check(!plain.body.includes('class="report-item report-focus"'), 'no row may be highlighted without ?focus');
-    bytes += Buffer.byteLength(plain.body, 'utf8');
+    // Off-wire traffic: deposit into the client's single budget (候选 #3).
+    client.countExternal(Buffer.byteLength(plain.body, 'utf8'));
 
     const focused = await fetchReportWhenReady(port, `?token=${token}&focus=core%2Femitter.ts`);
     check(focused.status === 200, `focus fetch status ${focused.status}`);
@@ -60,7 +60,6 @@ export const task: EvalTask = {
       focused.body.split('class="report-item report-focus"').length === 2,
       'exactly one row may bear the highlight class'
     );
-    bytes += Buffer.byteLength(focused.body, 'utf8');
-    return { bytes };
+    client.countExternal(Buffer.byteLength(focused.body, 'utf8'));
   }
 };
