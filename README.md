@@ -32,12 +32,12 @@
 
 - [30 秒理解](#30-秒理解)
 - [How It Works](#how-it-works)
+- [Why module-graph-mcp](#why-module-graph-mcp)
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [接入 MCP 客户端](#接入-mcp-客户端)
 - [配置参考](#配置参考)
 - [设计文档与决策记录](#设计文档与决策记录)
-- [MVP 边界（明确不做）](#mvp-边界明确不做)
 - [开发](#开发)
 - [Acknowledgements](#acknowledgements)
 
@@ -52,6 +52,16 @@
 单个 Node 进程持有依赖图与状态机，同时向两侧输出：向上经 **stdio JSON-RPC** 服务编码 Agent / MCP 客户端（评审结论、改动申报、测试结果由此回流），向下经 **HTTP 127.0.0.1 + WebSocket** 推浏览器 Dashboard（力导向图 / 健康报告页）；被监视项目根目录经 chokidar 监听 + 增量解析源源喂图。
 
 静态分析 `ts / tsx / js / jsx` 的 import，构建**文件级依赖图**：球色 = 测试状态，红环 = 类型错误，红色虚线弧 = 循环依赖。它不替代 agent 的内置工具，而是补上 agent 缺的那块**结构性信任**：agent 负责 speed，module-graph 负责 trust。
+
+## Why module-graph-mcp
+
+当编码 Agent 在一个代码库里干活时，它看见的是文件系统：grep、glob、Read，一个文件一个文件地拼调用关系。但真正缺的不是「代码长什么样」，而是「**现在此刻，这个库健康吗、我碰对了没有**」——哪些文件有测试盖着、类型错误是哪次改动引入的、这轮改动有没有越出声明的边界。人在旁边更瞎：Agent 说「改完了」，它到底动过哪里、检查过哪里，零痕迹。
+
+module-graph-mcp 把这层看不见变成**图上的事实**：一张随文件事件实时变色的依赖图钉在你浏览器的 127.0.0.1 页上。测试状态是球色，类型错误是红环，AI 的每一次 begin/end_review 落一圈评审环，越界改动直接上红角标——Agent 的自述从此变成可核对的痕迹。
+
+**Agent 负责 speed，module-graph 负责 trust。** 它不抢文件工具的活，只回答文件工具问不出的三问：全库哪里没测试、改动在不在范围内、AI 检查走到了哪。
+
+按语（诚实边界）：只静态分析 `ts / tsx / js / jsx` 的 import，不做其他语言；单进程只监视一个 `--root`，不做多项目根；不收集 lint、不编辑备注 UI。服务只绑定回环地址、零远程调用——所有数据不出你机器。
 
 ## Features
 
@@ -212,12 +222,6 @@ claude mcp add module-graph -- node /absolute/path/to/module-graph-mcp/dist/serv
 * [docs/MODULE-DESIGN.md](docs/MODULE-DESIGN.md) —— 模块接口表（Standards 轴度量基准）
 * [docs/adr/](docs/adr/) —— 架构决策记录（ADR 0001–0004）
 * [COMPROMISES.md](COMPROMISES.md) —— 已知妥协清单（每处「先这样」的代价与回头修触发条件）
-
-## MVP 边界（明确不做）
-
-* **Python 等其他语言解析** —— 只静态分析 `ts / tsx / js / jsx` 的 import
-* **多项目根** —— 单进程只监视一个 `--root`
-* lint 错误收集、agent 备注编辑 UI
 
 ## 开发
 
