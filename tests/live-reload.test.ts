@@ -9,6 +9,7 @@ import { createReviewStore } from '../src/server/review-store.js';
 import type { GraphEvent, GraphSnapshot } from '../src/shared/types.js';
 import { getFreePort } from './helpers/net.js';
 import { makeTempProject } from './helpers/temp-project.js';
+import { PIPELINE_WAIT_MS } from './helpers/wait-budget.js';
 
 // ---------------------------------------------------------------------------
 // Harness: temp project + real HTTP/WS server + live-reload pipeline on an
@@ -111,7 +112,7 @@ async function openClient(base: string): Promise<ClientHandle> {
       if (already) return Promise.resolve(already);
       return new Promise((resolve, reject) => {
         waiters.push({ pred, resolve });
-        setTimeout(() => reject(new Error(`waitFor timeout: ${what}`)), 8000);
+        setTimeout(() => reject(new Error(`waitFor timeout: ${what}`)), PIPELINE_WAIT_MS);
       });
     },
     close: () => ws.close()
@@ -349,7 +350,7 @@ describe('persistent review store wiring (常驻)', () => {
       try {
         await unlink(join(root, 'src/a.ts'));
         // Wait for the watcher window to apply and prune.
-        const deadline = Date.now() + 8000;
+        const deadline = Date.now() + PIPELINE_WAIT_MS;
         while (graph.node('src/a.ts') !== undefined && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 25));
         }

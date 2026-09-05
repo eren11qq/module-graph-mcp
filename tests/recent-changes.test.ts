@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { verifyEdits } from '../src/server/edit-scope.js';
 import { getFreePort } from './helpers/net.js';
 import { makeTempProject } from './helpers/temp-project.js';
+import { PIPELINE_WAIT_MS } from './helpers/wait-budget.js';
 
 /**
  * GitNexus port step 3: the recent-changes record.
@@ -216,7 +217,7 @@ describe('live-reload feeds the record with raw watcher paths (GitNexus port)', 
       await writeFile(join(root, 'added.ts'), 'export const a = 1;\n', 'utf8'); // delta-bearing add
 
       // No WS client to wait on: poll the record itself.
-      const deadline = Date.now() + 8000;
+      const deadline = Date.now() + PIPELINE_WAIT_MS;
       while (!['added.ts', 'known.ts'].every((id) => recent.list().some((c) => c.id === id))) {
         if (Date.now() > deadline) throw new Error(`timed out; recorded: ${JSON.stringify(recent.list())}`);
         await new Promise((r) => setTimeout(r, 50));

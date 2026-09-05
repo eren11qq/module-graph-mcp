@@ -1,11 +1,3 @@
-import hljs from 'highlight.js/lib/core';
-import typescript from 'highlight.js/lib/languages/typescript';
-import javascript from 'highlight.js/lib/languages/javascript';
-import json from 'highlight.js/lib/languages/json';
-import css from 'highlight.js/lib/languages/css';
-import xml from 'highlight.js/lib/languages/xml';
-import markdown from 'highlight.js/lib/languages/markdown';
-import yaml from 'highlight.js/lib/languages/yaml';
 import 'highlight.js/styles/github-dark.css';
 import type { AiReview, AiReviewEntry, TypeErrorEntry } from '../shared/types.js';
 
@@ -21,17 +13,11 @@ import type { AiReview, AiReviewEntry, TypeErrorEntry } from '../shared/types.js
  *
  * Two highlight channels coexist and never override each other: the agent's
  * aiReview verdicts (green/amber/red row) and the real typeErrors (left bar).
- * highlight.js is registered per-language (core build) to keep the bundle
- * lean; unknown extensions fall back to escaped plaintext.
+ * highlight.js lives behind a lazy boundary (highlight-setup.ts, dynamic
+ * import) so the entry chunk stays first-paint lean; it is registered
+ * per-language (core build) and unknown extensions fall back to escaped
+ * plaintext — as does every row when the lazy chunk fails to load.
  */
-
-hljs.registerLanguage('typescript', typescript);
-hljs.registerLanguage('javascript', javascript);
-hljs.registerLanguage('json', json);
-hljs.registerLanguage('css', css);
-hljs.registerLanguage('xml', xml);
-hljs.registerLanguage('markdown', markdown);
-hljs.registerLanguage('yaml', yaml);
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.ts': 'typescript',
@@ -138,6 +124,19 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
 
     container.replaceChildren();
     const language = languageOf(node.path);
+    // Lazy highlight.js: the chunk is fetched on the first view of a
+    // highlightable file (first-paint budget — tests/bundle-split.test.ts).
+    // A failed fetch degrades rows to escaped plaintext, never a crash.
+    let hljs: typeof import('./highlight-setup.js').default | null = null;
+    if (language !== 'plaintext') {
+      try {
+        hljs = (await import('./highlight-setup.js')).default;
+      } catch {
+        hljs = null;
+      }
+      // The panel may have moved on across the await boundary.
+      if (latestPath !== node.path) return;
+    }
     for (let i = 0; i < lines.length; i++) {
       const lineNo = i + 1;
       const text = lines[i] ?? '';
@@ -154,8 +153,8 @@ export function createSourceView(container: HTMLElement, load: SourceLoader): So
 
       const body = document.createElement('span');
       body.className = 'cl-body';
-      if (language === 'plaintext') {
-        // highlight.js core has no 'plaintext' registered; escape via
+      if (hljs === null) {
+        // plaintext extension, or the lazy chunk failed to load: escape via
         // textContent (ticket 09 fallback).
         body.textContent = text;
       } else {

@@ -13,6 +13,14 @@ export default defineConfig({
   publicDir: false,
   build: {
     outDir: '../../dist/server/public',
-    emptyOutDir: true
+    emptyOutDir: true,
+    // The entry chunk is dominated by cytoscape + fcose, which MUST load
+    // before the first paint (the graph IS the landing view) — and "load"
+    // here means a local-disk read over 127.0.0.1, not a network transfer.
+    // Everything genuinely lazy already split out (highlight.js via
+    // src/web/highlight-setup.ts, enforced by tests/bundle-split.test.ts).
+    // The limit sits just above the measured entry (610 kB) so the warning
+    // stays meaningful: it fires on an accidental regression, not on shape.
+    chunkSizeWarningLimit: 700
   }
 });

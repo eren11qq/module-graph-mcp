@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createSourceView } from '../src/web/code-view.js';
 import type { AiReview, ModuleNode } from '../src/shared/types.js';
 
@@ -156,5 +156,45 @@ describe('AI verdict rows (ticket 12)', () => {
 
     const other = container.querySelectorAll('.cl')[1]!;
     expect(other.classList.contains('t-err')).toBe(false);
+  });
+});
+
+describe('lazy highlighter boundary (first-paint budget)', () => {
+  it('a plaintext view never touches the lazy highlight chunk', async () => {
+    let touched = false;
+    vi.resetModules();
+    vi.doMock('../src/web/highlight-setup.js', () => {
+      touched = true;
+      return { default: { highlight: () => ({ value: '' }) } };
+    });
+    try {
+      const { createSourceView: create } = await import('../src/web/code-view.js');
+      const container = document.createElement('div');
+      const view = create(container, async () => ({ content: 'README text' }));
+      await view.show(node({ path: 'README.txt' }));
+      expect(container.querySelector('.cl-body')?.textContent).toBe('README text');
+      expect(touched).toBe(false);
+    } finally {
+      vi.doUnmock('../src/web/highlight-setup.js');
+    }
+  });
+
+  it('rows degrade to escaped plaintext when the lazy chunk fails to load', async () => {
+    vi.resetModules();
+    vi.doMock('../src/web/highlight-setup.js', () => {
+      throw new Error('chunk load failed');
+    });
+    try {
+      const { createSourceView: create } = await import('../src/web/code-view.js');
+      const container = document.createElement('div');
+      const view = create(container, async () => ({ content: 'const x = 1; <b>' }));
+      // show() must resolve — the failure is degraded, not thrown.
+      await expect(view.show(node())).resolves.toBeUndefined();
+      const body = container.querySelector('.cl-body')!;
+      expect(body.textContent).toBe('const x = 1; <b>');
+      expect(container.querySelector('b')).toBeNull(); // escaped, not injected
+    } finally {
+      vi.doUnmock('../src/web/highlight-setup.js');
+    }
   });
 });
