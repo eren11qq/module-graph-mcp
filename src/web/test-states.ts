@@ -4,10 +4,10 @@ import { stateColor } from './theme.js';
 /**
  * Single source of truth for the four-color test-state vocabulary: dashboard
  * label, legend order and aggregation severity live in one table. The COLORS
- * are theme-scoped (dark 暗色仪器盘 / light 亮色工作台) and live in theme.ts's
- * CY_PALETTES; this module re-exports them against the active theme. Adding a
- * state is one entry here (plus the TestState union in shared/types.ts and
- * both palette entries in theme.ts).
+ * live in theme.ts's CY_PALETTE (single theme since review #5); this module
+ * re-exports them. Adding a state is one entry here (plus the TestState union
+ * in shared/types.ts and the palette entry in theme.ts + its CSS twin, which
+ * the equality pin in tests/theme-palette.test.ts keeps in lockstep).
  */
 
 export const TEST_STATES: Record<TestState, { label: string; severity: number }> = {

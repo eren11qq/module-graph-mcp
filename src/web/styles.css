@@ -1,8 +1,9 @@
 /* =============================================================
    Module Graph · theme.html 定稿转正
-   双主题:dark 暗色仪器盘(默认)/ light 亮色工作台。
-   主题差异全部经 [data-theme] token 覆盖;骨架共享一套语义结构。
-   对应 TS 侧色板:src/web/theme.ts(CY_PALETTES / MOTION / CHROME),
+   单主题:dark 暗色仪器盘(#5,2026-09-05 删除 light 亮色工作台;
+   [data-theme] 外壳保留,加回第二主题时按等值钉补块)。
+   对应 TS 侧色板:src/web/theme.ts(CY_PALETTE / MOTION / CHROME),
+   两侧同值由 tests/theme-palette.test.ts 等值钉锁死,
    定稿表见 .kilo/plans/theme-tokens.md。
    ============================================================= */
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -380,87 +381,6 @@ body {
   border: 1px solid var(--line); border-radius: 10px;
 }
 [data-theme="dark"] #dock-left, [data-theme="dark"] #dock-right { top: 70px; }
-
-/* =============================================================
-   主题 light · 亮色工作台 —— 纸感中性色 / mono 强调 / 安静性格
-   ============================================================= */
-[data-theme="light"] {
-  color-scheme: light;
-  --bg: #F6F4EF;
-  --panel: #FFFFFF; --panel-top: rgba(255, 255, 255, .72);
-  --line: #E6E0D2;
-  --ink: #26221C; --muted: #7A7264; --faint: #B3AA99;
-  --accent: #26221C; --accent-ink: #F6F4EF;
-  --state-pass: #009E73; --state-fail: #D55E00; --state-skip: #56B4E9; --state-none: #ADB5BD;
-  --state-unsure: #B45309;
-  --type-error: #B42318;
-  --warn: #B45309; --edge-line: #A9A294; --cycle-line: #C2410C;
-  --r-card: 10px; --r-seg: 7px; --band-h: 6px; --band-r: 3px;
-  --shadow-card: 0 1px 2px rgba(88, 74, 44, .06), 0 12px 32px rgba(88, 74, 44, .10);
-  --blur: blur(20px) saturate(160%); --pad-card: 11px 13px;
-  --fs-base: 13px; --fs-h2: 10px; --bar-h: 48px; --sb-h: 30px;
-  --dock-top: 60px; --dock-inset: 12px; --dock-gap: 10px;
-  --dock-left-w: 224px; --dock-right-w: 380px;
-  --seg-track: rgba(120, 110, 90, .12); --seg-on: #FFFFFF;
-  --seg-on-ink: #26221C; --seg-on-shadow: 0 1px 3px rgba(88, 74, 44, .2);
-  --seg-glow: 0 0 12px rgba(38, 34, 28, .14);
-  --glass-hi: inset 1px 1px 4px rgba(255, 255, 255, .90);
-  --glass-lo: inset -1px -1px 6px rgba(88, 74, 44, .07);
-  --glass-drop: 0 8px 24px rgba(88, 74, 44, .10);
-  --search-bg: #FFFFFF; --search-ring: #E6E0D2; --search-ring-hover: #D4CCB8;
-  --search-ring-focus: #26221C; --search-drop: 0 0 25px -17px rgba(88, 74, 44, .35);
-  --code-bg: #FAF8F1;
-  --vpass-bg: rgba(0, 158, 115, .08); --vunsure-bg: rgba(180, 83, 9, .09); --verror-bg: rgba(213, 94, 0, .10);
-  --row-hover: rgba(38, 34, 28, .05);
-  --pulse-dur: 2.6s; --pulse-ring: rgba(0, 158, 115, .28);
-  --dur-base: 180ms; --dur-slow: 300ms;
-  --ease-out: cubic-bezier(.3, .7, .1, 1); --ease-loop: ease-in-out;
-}
-[data-theme="light"] #stage {
-  background-color: #FBFAF6;
-  background-image: radial-gradient(#DCD4C2 1px, transparent 1.2px);
-  background-size: 22px 22px;
-}
-[data-theme="light"] .brand .sub,
-[data-theme="light"] .tools input[type="search"],
-[data-theme="light"] #sb-left,
-[data-theme="light"] #sb-right,
-[data-theme="light"] .detail-path,
-[data-theme="light"] .detail-degrees { font-family: var(--font-mono); }
-[data-theme="light"] .conn .dot { animation-name: connPulseSoft; }
-@keyframes connPulseSoft {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: .45; }
-}
-
-/* ---------------- hljs light 覆盖 ----------------
-   基础包导入的是 github-dark;亮色主题下按 github-light 色板覆盖
-   常用 token(作用域限定 [data-theme="light"],特异性更高)。 */
-[data-theme="light"] .code .hljs-comment,
-[data-theme="light"] .code .hljs-quote { color: #6A737D; font-style: italic; }
-[data-theme="light"] .code .hljs-keyword,
-[data-theme="light"] .code .hljs-selector-tag,
-[data-theme="light"] .code .hljs-deletion { color: #D73A49; }
-[data-theme="light"] .code .hljs-string,
-[data-theme="light"] .code .hljs-regexp,
-[data-theme="light"] .code .hljs-addition,
-[data-theme="light"] .code .hljs-meta .hljs-string { color: #032F62; }
-[data-theme="light"] .code .hljs-number,
-[data-theme="light"] .code .hljs-literal { color: #005CC5; }
-[data-theme="light"] .code .hljs-title,
-[data-theme="light"] .code .hljs-section,
-[data-theme="light"] .code .hljs-name { color: #6F42C1; }
-[data-theme="light"] .code .hljs-attr,
-[data-theme="light"] .code .hljs-attribute,
-[data-theme="light"] .code .hljs-variable,
-[data-theme="light"] .code .hljs-template-variable,
-[data-theme="light"] .code .hljs-type { color: #953800; }
-[data-theme="light"] .code .hljs-built_in,
-[data-theme="light"] .code .hljs-symbol,
-[data-theme="light"] .code .hljs-bullet { color: #E36209; }
-[data-theme="light"] .code .hljs-meta { color: #6A737D; }
-[data-theme="light"] .code .hljs-emphasis { font-style: italic; }
-[data-theme="light"] .code .hljs-strong { font-weight: 600; }
 
 /* ---------------- 入场编排(仅首次加载) ---------------- */
 body.enter #topbar    { animation: enterDown  var(--dur-slow) var(--ease-out) both; }

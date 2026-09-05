@@ -8,7 +8,7 @@ import { createGraphView } from './graph-view.js';
 import { createLegend } from './legend.js';
 import type { LayoutMode } from './layout-store.js';
 import { createStatusbar } from './statusbar.js';
-import { CHROME, setTheme as setActiveTheme, type ThemeKey } from './theme.js';
+import { CHROME } from './theme.js';
 
 // ---------------------------------------------------------------------------
 // Section 3 mount points (the only DOM the render path touches)
@@ -99,44 +99,10 @@ sink = createFrameSink({
 });
 
 // ---------------------------------------------------------------------------
-// Theme: dark 暗色仪器盘 (default) / light 亮色工作台; topbar toggle +
-// localStorage mg-theme. Canvas palette via graph-view.setTheme (cy.style
-// rebuild keeps positions), shell via body[data-theme] CSS tokens.
+// Theme: 单主题 dark 暗色仪器盘 (#5 起浅色工作台整体删除) —— body 的
+// [data-theme="dark"] 由 index.html 静态给,画布色板 buildStylesheet 启动读
+// 一次;无切换、无 localStorage、无 setTheme 顺序舞。
 // ---------------------------------------------------------------------------
-
-const themeBtn = document.getElementById('btn-theme') as HTMLButtonElement;
-let currentTheme: ThemeKey = CHROME.defaultTheme;
-
-function storedTheme(): ThemeKey {
-  try {
-    const v = localStorage.getItem(CHROME.themeStorageKey);
-    return v === 'light' || v === 'dark' ? v : CHROME.defaultTheme;
-  } catch {
-    return CHROME.defaultTheme;
-  }
-}
-
-function applyTheme(key: ThemeKey, persist = true): void {
-  currentTheme = key;
-  document.body.dataset.theme = key;
-  setActiveTheme(key);
-  view.setTheme(key);
-  // Legend swatches echo the active canvas palette.
-  sink?.refreshDerived();
-  themeBtn.textContent = key === 'dark' ? '亮色工作台' : '暗色仪器盘';
-  themeBtn.title = key === 'dark' ? '切换到亮色工作台' : '切换到暗色仪器盘';
-  if (persist) {
-    try {
-      localStorage.setItem(CHROME.themeStorageKey, key);
-    } catch {
-      /* private mode: theme just won't survive a reload */
-    }
-  }
-}
-
-themeBtn.addEventListener('click', () => {
-  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
-});
 
 // ---------------------------------------------------------------------------
 // Keyboard: Esc drops the focus lock.
@@ -268,8 +234,6 @@ function connectWs(): void {
 }
 
 async function boot(): Promise<void> {
-  applyTheme(storedTheme(), false);
-
   if (TOKEN === '') {
     // 正常导航不会走到这里：无 token 的入口请求会被服务端 302 补上。走到这里
     // 说明绕过了服务端（如离线打开的旧快照），先自救一次，仍失败给指引。

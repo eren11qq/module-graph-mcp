@@ -8,17 +8,7 @@ import type { GraphModel } from './graph-model.js';
 import { findBackEdges, type LayoutGraphInput } from './back-edges.js';
 import { fnv1a, solveClusterPoster } from './layout-cluster.js';
 import { createLayoutStore, type LayoutMode, type LayoutPoint, type LayoutStore } from './layout-store.js';
-import {
-  MOTION,
-  THEME,
-  activeThemeKey,
-  cyPalette,
-  diameterOf,
-  prefersReducedMotion,
-  setTheme as setActiveTheme,
-  shortLabel,
-  type ThemeKey
-} from './theme.js';
+import { MOTION, THEME, cyPalette, diameterOf, prefersReducedMotion, shortLabel } from './theme.js';
 import { STATE_ORDER } from './test-states.js';
 import { createPhysics, type Physics } from './physics.js';
 
@@ -83,8 +73,6 @@ export interface GraphView {
   getLayoutMode(): LayoutMode;
   /** Persist a root's layout mode and re-render the whole poster with it. */
   setLayoutMode(mode: LayoutMode): void;
-  /** Restyle to another theme without touching positions or data. */
-  setTheme(key: ThemeKey): void;
   /** Cycle arcs currently rendered — the statusbar's 循环依赖 counter. */
   cycleCount(): number;
 }
@@ -810,10 +798,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     resetLayout,
     getLayoutMode,
     setLayoutMode,
-    setTheme(key: ThemeKey): void {
-      setActiveTheme(key);
-      cy.style(buildStylesheet());
-    },
     setEditScope(scope: EditScopeDecl | null): void {
       editScope = scope;
       // 新范围 = 新基线：已改/越界标记清零，等下一次 report_edits 再点亮。
@@ -833,13 +817,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
 }
 
 /**
- * The cy stylesheet, themed: colors read from the ACTIVE palette at build
- * time; setTheme() rebuilds it (cy.style) so a re-skin never touches
- * positions or data. Rule order matters — later rules win.
+ * The cy stylesheet: colors read from the single palette at build time
+ * (#5 起单主题,无 setTheme 重建通道)。Rule order matters — later rules win.
  */
 function buildStylesheet(): cytoscape.StylesheetStyle[] {
   const p = cyPalette();
-  const te = THEME.typeError[activeThemeKey()];
+  const te = THEME.typeError;
   const reduced = prefersReducedMotion();
 
   const stateRules: cytoscape.StylesheetStyle[] = STATE_ORDER.map((state) => ({

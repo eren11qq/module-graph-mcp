@@ -4,23 +4,23 @@ import type { TestState } from '../shared/types.js';
  * Visual constants layer — the landing spot for every ticket-00 verdict plus
  * the theme-tokens 定稿 (ticket 03+ theme.html prototype → production).
  *
- * Two themes: dark 暗色仪器盘 (default, brightened Okabe-Ito) and light 亮色
- * 工作台 (paper neutrals, classic Okabe-Ito). The CSS side of each theme lives
- * in styles.css under [data-theme="…"]; THIS file owns the cytoscape-side
+ * Single theme: dark 暗色仪器盘. 架构评审第二轮 #5 (2026-09-05) 删除了 light
+ * 亮色工作台 —— 双主题时代同一个色在 theme.ts 与 styles.css 各存一份、测试
+ * 从不交叉,漂移无人报警;等值钉见 tests/theme-palette.test.ts。CSS 侧住在
+ * styles.css 的 [data-theme="dark"] 块(外壳保留:将来若加回第二主题,色板 +
+ * CSS 块 + 切换钮三件套按等值钉补齐即可);THIS file owns the cytoscape-side
  * palette, the motion parameters and the shell chrome constants. All
  * reversible decisions (verdicts §回滚开关) live here; flipping a constant
  * re-skins the page without touching the render engines.
  *
  * The test-state vocabulary (label/severity) lives in test-states.ts; the
- * state COLORS are theme-scoped and live in the palettes below.
+ * state COLORS live in the palette below.
  */
 
-export type ThemeKey = 'dark' | 'light';
-
 /**
- * Canvas encoding palette of ONE theme: ball fills, edge/cycle colors, the
- * accent used by the focus ring and the AI-checking edge pulse, and the dim
- * opacities for the non-neighborhood. Everything the cy stylesheet reads.
+ * Canvas encoding palette — ball fills, edge/cycle colors, the accent used by
+ * the focus ring and the AI-checking edge pulse, and the dim opacities for the
+ * non-neighborhood. Everything the cy stylesheet reads.
  */
 export interface CyPalette {
   states: Record<TestState, string>;
@@ -63,10 +63,11 @@ export interface CyPalette {
 }
 
 /**
- * dark 暗色仪器盘 — Okabe-Ito brightened on a deep navy ground: same hue
- * spacing, lifted L so the four states stay colorblind-safe on dark.
+ * 暗色仪器盘 — Okabe-Ito brightened on a deep navy ground: same hue spacing,
+ * lifted L so the four states stay colorblind-safe on dark. 色值与 styles.css
+ * 的 [data-theme="dark"] token 由 tests/theme-palette.test.ts 等值钉锁死。
  */
-const DARK: CyPalette = {
+export const CY_PALETTE: CyPalette = {
   states: {
     passing: '#00C389',
     failing: '#FF7A45',
@@ -95,62 +96,19 @@ const DARK: CyPalette = {
   dimEdge: 0.05
 };
 
-/** light 亮色工作台 — classic Okabe-Ito on warm paper. */
-const LIGHT: CyPalette = {
-  states: {
-    passing: '#009E73',
-    failing: '#D55E00',
-    'has-tests-unrun': '#56B4E9',
-    untested: '#ADB5BD'
-  },
-  edge: {
-    color: '#A9A294',
-    alpha: 0.75,
-    cycleColor: '#C2410C',
-    cycleAlpha: 0.95,
-    moduleColor: '#CC79A7'
-  },
-  label: '#44403C',
-  nodeBorderW: 1.4,
-  nodeBorderColor: '#FFFFFF',
-  accent: '#26221C',
-  viewing: '#6D28D9',
-  review: { confident: '#009E73', unsure: '#B45309', error: '#B42318' },
-  plate: {
-    label: 'rgba(38,34,28,0.66)'
-  },
-  scope: { ring: '#7C3AED', fill: '#D8C7F5' },
-  canvas: '#F6F4EF',
-  dimNode: 0.12,
-  dimEdge: 0.05
-};
-
-export const CY_PALETTES: Record<ThemeKey, CyPalette> = { dark: DARK, light: LIGHT };
-
-let activeTheme: ThemeKey = 'dark';
-
-/** Switch the active theme (canvas side; the CSS side follows body[data-theme]). */
-export function setTheme(key: ThemeKey): void {
-  activeTheme = key;
-}
-
-export function activeThemeKey(): ThemeKey {
-  return activeTheme;
-}
-
-/** Palette of the ACTIVE theme — read once per stylesheet build / legend render. */
+/** The palette — read once per stylesheet build / legend render. */
 export function cyPalette(): CyPalette {
-  return CY_PALETTES[activeTheme];
+  return CY_PALETTE;
 }
 
-/** Theme-scoped test-state color (delegates to the active palette). */
+/** Test-state color (reads the single palette). */
 export function stateColor(state: TestState): string {
-  return CY_PALETTES[activeTheme].states[state];
+  return CY_PALETTE.states[state];
 }
 
-/** Theme-scoped AI review-ring color (delegates to the active palette). */
+/** AI review-ring color (reads the single palette). */
 export function reviewColor(verdict: 'confident' | 'unsure' | 'error'): string {
-  return CY_PALETTES[activeTheme].review[verdict];
+  return CY_PALETTE.review[verdict];
 }
 
 // 2026-08-31 等空隙裁定: 相邻球对的边到边目标空隙(px),唯一手调点。
@@ -187,12 +145,9 @@ export const THEME = {
    * Ticket 07: type-error badge is its own visual channel — a ring around
    * the ball, independent of the state fill (and of the focus ring, which
    * wins while a node is locked). Same color the code view uses for the
-   * type-error row bar. Theme-scoped: distinct from both themes' fail fill.
+   * type-error row bar (--type-error); distinct from the fail fill.
    */
-  typeError: {
-    dark: { color: '#F85149', borderWidth: 3 },
-    light: { color: '#B42318', borderWidth: 3 }
-  },
+  typeError: { color: '#F85149', borderWidth: 3 },
   /**
    * Code-review 2026-08-29: AI 评审环。最初走 underlay 通道，实测渲染的是
    * 圆角方形而非正圆，改为 border 通道 —— 环随节点是正圆。声明顺序在
@@ -353,8 +308,6 @@ export const MOTION = {
 
 /** Shell chrome constants the TS side needs (the CSS side lives in styles.css). */
 export const CHROME = {
-  themeStorageKey: 'mg-theme',
-  defaultTheme: 'dark' as ThemeKey,
   /**
    * Code-review 2026-08-29: layout archive (layout-store.ts) — last-stable
    * positions keyed by rootPath, one JSON file under a single key.

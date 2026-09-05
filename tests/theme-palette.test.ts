@@ -1,67 +1,92 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CY_PALETTES, MOTION, THEME, activeThemeKey, clusterFcoseOverrides, clusterIdealEdgeLength, cyPalette, diameterOf, setTheme, sizeAwareRepulsion, stateColor, uniformIdealEdgeLength } from '../src/web/theme.js';
+import {
+  CY_PALETTE,
+  MOTION,
+  THEME,
+  clusterFcoseOverrides,
+  clusterIdealEdgeLength,
+  cyPalette,
+  diameterOf,
+  reviewColor,
+  sizeAwareRepulsion,
+  stateColor,
+  uniformIdealEdgeLength
+} from '../src/web/theme.js';
 import { STATE_ORDER } from '../src/web/test-states.js';
-import type { ThemeKey } from '../src/web/theme.js';
 
 /**
- * Theme shell 定稿 (theme.html → production): both palettes must fully cover
- * the four-state vocabulary plus the AI-check three-color tokens, and the
- * CSS side must define the matching [data-theme] blocks. Colors are
- * theme-scoped; the active-theme switch re-points stateColor.
+ * 单主题(暗色仪器盘)定稿 —— 架构评审第二轮 #5:浅色工作台整体删除,
+ * 「当前主题」全局随之消失。一个测试状态色 = 一份 TS 值 + 一份 CSS token,
+ * 由下方等值钉逐色交叉断言:改一侧忘另一侧 = 测试红。历史病:双主题时代
+ * 两真源各钉一侧从不交叉,legend 色点与画布球色可悄悄漂移。
  */
 
-const THEME_KEYS: ThemeKey[] = ['dark', 'light'];
+const css = readFileSync(new URL('../src/web/styles.css', import.meta.url), 'utf8');
 
-/** AI 检查三色定稿: --state-unsure 是新增 token,dark/light 各有定值。 */
-const AI_UNSURE: Record<ThemeKey, string> = { dark: '#FFD24D', light: '#B45309' };
+/** 取 [data-theme="dark"] token 块里的一个 CSS 变量值;不存在返回 null。 */
+function cssToken(name: string): string | null {
+  const start = css.indexOf('[data-theme="dark"] {');
+  if (start === -1) return null;
+  const block = css.slice(start, css.indexOf('}', start));
+  const m = block.match(new RegExp(`${name}:\\s*([^;]+);`));
+  return m ? m[1].trim().toUpperCase() : null;
+}
 
-describe('CY_PALETTES — 双主题色板覆盖 (theme shell)', () => {
-  it('covers every test state in both themes', () => {
-    for (const key of THEME_KEYS) {
-      expect(Object.keys(CY_PALETTES[key].states).sort()).toEqual([...STATE_ORDER].sort());
-      for (const state of STATE_ORDER) {
-        expect(CY_PALETTES[key].states[state], `${key}.${state}`).toMatch(/^#[0-9A-Fa-f]{6}$/);
-      }
+describe('CY_PALETTE — 单主题色板覆盖', () => {
+  it('covers every test state', () => {
+    expect(Object.keys(CY_PALETTE.states).sort()).toEqual([...STATE_ORDER].sort());
+    for (const state of STATE_ORDER) {
+      expect(CY_PALETTE.states[state], state).toMatch(/^#[0-9A-Fa-f]{6}$/);
     }
   });
 
   it('carries the canvas encoding fields the cy stylesheet reads', () => {
-    for (const key of THEME_KEYS) {
-      const p = CY_PALETTES[key];
-      expect(p.edge.color).toMatch(/^#/);
-      expect(p.edge.cycleColor).toMatch(/^#/);
-      expect(p.edge.alpha).toBeGreaterThan(0);
-      expect(p.edge.cycleAlpha).toBeGreaterThan(p.edge.alpha); // cycles pop harder
-      expect(p.label).toMatch(/^#/);
-      expect(p.accent).toMatch(/^#/);
-      expect(p.dimNode).toBeGreaterThan(0);
-      expect(p.dimEdge).toBeLessThan(p.dimNode);
-    }
+    const p = CY_PALETTE;
+    expect(p.edge.color).toMatch(/^#/);
+    expect(p.edge.cycleColor).toMatch(/^#/);
+    expect(p.edge.alpha).toBeGreaterThan(0);
+    expect(p.edge.cycleAlpha).toBeGreaterThan(p.edge.alpha); // cycles pop harder
+    expect(p.label).toMatch(/^#/);
+    expect(p.accent).toMatch(/^#/);
+    expect(p.dimNode).toBeGreaterThan(0);
+    expect(p.dimEdge).toBeLessThan(p.dimNode);
   });
 
-  it('keeps the two themes distinct (dark brightened Okabe-Ito vs classic)', () => {
-    expect(CY_PALETTES.dark.states.passing).not.toBe(CY_PALETTES.light.states.passing);
-    expect(CY_PALETTES.dark.states.failing).not.toBe(CY_PALETTES.light.states.failing);
-    expect(CY_PALETTES.dark.states.untested).not.toBe(CY_PALETTES.light.states.untested);
-  });
-
-  it('pins the AI unsure token: dark #FFD24D / light #B45309 (theme-tokens.md 定稿)', () => {
-    // The unsure amber lives on the CSS side; the palette mirrors it via
-    // this module-level contract check on the canvas accent channel.
-    expect(AI_UNSURE.dark).toBe('#FFD24D');
-    expect(AI_UNSURE.light).toBe('#B45309');
+  it('cyPalette() 读的就是这一份表 —— 不再有「当前主题」间接层', () => {
+    expect(cyPalette()).toBe(CY_PALETTE);
+    expect(stateColor('passing')).toBe(CY_PALETTE.states.passing);
+    expect(reviewColor('error')).toBe(CY_PALETTE.review.error);
   });
 });
 
-describe('active theme switch', () => {
-  it('stateColor follows the active palette', () => {
-    setTheme('light');
-    expect(activeThemeKey()).toBe('light');
-    expect(stateColor('passing')).toBe(CY_PALETTES.light.states.passing);
-    setTheme('dark');
-    expect(stateColor('passing')).toBe(CY_PALETTES.dark.states.passing);
-    expect(cyPalette()).toBe(CY_PALETTES.dark);
+describe('等值钉 — TS 色板 ⇄ styles.css dark token 逐色交叉,一份不许漂', () => {
+  // [说明, TS 侧值, CSS token 名] —— 双主题时代各钉一侧、从不交叉的账,这里结清。
+  const PAIRS: ReadonlyArray<readonly [string, string, string]> = [
+    ['passing 球色 = 覆盖率带/图例点', CY_PALETTE.states.passing, '--state-pass'],
+    ['failing 球色 = 失败条', CY_PALETTE.states.failing, '--state-fail'],
+    ['has-tests-unrun 球色', CY_PALETTE.states['has-tests-unrun'], '--state-skip'],
+    ['untested 球色', CY_PALETTE.states.untested, '--state-none'],
+    ['AI unsure 黄(评审环/行条)', CY_PALETTE.review.unsure, '--state-unsure'],
+    ['AI error 红 = 类型错误色', CY_PALETTE.review.error, '--type-error'],
+    ['类型错误环色(THEME 侧同值)', THEME.typeError.color, '--type-error'],
+    ['画布地面 = --bg(theme.ts 注释自供的镜像)', CY_PALETTE.canvas, '--bg'],
+    ['普通边色', CY_PALETTE.edge.color, '--edge-line'],
+    ['环朱红', CY_PALETTE.edge.cycleColor, '--cycle-line'],
+    ['聚焦/accent 青', CY_PALETTE.accent, '--accent'],
+    ['节点标签 = 地面墨色', CY_PALETTE.label, '--ink']
+  ];
+
+  it.each(PAIRS)('%s', (_label, tsValue, token) => {
+    const cssValue = cssToken(token);
+    expect(cssValue, `styles.css 缺少 ${token}`).not.toBeNull();
+    expect(cssValue, `${token} 与 TS 侧漂移`).toBe(tsValue.toUpperCase());
+  });
+});
+
+describe('浅色主题删除钉(#5)', () => {
+  it('styles.css 不再存在 light token 块', () => {
+    expect(css).not.toContain('[data-theme="light"]');
   });
 });
 
@@ -108,13 +133,13 @@ describe('clusterIdealEdgeLength / clusterFcoseOverrides (2026-09-01 D1/D2)', ()
       target: () => ({ data: () => d2 })
     }) as unknown) as cytoscape.EdgeSingular;
 
-  it('簇内理想边长 = ballGap + 两端半径（共享 spacingGap 52 的降档，海报要团不要点阵）', () => {
+  it('簇内理想边长 = ballGap + 两端半径（共享 spacingGap 52 的降档,海报要团不要点阵）', () => {
     const r = diameterOf(1) / 2;
     expect(clusterIdealEdgeLength(edge(24, 24))).toBeCloseTo(THEME.layout.ballGap + 24, 9);
     expect(clusterIdealEdgeLength(edge(0, 0))).toBeCloseTo(THEME.layout.ballGap + 2 * r, 9); // 缺失夹最小球
   });
 
-  it('聚类覆盖只出三键（numIter 600 / gravity 1.2 / idealEdgeLength 函数），THEME.fcose 共享对象不被污染', () => {
+  it('聚类覆盖只出三键（numIter 600 / gravity 1.2 / idealEdgeLength 函数）,THEME.fcose 共享对象不被污染', () => {
     const before = { ...THEME.fcose };
     const o = clusterFcoseOverrides();
     expect(o.numIter).toBe(600);
@@ -148,29 +173,11 @@ describe('sizeAwareRepulsion — 大球间距二次裁定 (2026-08-31)', () => {
   });
 });
 
-describe('styles.css defines both theme blocks with the shell tokens', () => {
-  const css = readFileSync(new URL('../src/web/styles.css', import.meta.url), 'utf8');
-
-  it('declares [data-theme="dark"] and [data-theme="light"] token blocks', () => {
-    expect(css).toContain('[data-theme="dark"]');
-    expect(css).toContain('[data-theme="light"]');
-  });
-
-  it('each theme block carries the AI three-color row tokens', () => {
-    for (const key of THEME_KEYS) {
-      const start = css.indexOf(`[data-theme="${key}"]`);
-      expect(start, key).toBeGreaterThan(-1);
-      const next = css.indexOf('[data-theme=', start + 1);
-      const scope = css.slice(start, next === -1 ? undefined : next);
-      for (const token of ['--state-pass', '--state-fail', '--state-unsure', '--vpass-bg', '--vunsure-bg', '--verror-bg', '--type-error']) {
-        expect(scope.includes(token), `${key} ${token}`).toBe(true);
-      }
+describe('styles.css defines the dark theme block with the shell tokens', () => {
+  it('declares [data-theme="dark"] token block with the AI three-color row tokens', () => {
+    for (const token of ['--state-pass', '--state-fail', '--state-unsure', '--vpass-bg', '--vunsure-bg', '--verror-bg', '--type-error']) {
+      expect(cssToken(token), token).not.toBeNull();
     }
-  });
-
-  it('pins the unsure amber per theme (dark #FFD24D / light #B45309)', () => {
-    expect(css).toContain('--state-unsure: #FFD24D');
-    expect(css).toContain('--state-unsure: #B45309');
   });
 
   it('keeps the canvas mount id and the detail dock width contract (380px)', () => {

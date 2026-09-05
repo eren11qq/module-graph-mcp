@@ -48,7 +48,6 @@ function harness() {
     focusNode: (id: string) => viewCalls.push(`focus:${id}`),
     clearFocus: () => viewCalls.push('clearFocus'),
     resetView: () => {},
-    setTheme: () => {},
     cycleCount: () => 2,
     setEditScope: () => {},
     setEditVerification: () => {},

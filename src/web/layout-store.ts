@@ -10,7 +10,8 @@ import { CHROME } from './theme.js';
  *
  * The archive is keyed by GraphSnapshot.rootPath (one browser may host several
  * repos), versioned so a format change invalidates silently, and degrades to
- * memory-only under private mode / quota errors (same posture as mg-theme).
+ * memory-only under private mode / quota errors (the deleted mg-theme storage
+ * used to take the same posture; review #5, 2026-09-05).
  *
  * ADR 0003: 单一海报视图 = 单档存档 —— rootPath 即全部键（曾经的
  * rootPath + 视图模式分档随模块视图一起退役）。

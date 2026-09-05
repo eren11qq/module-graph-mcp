@@ -28,6 +28,12 @@
 * `frame-sink.ts` 三处手抄配对各删一行（guard → view → 派生不变，flashEvent 与聚焦面板读 model 的时序不受影响——fold 已在 view 入口完成）；`tests/graph-view.test.ts` 的 paired 配对替身删除（裸 view 直测，「调用即正确」在测试面同样成立）；红先钉三枚（applySnapshot/applyDelta/applyNodeUpdate 单独调用即落账 model）先行失败后转绿
 * `GraphModel` 对外 interface 不动（fold 仍是全图唯一实现，graph-model.test 直测保留），直接调用方收敛为 graph-view 一家；frame-sink.test 假身按新契约折账，派生值断言原样通过；纯 web 内部事，wire 字节与 evals 零变化；CONTEXT.md 新词条「调用即正确」、MODULE-DESIGN 三行同步
 
+### 重构 —— 架构评审第二轮（候选 #5「主题单源：删浅色 + 等值钉」，2026-09-05）
+
+* light 亮色工作台整体删除（用户拍板）：dashboard 定稿为单主题 dark 暗色仪器盘——`theme.ts` 的 `LIGHT` 色板、`CY_PALETTES` 双表、`ThemeKey`、「当前主题」全局（`activeTheme` / `setTheme` / `activeThemeKey`）与 `CHROME.themeStorageKey` / `defaultTheme` 全退役，`CY_PALETTE` 成唯一色板；页顶切换钮、`mg-theme` localStorage 记忆、`main.ts` 的 `setActiveTheme→view.setTheme→refreshDerived` 顺序舞一并消失（原全局参数泄漏问题的最便宜解：参数本身没了）
+* 双真源病根上等值钉：`tests/theme-palette.test.ts` 重写为解析 `styles.css` 的 `[data-theme="dark"]` token 块与 TS 侧逐色交叉断言（四状态色 / AI unsure / type-error / 画布地面 = --bg / 边色 / 环朱红 / accent / label 共 12 枚），改一侧忘另一侧即红——双主题时代「各钉一侧、从不交叉」的账结清；`[data-theme]` 外壳刻意保留：将来加回第二主题 = 色板 + CSS 块 + 切换钮三件套按钉补齐
+* `GraphView` 接口 15→14 方法（`setTheme` 删除，唯一 caller 是同批消失的切换钮）；`THEME.typeError` 双键压单键；`styles.css` 删 light token 块与 hljs 亮色覆盖（`connPulseSoft` keyframes 随之成孤儿删除）；纯 web 内部事，wire 字节与 evals 零变化（server 源 diff 为零）；CONTEXT.md 新词条「等值钉」、MODULE-DESIGN graph-view/theme 两行同步
+
 ### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
 
 * mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`

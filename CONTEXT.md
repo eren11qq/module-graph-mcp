@@ -138,3 +138,19 @@
   （frame-sink 三处 + 测试配对替身各抄一遍），现在住进 module 内部，
   render-before-fold 这类 bug 不可表达。`GraphModel` 的 fold 仍是全图
   唯一实现，但直接调用方只剩 graph-view 一家。
+
+## 2026-09-05 主题单源轮（架构评审候选 #5）
+
+- **等值钉（TS ⇄ CSS 逐色交叉断言）** —— 同一个视觉色在 `theme.ts`
+  （画布侧）与 `styles.css`（chrome 侧）各存一份字面量，双主题时代测试
+  各钉一侧、从不交叉，漂移只能靠肉眼在页面上撞见。现在
+  `tests/theme-palette.test.ts` 解析 `[data-theme="dark"]` token 块与
+  `CY_PALETTE` 逐色对账，改一侧忘另一侧即红——「两个可改点」变成
+  「一个可改点 + 一个报警器」。`[data-theme]` 外壳保留是刻意的：
+  将来加回第二主题 = 色板 + CSS 块 + 切换钮三件套，等值钉自动覆盖。
+- **删即收敛（参数泄漏的最便宜解）** —— 「当前主题」本是漏成 module 级
+  全局的一个参数：隐式消费者四个，切换必须按
+  `setActiveTheme→setTheme→refreshDerived` 的序调，错序=旧色板残影。
+  单主题化让这道参数整个消失——没有切换就没有顺序，`GraphView`
+  接口 15→14，测试不再做手动 reset 全局舞。参数化重构未发生，
+  因为参数没了好。
