@@ -524,8 +524,8 @@ describe('AI 评审环 data channel (code-review 2026-08-29)', () => {
 });
 
 describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)', () => {
-  // pkg holds 3 direct files (folds at THEME.collapse.minFiles = 3), solo
-  // holds 2 (stays), main.ts is root-level (never folds).
+  // Fixture 拓扑:pkg 三枚直挂文件、solo 两枚、main.ts 根层(目录折叠
+  // 已随 ADR 0002 退役,这里只作过滤/搜索的选取面)。
   function controlFixture(): GraphSnapshot {
     return snapshotWith(
       [

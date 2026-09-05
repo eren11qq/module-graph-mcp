@@ -29,8 +29,6 @@ export interface CyPalette {
     alpha: number;
     cycleColor: string;
     cycleAlpha: number;
-    /** ADR 0002 §7.1 模板位 v2：模块级连线（edge-module）专属色——与普通边、accent、cycle 朱红都可区分。 */
-    moduleColor: string;
   };
   label: string;
   nodeBorderW: number;
@@ -78,8 +76,7 @@ export const CY_PALETTE: CyPalette = {
     color: '#3D5378',
     alpha: 0.75,
     cycleColor: '#FF7A45',
-    cycleAlpha: 0.95,
-    moduleColor: '#E696C4'
+    cycleAlpha: 0.95
   },
   label: '#E7EEF9',
   nodeBorderW: 0,
@@ -182,13 +179,6 @@ export const THEME = {
   },
   canvas: {
     padding: 30
-  },
-  /**
-   * Ticket 11: directory collapse — a directory holding ≥ minFiles direct
-   * files folds into one directory-level ball while the toggle is on.
-   */
-  collapse: {
-    minFiles: 3
   },
   /**
    * 区域化海报(2026-08-29)compass geometry — graph-areas.ts 是唯一消费者:
@@ -414,10 +404,9 @@ function fcoseNodeRepulsion(node: cytoscape.NodeSingular): number {
 }
 
 /** Basename without extension — the ball label; hover tooltip carries the full relative path.
- *  A trailing slash (ticket 11 directory balls) is trimmed so the label is the dir name. */
+ *  （尾斜杠目录球分支随 ticket 11 目录折叠于 ADR 0002/0003 退役,#6 清扫。） */
 export function shortLabel(path: string): string {
-  const trimmed = path.endsWith('/') ? path.slice(0, -1) : path;
-  const base = trimmed.slice(trimmed.lastIndexOf('/') + 1);
+  const base = path.slice(path.lastIndexOf('/') + 1);
   const dot = base.lastIndexOf('.');
   return dot > 0 ? base.slice(0, dot) : base;
 }

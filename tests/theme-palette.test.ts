@@ -90,6 +90,16 @@ describe('浅色主题删除钉(#5)', () => {
   });
 });
 
+describe('死词汇清扫钉(#6,纯减法)', () => {
+  it('CyPalette.edge 只留实际被读的 4 键 —— moduleColor 随 ADR 0003 模块级边退役', () => {
+    expect(Object.keys(CY_PALETTE.edge).sort()).toEqual(['alpha', 'color', 'cycleAlpha', 'cycleColor']);
+  });
+
+  it('THEME 不再携带 collapse —— 目录折叠已随 ADR 0002 退役,唯一引用是过期注释', () => {
+    expect(THEME).not.toHaveProperty('collapse');
+  });
+});
+
 describe('MOTION — checking 脉冲与物理参数', () => {
   it('pulse period ≈1.2 Hz with a min<max overlay window', () => {
     expect(MOTION.checkingPulsePeriodMs).toBeGreaterThanOrEqual(780);

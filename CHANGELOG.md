@@ -34,6 +34,12 @@
 * 双真源病根上等值钉：`tests/theme-palette.test.ts` 重写为解析 `styles.css` 的 `[data-theme="dark"]` token 块与 TS 侧逐色交叉断言（四状态色 / AI unsure / type-error / 画布地面 = --bg / 边色 / 环朱红 / accent / label 共 12 枚），改一侧忘另一侧即红——双主题时代「各钉一侧、从不交叉」的账结清；`[data-theme]` 外壳刻意保留：将来加回第二主题 = 色板 + CSS 块 + 切换钮三件套按钉补齐
 * `GraphView` 接口 15→14 方法（`setTheme` 删除，唯一 caller 是同批消失的切换钮）；`THEME.typeError` 双键压单键；`styles.css` 删 light token 块与 hljs 亮色覆盖（`connPulseSoft` keyframes 随之成孤儿删除）；纯 web 内部事，wire 字节与 evals 零变化（server 源 diff 为零）；CONTEXT.md 新词条「等值钉」、MODULE-DESIGN graph-view/theme 两行同步
 
+### 重构 —— 架构评审第二轮（候选 #6「ADR 0003 死词汇清扫」，2026-09-05）
+
+* 纯减法（红先钉两枚先行失败后转绿）：`CyPalette.edge.moduleColor`（接口字段 + 色值，模块级边已随 ADR 0003 退役、零消费者）删除，`edge` 通道收窄到实际被读的 4 键；`THEME.collapse.minFiles`（目录折叠随 ADR 0002 退役）整块删除；`shortLabel` 尾斜杠分支（ticket 11 目录球的死输入类）删除——interface 收窄朝「实际被读」的一侧
+* 误导性过期注释两处就地正法（导航的 agent 曾会被它们引向已不存在的 folds 行为）：`tests/graph-filters.test.ts` 文件头「Ticket 11 seam 1: collapse」与 pipeline fixture 注、`tests/graph-view.test.ts` view-controls describe 的 folds 注，均改写为实情
+* 死键形状由新钉锁死（`Object.keys(CY_PALETTE.edge)` 全等 + `THEME` 无 `collapse`），回潮即红；对外行为零变化，wire 字节与 evals 不动
+
 ### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
 
 * mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`

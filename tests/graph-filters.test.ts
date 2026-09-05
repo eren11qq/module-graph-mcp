@@ -3,9 +3,9 @@ import { applyViewState, deriveScopeMarks, isUntested, searchMatches } from '../
 import type { EditScopeDecl, Edge, ModuleNode, TestState } from '../src/shared/types.js';
 
 /**
- * Ticket 11 seam 1: collapse — pure function from (nodes, edges, collapsed
- * directory set) to the render list, aggregating same-directory files into
- * one directory-level node.
+ * View-control pure functions on (nodes, edges, ViewState) → render list:
+ * 只看未测 / 搜索 / 图例状态过滤 / ADR 0002 改动标记派生。
+ * （曾经的目录折叠 seam 1 已随 ADR 0002 退役,#6 清扫过期注释。）
  */
 
 function file(id: string, testState: ModuleNode['testState'] = 'untested'): ModuleNode {
@@ -43,8 +43,8 @@ describe('searchMatches — query → matched ids (ticket 11 seam 2)', () => {
 });
 
 describe('applyViewState — 过滤 → 搜索 pipeline (ticket 11)', () => {
-  // Threshold is THEME.collapse.minFiles = 3: pkg has 3 direct files (folds),
-  // solo has 2 (stays), main.ts is root-level (never folds).
+  // Fixture 拓扑:pkg 三枚直挂文件、solo 两枚、main.ts 根层——只为覆盖
+  // 过滤/搜索的选取面(目录折叠已随 ADR 0002 退役)。
   const nodes = [
     file('main.ts', 'passing'),
     file('pkg/a.ts', 'untested'),
