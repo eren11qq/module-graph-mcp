@@ -1,19 +1,51 @@
 <div align="center">
 
-  <h3>实时模块依赖图 —— 给你的编码 Agent 一部「显微镜」</h3>
+# module-graph-mcp
 
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b0e8ff?style=flat-square&labelColor=0a0e14" alt="license"></a>
-  <a href="https://github.com/eren11qq/module-graph-mcp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eren11qq/module-graph-mcp/ci.yml?style=flat-square&labelColor=0a0e14&label=CI" alt="CI"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-3c873a?style=flat-square&labelColor=0a0e14" alt="node"></a>
+### 实时模块依赖图 —— 给你的编码 Agent 一部「显微镜」
+
+**浏览器实时图 · stdio MCP 双通道 · 14 个工具 · AI 动过哪里一眼可见 · 100% 本地**
+
+<br>
+
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b0e8ff?style=flat-square&labelColor=0a0e14" alt="license"></a>
+<a href="https://github.com/eren11qq/module-graph-mcp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eren11qq/module-graph-mcp/ci.yml?style=flat-square&labelColor=0a0e14&label=CI" alt="CI"></a>
+<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-3c873a?style=flat-square&labelColor=0a0e14" alt="node"></a>
+<a href="#quick-start"><img src="https://img.shields.io/badge/Windows-supported-4cc2ff?style=flat-square&labelColor=0a0e14" alt="Windows"></a>
+<a href="#quick-start"><img src="https://img.shields.io/badge/macOS-supported-4cc2ff?style=flat-square&labelColor=0a0e14" alt="macOS"></a>
+<a href="#quick-start"><img src="https://img.shields.io/badge/Linux-supported-4cc2ff?style=flat-square&labelColor=0a0e14" alt="Linux"></a>
+
+<br>
+
+<a href="#接入-mcp-客户端"><img src="https://img.shields.io/badge/MCP-stdio%20JSON--RPC-b389f0?style=flat-square&labelColor=0a0e14" alt="MCP stdio"></a>
+<a href="#features"><img src="https://img.shields.io/badge/tools-14%20个%20MCP%20工具-b389f0?style=flat-square&labelColor=0a0e14" alt="14 tools"></a>
+<a href="#配置参考"><img src="https://img.shields.io/badge/privacy-仅绑定%20127.0.0.1%20·%20零远程调用-2dd4bf?style=flat-square&labelColor=0a0e14" alt="local only"></a>
+<a href="#配置参考"><img src="https://img.shields.io/badge/safety-只读模式%20·%20审计错误-2dd4bf?style=flat-square&labelColor=0a0e14" alt="read-only mode"></a>
+<a href="#acknowledgements"><img src="https://img.shields.io/badge/a11y-Okabe--Ito%20色盲安全配色-2dd4bf?style=flat-square&labelColor=0a0e14" alt="colorblind safe"></a>
 
 </div>
+
+> [!IMPORTANT]
+> 不要从 MCP 市场 / 插件市场安装——那里的安装命令往往过时。请跟随下方的 [Quick Start](#quick-start)。
+
+## Contents
+
+- [30 秒理解](#30-秒理解)
+- [How It Works](#how-it-works)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [接入 MCP 客户端](#接入-mcp-客户端)
+- [配置参考](#配置参考)
+- [设计文档与决策记录](#设计文档与决策记录)
+- [MVP 边界（明确不做）](#mvp-边界明确不做)
+- [开发](#开发)
+- [Acknowledgements](#acknowledgements)
+
+## 30 秒理解
 
 * **一个 Node 进程，双通道服务**：既是**本地 dashboard**（浏览器里的实时模块依赖图），也是 **stdio MCP server**（编码 agent 直接查询图与源码）。
 * 文件增删改经 chokidar 监听 → 增量重分析 → 测试状态 / 类型错误 / AI 评审结论通过 WebSocket 实时推帧，页面**免刷新**。
 * Agent 侧提供 **14 个 MCP 工具**：拉全图、查爆炸半径、声明改动边界、提交逐行评审——AI 动过哪里、查过哪里，人在图上**一眼可见**。
-
-> [!IMPORTANT]
-> 不要从 MCP 市场 / 插件市场安装——那里的安装命令往往过时。请跟随下方的 [Quick Start](#quick-start)。
 
 ## How It Works
 
@@ -24,7 +56,7 @@
 ## Features
 
 <details>
-<summary>Dashboard 能力</summary>
+<summary><b>Dashboard 能力</b></summary>
 
 * **依赖图渲染**：文件级小球 + 依赖箭头；球色 = 测试状态（Okabe-Ito 色盲安全四色）；红环 = 类型错误；红色虚线弧 = 循环依赖；球大小随依赖度数增长
 * **节点详情**：点击锁球 → 测试状态 / 覆盖它的测试文件 / 类型错误列表（含行号）/ 入出边跳转 / 语法高亮源码（错误行标记）
@@ -32,14 +64,14 @@
 * **排列双模式**（ADR 0004）：顶栏「聚类 / 区域」开关——聚类 = Louvain 社区 + 黄金角螺旋的确定性海报；区域 = 目录区域 + 罗盘海报；两模式统一 `separateAllBalls` 硬保证任意两球边到边 ≥32px
 * **AI 检查可视化**：`begin_review` → 球边缘呼吸脉冲 +「检查中」；`update_review` 分批推送 → 源码行实时逐行上色；`end_review` → 三色高亮（绿 confident / 黄 unsure / 红 error）+ 球外圈评审环；`get_module_details` 每次读取让对应球紫色脉冲 3 秒、ticker 闪「AI 正在查看 …」
 * **探索可见 / 多会话一页**：同仓库新会话不再弹第二个浏览器窗口，其 AI 活动自动转发到主 dashboard 页
-* **双主题**：暗色仪器盘（默认）/ 亮色工作台，顶栏切换、localStorage 记忆
+* **单主题定稿**：dark 暗色仪器盘——亮色工作台已经架构评审退役（2026-09），色板单源 `CY_PALETTE`，TS ⇄ CSS 等值钉防漂移
 * **图例**：灰=未测、蓝=有测试未跑、绿=通过、红(橙)=失败；评审环行（绿/黄/红），点击可隐藏 / 显示已评审节点
 * **健康报告页**：`GET /api/report`——固定整数权重表打分、items 风险降序、中文简报 top 5；支持 `?focus=<module-id>` 深链高亮（服务端拼装 HTML，无脚本无新依赖）
 
 </details>
 
 <details>
-<summary>MCP 工具（14 个）</summary>
+<summary><b>MCP 工具（14 个）</b></summary>
 
 | 工具 | 说明 |
 |---|---|
@@ -66,7 +98,9 @@
 
 **前置条件**：Node ≥ 20、git。
 
-**安装**——一条命令（克隆到 `~/.module-graph-mcp`、构建、把 `module-graph` 命令放进 PATH）：
+### 1. 安装
+
+一条命令（克隆到 `~/.module-graph-mcp`、构建、把 `module-graph` 命令放进 PATH）：
 
 ```bash
 # macOS / Linux
@@ -78,7 +112,9 @@ curl -fsSL https://raw.githubusercontent.com/eren11qq/module-graph-mcp/main/inst
 irm https://raw.githubusercontent.com/eren11qq/module-graph-mcp/main/install.ps1 | iex
 ```
 
-**验证安装**——直接跑仓库自带的 demo 项目（`--open` 启动即弹页）：
+### 2. 验证安装
+
+直接跑仓库自带的 demo 项目（`--open` 启动即弹页）：
 
 ```bash
 module-graph --root ~/.module-graph-mcp/test-fixtures/sample-app --open
@@ -86,10 +122,12 @@ module-graph --root ~/.module-graph-mcp/test-fixtures/sample-app --open
 
 看到浏览器弹出小球连线图即安装成功。升级 = 重跑同一条安装命令。
 
-**接入你的 MCP 客户端**见下一节；想监视自己的项目，把 `--root` 指向该目录即可。
+### 3. 接入与监视
+
+**接入你的 MCP 客户端**见 [接入 MCP 客户端](#接入-mcp-客户端)；想监视自己的项目，把 `--root` 指向该目录即可。
 
 <details>
-<summary>手动安装（开发 / 贡献者，从源码）</summary>
+<summary><b>手动安装（开发 / 贡献者，从源码）</b></summary>
 
 ```bash
 git clone https://github.com/eren11qq/module-graph-mcp.git
@@ -196,4 +234,4 @@ npm run evals   # evals probe 基准（不变量断言 + maxMs/maxBytes 硬门�
 * 爆炸半径与变更证据链方法论移植自 **GitNexus**
 * 图渲染基于 **cytoscape.js** + **cytoscape-fcose**（力导向布局）与 **Louvain** 社区发现
 * 测试状态配色采用 **Okabe-Ito** 色盲安全调色板
-* README 结构与工程实践参考 **[Serena](https://github.com/oraios/serena)**
+* README 结构与工程实践参考 **[Serena](https://github.com/oraios/serena)**；页面排版版式（居中式徽章矩阵 / Contents 目录 / 编号上手）参考 **[codegraph](https://github.com/colbymchenry/codegraph)**
