@@ -45,35 +45,9 @@ function mountView(opts?: {
     tooltipEl: document.createElement('div'),
     ...opts
   });
-  // candidate #5: graph-view 的原始终态读 model——测试侧走配对替身,
-  // 与 frame-sink 的次序一致:先 model.foldX,后 view.applyX。
-  const paired: GraphView = {
-    setSnapshot: (s) => {
-      model.foldSnapshot(s);
-      view.setSnapshot(s);
-    },
-    applyDelta: (d) => {
-      model.foldDelta(d);
-      view.applyDelta(d);
-    },
-    applyNodeUpdate: (n) => {
-      model.foldNodeUpdate(n);
-      view.applyNodeUpdate(n);
-    },
-    setViewState: (p) => view.setViewState(p),
-    focusNode: (id) => view.focusNode(id),
-    pulseViewing: (id) => view.pulseViewing(id),
-    setEditScope: (s) => view.setEditScope(s),
-    setEditVerification: (v) => view.setEditVerification(v),
-    clearFocus: () => view.clearFocus(),
-    resetView: () => view.resetView(),
-    resetLayout: () => view.resetLayout(),
-    getLayoutMode: () => view.getLayoutMode(),
-    setLayoutMode: (m) => view.setLayoutMode(m),
-    setTheme: (k) => view.setTheme(k),
-    cycleCount: () => view.cycleCount()
-  };
-  return { onFocusChange, model, view: paired, cy: h.instances[0]! };
+  // 候选 #4 (2026-09-05): applyX 已在注入的 model 上自己 fold——配对替身
+  // 死亡,测试直接用裸 view,「调用即正确」在测试面同样成立。
+  return { onFocusChange, model, view, cy: h.instances[0]! };
 }
 
 vi.mock('cytoscape', () => {
@@ -304,6 +278,40 @@ function snapshotWith(nodes: ModuleNode[], edges: Edge[] = []): GraphSnapshot {
   return { rootPath: '/proj', generatedAt: 1, nodes, edges };
 }
 
+describe('graph-view fold-then-apply (候选 #4, 2026-09-05)', () => {
+  it('applySnapshot 单独调用即落账 model——caller 不再 fold', () => {
+    const { model, view } = mountView();
+    view.applySnapshot(
+      snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }])
+    );
+    expect(model.nodes()).toHaveLength(2);
+    expect(model.edges()).toHaveLength(1);
+    expect(model.rootPath()).toBe('/proj');
+  });
+
+  it('applyDelta 单独调用即把 model 推到目标态', () => {
+    const { model, view } = mountView();
+    view.applySnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
+    view.applyDelta({
+      addedNodes: [node('c.ts')],
+      removedNodeIds: ['a.ts'],
+      addedEdges: [{ from: 'b.ts', to: 'c.ts' }],
+      removedEdges: []
+    });
+    expect(model.node('a.ts')).toBeUndefined();
+    expect(model.node('c.ts')?.testState).toBe('untested');
+    expect(model.edges()).toEqual([{ from: 'b.ts', to: 'c.ts' }]);
+  });
+
+  it('applyNodeUpdate 单独调用即补钉 model', () => {
+    const { model, view } = mountView();
+    view.applySnapshot(snapshotWith([node('a.ts')]));
+    const updated = node('a.ts', 'passing');
+    view.applyNodeUpdate(updated);
+    expect(model.node('a.ts')).toBe(updated);
+  });
+});
+
 describe('graph-view findNode stays in sync with deltas (P1-1)', () => {
   let onFocusChange: ReturnType<typeof vi.fn>;
   let view: ReturnType<typeof createGraphView>;
@@ -319,7 +327,7 @@ describe('graph-view findNode stays in sync with deltas (P1-1)', () => {
 
   it('resolves taps on nodes from the initial snapshot', () => {
     const a = node('a.ts');
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
     tap('a.ts');
     expect(onFocusChange).toHaveBeenLastCalledWith(a);
   });
@@ -327,7 +335,7 @@ describe('graph-view findNode stays in sync with deltas (P1-1)', () => {
   it('opens the detail panel for a node that arrived via applyDelta (ticket acceptance)', () => {
     const a = node('a.ts');
     const b = node('b.ts');
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
     view.applyDelta({ addedNodes: [b], removedNodeIds: [], addedEdges: [], removedEdges: [] });
 
     tap('b.ts');
@@ -336,7 +344,7 @@ describe('graph-view findNode stays in sync with deltas (P1-1)', () => {
 
   it('reflects applyNodeUpdate patches on the next tap', () => {
     const a = node('a.ts');
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
     const updated = node('a.ts', 'passing');
     view.applyNodeUpdate(updated);
 
@@ -347,7 +355,7 @@ describe('graph-view findNode stays in sync with deltas (P1-1)', () => {
   it('clears focus when the locked node is removed by a delta', () => {
     const a = node('a.ts');
     const b = node('b.ts');
-    view.setSnapshot(snapshotWith([a, b]));
+    view.applySnapshot(snapshotWith([a, b]));
     tap('a.ts');
     onFocusChange.mockClear();
 
@@ -380,14 +388,14 @@ describe('type-error badge channel (P2-1, ticket 07)', () => {
         { line: 2, code: 'TS2304', message: 'y' }
       ]
     };
-    view.setSnapshot(snapshotWith([bad, node('ok.ts')]));
+    view.applySnapshot(snapshotWith([bad, node('ok.ts')]));
     expect(dataOf('bad.ts', 'typeErrorCount')).toBe(2);
     expect(dataOf('ok.ts', 'typeErrorCount')).toBe(0);
   });
 
   it('applyNodeUpdate clears the count when errors are fixed', () => {
     const bad: ModuleNode = { ...node('bad.ts'), typeErrors: [{ line: 1, code: 'TS2322', message: 'x' }] };
-    view.setSnapshot(snapshotWith([bad]));
+    view.applySnapshot(snapshotWith([bad]));
     view.applyNodeUpdate({ ...bad, typeErrors: [] });
     expect(dataOf('bad.ts', 'typeErrorCount')).toBe(0);
   });
@@ -415,7 +423,7 @@ describe('AI 检查 checking 类同步 (ticket 12)', () => {
 
   it('applyNodeUpdate adds `checking` while the agent reviews, removes it when done', () => {
     const a = node('a.ts');
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
 
     view.applyNodeUpdate({ ...a, aiReview: { status: 'checking', verdicts: [] } });
     expect(ele('a.ts').hasClass('checking')).toBe(true);
@@ -429,7 +437,7 @@ describe('AI 检查 checking 类同步 (ticket 12)', () => {
 
   it('a snapshot carrying aiReview=checking mounts the ball already pulsing', () => {
     const a: ModuleNode = { ...node('a.ts'), aiReview: { status: 'checking', verdicts: [] } };
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
     expect(ele('a.ts').hasClass('checking')).toBe(true);
   });
 
@@ -438,7 +446,7 @@ describe('AI 检查 checking 类同步 (ticket 12)', () => {
       expect.arrayContaining([expect.objectContaining({ selector: 'node.checking' })])
     );
 
-    view.setSnapshot(
+    view.applySnapshot(
       snapshotWith(
         [node('a.ts'), node('b.ts')],
         [
@@ -480,14 +488,14 @@ describe('AI 评审环 data channel (code-review 2026-08-29)', () => {
       }
     };
     const ok: ModuleNode = { ...node('ok.ts'), aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } };
-    view.setSnapshot(snapshotWith([err, ok]));
+    view.applySnapshot(snapshotWith([err, ok]));
     expect(dataOf('err.ts', 'reviewVerdict')).toBe('error');
     expect(dataOf('ok.ts', 'reviewVerdict')).toBe('confident');
   });
 
   it('applyNodeUpdate clears the ring while checking and re-colors once done', () => {
     const a = node('a.ts');
-    view.setSnapshot(snapshotWith([a]));
+    view.applySnapshot(snapshotWith([a]));
     view.applyNodeUpdate({ ...a, aiReview: { status: 'checking', verdicts: [] } });
     expect(dataOf('a.ts', 'reviewVerdict')).toBe('');
     view.applyNodeUpdate({
@@ -555,7 +563,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   const dataOf = (id: string, key: string): unknown => ele(id).data(key);
 
   it('只看未测 hides non-untested balls and the edges that touch them', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     view.setViewState({ untestedOnly: true });
     expect(visible('pkg/a.ts')).toBe(true);
     expect(visible('pkg/b.ts')).toBe(true);
@@ -566,7 +574,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('delta keeps 只看未测 honest: an untested newcomer renders, a passing one does not', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     view.setViewState({ untestedOnly: true });
     view.applyDelta({
       addedNodes: [node('pkg/new.ts')],
@@ -580,14 +588,14 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('node_update out of 未测 removes the ball while 只看未测 is on', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     view.setViewState({ untestedOnly: true });
     view.applyNodeUpdate(node('pkg/a.ts', 'passing'));
     expect(visible('pkg/a.ts')).toBe(false);
   });
 
   it('hideReviewed removes reviewed balls (and their edges) until toggled off', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     const reviewed: ModuleNode = { ...node('main.ts'), aiReview: { status: 'done', verdicts: [], reviewedAt: 1 } };
     const checking: ModuleNode = { ...node('pkg/c.ts', 'failing'), aiReview: { status: 'checking', verdicts: [] } };
     view.applyNodeUpdate(reviewed);
@@ -606,7 +614,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('search shows only matching balls (case-insensitive); clearing restores the graph', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     view.setViewState({ query: 'PKG/B' });
     expect(visible('pkg/b.ts')).toBe(true);
     expect(visible('pkg/a.ts')).toBe(false);
@@ -617,7 +625,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('filtering away the locked node clears the focus lock', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     tap('solo/e.ts');
     expect(onFocusChange).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'solo/e.ts' }));
     view.setViewState({ untestedOnly: true });
@@ -625,7 +633,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('keeps the lock visuals when a re-render keeps the locked ball visible', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     tap('pkg/a.ts');
     view.setViewState({ query: 'pkg/a' });
     expect(visible('pkg/a.ts')).toBe(true);
@@ -633,7 +641,7 @@ describe('view controls: 只看未测 / 搜索 / 图例过滤 (ticket 11 seam 4)
   });
 
   it('focusNode ignores a ball hidden by the active filter; visible balls still jump', () => {
-    view.setSnapshot(controlFixture());
+    view.applySnapshot(controlFixture());
     view.setViewState({ untestedOnly: true });
     onFocusChange.mockClear();
     view.focusNode('main.ts'); // passing → hidden by the filter
@@ -694,7 +702,7 @@ describe('区域化海报 wiring (2026-08-29)', () => {
     (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
 
   it('mounts a plate per non-empty region, captioned and classed', () => {
-    view.setSnapshot(regionFixture());
+    view.applySnapshot(regionFixture());
     expect(ele('plate:web').nonempty()).toBe(true);
     expect(ele('plate:web').hasClass('region-plate')).toBe(true);
     expect(ele('plate:web').data('label')).toBe('WEB · 2');
@@ -704,21 +712,21 @@ describe('区域化海报 wiring (2026-08-29)', () => {
   });
 
   it('marks cross-region edges edge-cross, leaves intra-region edges plain', () => {
-    view.setSnapshot(regionFixture());
+    view.applySnapshot(regionFixture());
     expect(ele('src/web/main.ts->src/shared/types.ts').hasClass('edge-cross')).toBe(true);
     expect(ele('src/server/http.ts->src/web/util.ts').hasClass('edge-cross')).toBe(true);
     expect(ele('src/web/main.ts->src/web/util.ts').hasClass('edge-cross')).toBe(false);
   });
 
   it('shrinks tests-band balls one notch and leaves the rest full size', () => {
-    view.setSnapshot(regionFixture());
+    view.applySnapshot(regionFixture());
     expect(ele('tests/main.test.ts').data('diameter')).toBeCloseTo(diameterOf(1) * 0.85, 6);
     // src/web/main.ts: 2 out + 1 in.
     expect(ele('src/web/main.ts').data('diameter')).toBe(diameterOf(3));
   });
 
   it('a delta that connects the last orphan retires its plate and rescales the ball', () => {
-    view.setSnapshot(regionFixture());
+    view.applySnapshot(regionFixture());
     expect(ele('plate:orphan').nonempty()).toBe(true);
 
     view.applyDelta({
@@ -736,7 +744,7 @@ describe('区域化海报 wiring (2026-08-29)', () => {
   });
 
   it('installs the plate and edge-cross stylesheet rules', () => {
-    view.setSnapshot(regionFixture());
+    view.applySnapshot(regionFixture());
     expect(h.styles[0]).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ selector: '.region-plate' }),
@@ -799,7 +807,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
   it('a snapshot restores archived positions into the fresh elements', () => {
     const store = makeStore({ 'a.ts': { x: 111, y: 222 } });
     const { view, cy } = mountView({ store });
-    view.setSnapshot(strayEdge(node('a.ts'), node('b.ts')));
+    view.applySnapshot(strayEdge(node('a.ts'), node('b.ts')));
     expect(posOf(cy, 'a.ts')).toEqual({ x: 111, y: 222 });
     // No archive entry → no preset position (fake default), fcose owns it.
     expect(posOf(cy, 'b.ts')).toEqual({ x: 0, y: 0 });
@@ -808,7 +816,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
   it('applyLayout archives the settled layout under the snapshot root', () => {
     const store = makeStore();
     const { view } = mountView({ store });
-    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
+    view.applySnapshot(snapshotWith([node('a.ts'), node('b.ts')]));
     expect(store.save).toHaveBeenCalledTimes(1);
     const [root, positions] = store.save.mock.calls[0] as [
       string,
@@ -821,7 +829,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
   it('drag-free persists the drop point (拖放即保存)', () => {
     const store = makeStore();
     const { view, cy } = mountView({ store });
-    view.setSnapshot(snapshotWith([node('a.ts')]));
+    view.applySnapshot(snapshotWith([node('a.ts')]));
     cy.__fire('dragfree|node', { target: { id: () => 'a.ts', position: () => ({ x: 50, y: 60 }) } });
     expect(store.update).toHaveBeenCalledWith('/proj', 'a.ts', { x: 50, y: 60 });
   });
@@ -831,7 +839,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
     const { view, cy } = mountView({ store });
     // c keeps a.ts connected while the passing ball is hidden, so a.ts stays
     // clear of the orphan dock on the filtered re-render.
-    view.setSnapshot(
+    view.applySnapshot(
       snapshotWith(
         [node('a.ts'), node('b.ts', 'passing'), node('c.ts')],
         [
@@ -851,7 +859,7 @@ describe('layout persistence (Code-review 2026-08-29)', () => {
   it('resetLayout clears the archive and re-solves from scratch', () => {
     const store = makeStore({ 'a.ts': { x: 111, y: 222 } });
     const { view, cy } = mountView({ store });
-    view.setSnapshot(strayEdge(node('a.ts'), node('b.ts')));
+    view.applySnapshot(strayEdge(node('a.ts'), node('b.ts')));
     expect(posOf(cy, 'a.ts')).toEqual({ x: 111, y: 222 });
     view.resetLayout();
     expect(store.clear).toHaveBeenCalledWith('/proj');
@@ -880,7 +888,7 @@ describe('固定布局力 (2026-08-30 用户裁定: 四力不可调,滑杆通道
       setMode: () => {}
     };
     const { view } = mountView({ store });
-    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
+    view.applySnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
     view.resetLayout();
     expect(lastLayout()).toEqual(
       expect.objectContaining({
@@ -934,7 +942,7 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
   function runSeedScenario(): { x: number; y: number } {
     const store = makeStore({ 'a.ts': { x: 100, y: 100 } });
     const { view, cy } = mountView({ store });
-    view.setSnapshot(
+    view.applySnapshot(
       snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }])
     );
     view.applyDelta({
@@ -959,7 +967,7 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
 
   it('brand-new balls with no EXISTING neighbor get no seed (fcose owns them)', () => {
     const { view, cy } = mountView({ store: makeStore() });
-    view.setSnapshot(snapshotWith([node('a.ts')]));
+    view.applySnapshot(snapshotWith([node('a.ts')]));
     view.applyDelta({
       addedNodes: [node('c.ts'), node('d.ts')],
       removedNodeIds: [],
@@ -980,7 +988,7 @@ describe('新球种子落点 (Code-review 2026-08-29)', () => {
   it('the archive beats the seed for a re-entering ball', () => {
     const store = makeStore({ 'a.ts': { x: 100, y: 100 } });
     const { view, cy } = mountView({ store });
-    view.setSnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
+    view.applySnapshot(snapshotWith([node('a.ts'), node('b.ts')], [{ from: 'a.ts', to: 'b.ts' }]));
     // The snapshot's wholesale save only keeps a/b — re-add the re-entering
     // ball's entry afterwards (it stands in for an archive spot that outlived
     // the removal, e.g. a watcher flicker that netted out before a save).
@@ -1053,7 +1061,7 @@ describe('聚类排列模式接线 (ADR 0004)', () => {
   it('聚类求解喂的是 D1/D2 覆盖（numIter 600 / gravity 1.2 / clusterIdealEdgeLength）', () => {
     const store = makeStore({}, 'cluster');
     const { view } = mountView({ store });
-    view.setSnapshot(clusterFixture());
+    view.applySnapshot(clusterFixture());
     const opts = h.layouts[h.layouts.length - 1] as Record<string, unknown>;
     expect(opts).toEqual(
       expect.objectContaining({
@@ -1072,7 +1080,7 @@ describe('聚类排列模式接线 (ADR 0004)', () => {
     const store = makeStore({}, 'cluster');
     const { view } = mountView({ store, onLayoutModeChange: onMode });
     expect(view.getLayoutMode()).toBe('cluster'); // 快照前默认（2026-09-01 R2 翻转）
-    view.setSnapshot(clusterFixture());
+    view.applySnapshot(clusterFixture());
     expect(view.getLayoutMode()).toBe('cluster');
     expect(onMode).toHaveBeenLastCalledWith('cluster');
     expect(store.getMode).toHaveBeenCalledWith('/proj');
@@ -1081,7 +1089,7 @@ describe('聚类排列模式接线 (ADR 0004)', () => {
   it('cluster render: no region plates, birth-point positions, archive untouched for solving', () => {
     const store = makeStore({ 'src/web/main.ts': { x: 111, y: 222 } }, 'cluster');
     const { view, cy } = mountView({ store });
-    view.setSnapshot(clusterFixture());
+    view.applySnapshot(clusterFixture());
     // 区域模式会挂 plate:*——聚类通道整体跳过罗盘与题注。
     expect(ele(cy, 'plate:web').nonempty()).toBe(false);
     expect(ele(cy, 'plate:server').nonempty()).toBe(false);
@@ -1098,7 +1106,7 @@ describe('聚类排列模式接线 (ADR 0004)', () => {
     const onMode = vi.fn();
     const store = makeStore({}, 'cluster');
     const { view } = mountView({ store, onLayoutModeChange: onMode });
-    view.setSnapshot(clusterFixture());
+    view.applySnapshot(clusterFixture());
     onMode.mockClear();
     view.setLayoutMode('cluster'); // 同值 → 不播报、不重渲
     expect(onMode).not.toHaveBeenCalled();
@@ -1114,7 +1122,7 @@ describe('聚类排列模式接线 (ADR 0004)', () => {
   it('back in regions mode the archive written by cluster solves replays (D5 互为种子)', () => {
     const store = makeStore({}, 'cluster');
     const { view, cy } = mountView({ store });
-    view.setSnapshot(clusterFixture());
+    view.applySnapshot(clusterFixture());
     const clusterPos = { ...ele(cy, 'src/web/main.ts').position() };
     view.setLayoutMode('regions');
     // 存档里是聚类落点（无 physics 基线 = cy 位置原样入档），区域回放拿回的
@@ -1150,14 +1158,14 @@ describe('标签节流 (2026-09-01 D5)', () => {
 
   it('小图（≤ viewportMax 球）全开：每颗带 .labeled', () => {
     const { view, cy } = mountView();
-    view.setSnapshot(starFixture(4));
+    view.applySnapshot(starFixture(4));
     const ids = ['hub.ts', ...Array.from({ length: 4 }, (_, i) => `l0${i}.ts`)];
     expect(labelSet(cy, ids).length).toBe(5);
   });
 
   it('默认档 = 度数前 hubCount，平票按 id 升序（确定性可复算）', () => {
     const { view, cy } = mountView();
-    view.setSnapshot(starFixture(40)); // 41 球 > viewportMax 40
+    view.applySnapshot(starFixture(40)); // 41 球 > viewportMax 40
     const leaves = Array.from({ length: 40 }, (_, i) => `l${String(i).padStart(2, '0')}.ts`);
     const labeled = labelSet(cy as unknown as FakeCy, ['hub.ts', ...leaves]);
     expect(labeled.length).toBe(THEME.labels.hubCount);
@@ -1169,7 +1177,7 @@ describe('标签节流 (2026-09-01 D5)', () => {
 
   it('放大只重判视口：罩住一颗球时全开=只有它', () => {
     const { view, cy } = mountView();
-    view.setSnapshot(starFixture(40)); // >40 球默认档只有 24 个标签
+    view.applySnapshot(starFixture(40)); // >40 球默认档只有 24 个标签
     const c = cy as unknown as CyWithView;
     const p = (
       cy as unknown as { getElementById(id: string): { position(): { x: number; y: number } } }
@@ -1184,7 +1192,7 @@ describe('标签节流 (2026-09-01 D5)', () => {
 
   it('hub 集在结构变化时重算：applyDelta 新球以最小 id 挤掉末位 hub', () => {
     const { view, cy } = mountView();
-    view.setSnapshot(starFixture(40));
+    view.applySnapshot(starFixture(40));
     view.applyDelta({
       addedNodes: [node('AAA.ts')],
       removedNodeIds: [],
@@ -1252,7 +1260,7 @@ describe('ADR 0002 §7.2 改动标记: 三通道 + 新范围=新基线', () => {
     (cy as unknown as { getElementById(id: string): EleHandle }).getElementById(id);
 
   it('改动标记: 范围紫环 / 已改紫 / 越界红角标（三条独立 class 通道）', () => {
-    view.setSnapshot(markerFixture());
+    view.applySnapshot(markerFixture());
     view.setEditScope({ modules: ['mcp-service'], files: ['package.json'] });
     expect(ele('src/server/mcp.ts').hasClass('in-scope')).toBe(true);
     expect(ele('src/server/index.ts').hasClass('in-scope')).toBe(true);
@@ -1273,7 +1281,7 @@ describe('ADR 0002 §7.2 改动标记: 三通道 + 新范围=新基线', () => {
   });
 
   it('新范围 = 新基线: setEditScope 清掉已改/越界标记', () => {
-    view.setSnapshot(markerFixture());
+    view.applySnapshot(markerFixture());
     view.setEditScope({ modules: ['mcp-service'], files: [] });
     view.setEditVerification({ edited: ['src/server/mcp.ts'], outOfScope: ['src/web/main.ts'], unreported: [] });
     expect(ele('src/server/mcp.ts').hasClass('edited')).toBe(true);

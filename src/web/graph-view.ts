@@ -27,9 +27,10 @@ cytoscape.use(fcose);
 export interface GraphViewOptions {
   /**
    * 唯一图状态源 (candidate #5, 2026-09-03): view 不再自持第二份
-   * node/edge 副本——setSnapshot / applyDelta / applyNodeUpdate 只是
-   * 「重渲染信号 + DOM patch 提示」,原始终态一律从 model 读。
-   * 调用次序与 frame-sink 一致:先 model.foldX,后 view.applyX。
+   * node/edge 副本,原始终态一律从 model 读。
+   * 候选 #4 (2026-09-05): applyX 在注入的 model 上自己 fold 本帧再渲染
+   * (fold-then-apply)——「先 fold 后 apply」的配对序从 caller 的脑子与
+   * 注释进 module 内部,调用即正确。
    */
   model: GraphModel;
   /** Locked focus changed (null = nothing locked); drives the detail panel. */
@@ -51,10 +52,11 @@ export interface GraphViewOptions {
 }
 
 export interface GraphView {
-  setSnapshot(snapshot: GraphSnapshot): void;
-  /** Ticket 05: apply one watcher window's net delta in place (no full re-render). */
+  /** 候选 #4: 完整调用——先 foldSnapshot 进 model,再全量重渲。 */
+  applySnapshot(snapshot: GraphSnapshot): void;
+  /** Ticket 05: 完整调用——先 foldDelta 进 model,再就地 patch (无全量重渲)。 */
   applyDelta(delta: GraphDelta): void;
-  /** Ticket 06/07/08/12: single-node state patch (testState / typeErrors / aiReview / …). */
+  /** Ticket 06/07/08/12: 完整调用——先 foldNodeUpdate 进 model,再单球 DOM patch。 */
   applyNodeUpdate(node: ModuleNode): void;
   /** Ticket 11+theme view controls: 只看未测 / search / legend-hidden states. */
   setViewState(patch: Partial<ViewState>): void;
@@ -122,7 +124,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   const physics: Physics | null = opts.physics ? createPhysics(cy) : null;
 
   // 布局存档 (Code-review 2026-08-29): 位置的唯一权威 = 上一次稳定布局。
-  // 存档读写都走 layout-store;currentRoot 随 snapshot 到来(setSnapshot 现在
+  // 存档读写都走 layout-store;currentRoot 随 snapshot 到来(applySnapshot 现在
   // 不再丢弃 rootPath),存档按 rootPath 分仓。
   const store: LayoutStore = opts.store ?? createLayoutStore();
   let currentRoot: string | null = null;
@@ -272,7 +274,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     };
   }
 
-  /** Cycle-arc set over the current graph, kept in sync by setSnapshot/applyDelta. */
+  /** Cycle-arc set over the current graph, kept in sync by applySnapshot/applyDelta. */
   function refreshCycleFlags(): void {
     backEdgeIds = findBackEdges({
       nodes: model.nodes().map((n) => ({ id: n.id })),
@@ -280,7 +282,9 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     });
   }
 
-  function setSnapshot(next: GraphSnapshot): void {
+  function applySnapshot(next: GraphSnapshot): void {
+    // fold-then-apply (候选 #4): 数据在本调用入口进 model,渲染读到的即目标态。
+    model.foldSnapshot(next);
     lockedId = null;
     opts.onFocusChange(null);
     // 布局存档分仓键 (Code-review 2026-08-29): the snapshot is where the view
@@ -290,7 +294,6 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
     layoutMode = store.getMode(next.rootPath);
     opts.onLayoutModeChange?.(layoutMode);
 
-    // 数据已在 model 里 (caller 先 foldSnapshot)——本函数只是重渲染信号。
     renderVisible();
   }
 
@@ -333,7 +336,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   /**
    * Full re-render of the visible graph: view pipeline (图例过滤 → 只看未测 →
    * 隐藏已评审 → 搜索) over the model's raw state, then layout + element
-   * swap. With every control off this renders the plain graph, so setSnapshot
+   * swap. With every control off this renders the plain graph, so applySnapshot
    * is just bookkeeping + renderVisible.
    */
   function renderVisible(): void {
@@ -372,6 +375,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   function applyDelta(delta: GraphDelta): void {
+    // fold-then-apply (候选 #4): 空 delta 折进去也是 no-op,先落账再短路。
+    model.foldDelta(delta);
     if (
       delta.addedNodes.length === 0 &&
       delta.removedNodeIds.length === 0 &&
@@ -381,8 +386,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
       return;
     }
 
-    // 1) Bookkeeping: model 已由 caller 先 foldDelta 落到目标态 (frame-sink
-    //    配对序),这里只维护视图派生态——degrees 增量,环标记与区域整体重算。
+    // 1) Bookkeeping: model 已在入口 foldDelta 到目标态 (候选 #4),这里只
+    //    维护视图派生态——degrees 增量,环标记与区域整体重算。
     for (const e of delta.removedEdges) {
       bumpDegree(e.from, 'out', -1);
       bumpDegree(e.to, 'in', -1);
@@ -507,7 +512,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   }
 
   function applyNodeUpdate(node: ModuleNode): void {
-    // model 已由 caller 先 foldNodeUpdate——这里只做 DOM patch / 重渲染。
+    // fold-then-apply (候选 #4): 先落账,再做 DOM patch / 重渲染。
+    model.foldNodeUpdate(node);
     // With controls on, a state change can change what is visible (未测
     // filter, legend-hidden states) — re-render instead of patching one ball.
     if (filtersActive()) {
@@ -774,7 +780,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions):
   window.addEventListener('pagehide', () => physics?.destroy(), { once: true });
 
   return {
-    setSnapshot,
+    applySnapshot,
     applyDelta,
     applyNodeUpdate,
     pulseViewing,

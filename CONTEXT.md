@@ -128,3 +128,13 @@
   done-only、changes 的容量截断）与合并规则（墓碑并集 / per-id max）留在
   消费者；目录名 `DOT_MODULE_DIR` 单一事实源，server 消费者与信任探针的
   fixture 清理共用。住 `src/server/dot-module-store.ts`。
+
+## 2026-09-05 fold-then-apply 轮（架构评审候选 #4）
+
+- **调用即正确（fold-then-apply）** —— 浏览器图状态的三种帧（snapshot /
+  graph_delta / node_update）由 `GraphView` 的 `applySnapshot` /
+  `applyDelta` / `applyNodeUpdate` 在入口先折进注入的 model 再渲染——
+  「先 `model.foldX` 后 `view.applyX`」的配对序曾是注释与 caller 纪律
+  （frame-sink 三处 + 测试配对替身各抄一遍），现在住进 module 内部，
+  render-before-fold 这类 bug 不可表达。`GraphModel` 的 fold 仍是全图
+  唯一实现，但直接调用方只剩 graph-view 一家。

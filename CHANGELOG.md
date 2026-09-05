@@ -22,6 +22,12 @@
 * 诚实表首跑照出两处结构性漏计，`dashboard-info-reports-root`（1500→3000，实测 2259）与 `read-only-mode`（4000→8000，实测 7054，旧数从未计 listTools）按全量读数重校——预算上限虽升，度量口径为全量真值，ADR 0001 可见性增强；其余 14 预算不动全绿
 * run.ts 失败路径也回报 `bytesSeen()`（崩溃前的线费不再显示为 0）；对外 wire、server 行为零变化
 
+### 重构 —— 架构评审第二轮（候选 #4「fold-then-apply：view 自己完成配对」，2026-09-05）
+
+* `GraphView` 三个公开 mutator `applySnapshot`（原 `setSnapshot`，改名已拍板）/ `applyDelta` / `applyNodeUpdate` 由「半个调用」升格为完整调用：入口先 `model.foldX(frame)` 再渲染/DOM patch——「先 fold 后 apply」的配对序从注释与 caller 纪律进 module 内部，render-before-fold bug 类不可表达
+* `frame-sink.ts` 三处手抄配对各删一行（guard → view → 派生不变，flashEvent 与聚焦面板读 model 的时序不受影响——fold 已在 view 入口完成）；`tests/graph-view.test.ts` 的 paired 配对替身删除（裸 view 直测，「调用即正确」在测试面同样成立）；红先钉三枚（applySnapshot/applyDelta/applyNodeUpdate 单独调用即落账 model）先行失败后转绿
+* `GraphModel` 对外 interface 不动（fold 仍是全图唯一实现，graph-model.test 直测保留），直接调用方收敛为 graph-view 一家；frame-sink.test 假身按新契约折账，派生值断言原样通过；纯 web 内部事，wire 字节与 evals 零变化；CONTEXT.md 新词条「调用即正确」、MODULE-DESIGN 三行同步
+
 ### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
 
 * mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`

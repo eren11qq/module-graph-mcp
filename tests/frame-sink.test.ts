@@ -28,10 +28,21 @@ const flush = (): Promise<void> => Promise.resolve();
 function harness() {
   const model = createGraphModel();
   const viewCalls: string[] = [];
+  // 候选 #4: fold 已下沉进真实 view(applyX 先折 model 再渲染)——假身照
+  // 契约折账,sink 测试才能继续从真 model 读派生值。
   const view: GraphView = {
-    setSnapshot: () => viewCalls.push('setSnapshot'),
-    applyDelta: () => viewCalls.push('applyDelta'),
-    applyNodeUpdate: () => viewCalls.push('applyNodeUpdate'),
+    applySnapshot: (s) => {
+      viewCalls.push('applySnapshot');
+      model.foldSnapshot(s);
+    },
+    applyDelta: (d) => {
+      viewCalls.push('applyDelta');
+      model.foldDelta(d);
+    },
+    applyNodeUpdate: (n) => {
+      viewCalls.push('applyNodeUpdate');
+      model.foldNodeUpdate(n);
+    },
     pulseViewing: (id: string) => viewCalls.push(`viewing:${id}`),
     setViewState: () => viewCalls.push('setViewState'),
     focusNode: (id: string) => viewCalls.push(`focus:${id}`),
@@ -90,7 +101,7 @@ describe('FrameSink — snapshot frames', () => {
     });
 
     expect(model.nodes()).toHaveLength(2);
-    expect(viewCalls).toEqual(['setSnapshot']);
+    expect(viewCalls).toEqual(['applySnapshot']);
     expect(flashes).toEqual(['快照 2 节点 / 1 边']);
     // Derived refresh is coalesced onto the microtask, not inside the frame.
     expect(counts).toHaveLength(0);
@@ -122,7 +133,7 @@ describe('FrameSink — malformed frames', () => {
       warn.mockRestore();
     }
     await flush();
-    expect(viewCalls).toEqual(['setSnapshot']);
+    expect(viewCalls).toEqual(['applySnapshot']);
     expect(model.node('x')).toBeUndefined();
   });
 });

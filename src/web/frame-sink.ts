@@ -35,10 +35,11 @@ function isEditVerificationWire(value: unknown): value is EditVerificationWire {
  * in main.ts — three near-identical "fold → view → derived UI" routines and
  * six renderLegend call sites; missing one was a shipped bug (a236598).
  *
- * apply(event) is the single seam for the WHOLE wire vocabulary: fold into
- * the model, update the view, refresh the derived UI (statusbar counts,
- * coverage band, legend, focused detail panel). Untrusted frames are guarded
- * here — a malformed frame is dropped whole and the last good frame stays.
+ * apply(event) is the single seam for the WHOLE wire vocabulary: hand the
+ * frame to the view (which folds it into the model, 候选 #4), refresh the
+ * derived UI (statusbar counts, coverage band, legend, focused detail panel).
+ * Untrusted frames are guarded here — a malformed frame is dropped whole and
+ * the last good frame stays.
  *
  * Derived refresh is coalesced per microtask: a burst of N node_update
  * frames (e.g. a coverage remap) rebuilds the legend once, not N times, and
@@ -147,8 +148,7 @@ export function createFrameSink(opts: FrameSinkDeps): FrameSink {
           console.warn('ws: dropped malformed snapshot frame');
           return;
         }
-        model.foldSnapshot(event.snapshot);
-        view.setSnapshot(event.snapshot);
+        view.applySnapshot(event.snapshot);
         scanNotice.hidden = true;
         statusbar.flashEvent(`快照 ${model.nodes().length} 节点 / ${model.edges().length} 边`);
         playEntrance();
@@ -162,7 +162,6 @@ export function createFrameSink(opts: FrameSinkDeps): FrameSink {
           console.warn('ws: dropped malformed graph_delta frame');
           return;
         }
-        model.foldDelta(event.delta);
         view.applyDelta(event.delta);
         statusbar.flashEvent(
           `推送 +${event.delta.addedNodes.length}−${event.delta.removedNodeIds.length} 节点 · +${event.delta.addedEdges.length}−${event.delta.removedEdges.length} 边`
@@ -189,7 +188,6 @@ export function createFrameSink(opts: FrameSinkDeps): FrameSink {
           return;
         }
         const node = event.node;
-        model.foldNodeUpdate(node);
         view.applyNodeUpdate(node);
         if (node.aiReview?.status === 'checking') {
           statusbar.flashEvent(`AI 检查 ${shortLabel(node.id)} …`);
