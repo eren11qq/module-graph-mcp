@@ -101,6 +101,16 @@ function readStringArray(raw: unknown): string[] {
 }
 
 export interface ToolDef {
+  /**
+   * 策略元数据(架构评审第二轮 #7):注册表即名单,三张消费名单全部从这里派生。
+   * `mutating` — 写数据、改图状态的工具,read-only 模式下必须隐藏并以审计错误
+   * 拒答;`contentDependent` — 答案依赖图内容的工具,基线扫描完成前有界等待
+   * (plugin 模式下先答 = "module not found" 冤案)。免闸门的只有自描述类
+   * (get_dashboard_info / get_module_graph)与 report_test_run(只带退出码,
+   * 不读图)。新增工具漏登记任何一 bit = 编译红。
+   */
+  mutating: boolean;
+  contentDependent: boolean;
   description: string;
   inputSchema: Record<string, unknown>;
   execute(args: Record<string, unknown>): ToolResult;
@@ -176,21 +186,6 @@ export interface McpToolDeps {
    */
   readOnly?: boolean;
 }
-
-/**
- * The seven mutation-class tools hidden in read-only mode. Inspection tools
- * (get_impact / get_change_impact / get_health_report / …) stay visible: a
- * read-only session can still explore, it just cannot write anything back.
- */
-export const READ_ONLY_BLOCKED_TOOLS: readonly string[] = [
-  'report_note',
-  'begin_review',
-  'update_review',
-  'end_review',
-  'report_test_run',
-  'declare_edit_scope',
-  'report_edits'
-];
 
 /**
  * Suggest close node ids when a path argument does not match — the error
@@ -311,6 +306,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
   const editScopeStore: EditScopeStore = createEditScopeStore();
   const tools: Record<string, ToolDef> = {
     get_dashboard_info: {
+      mutating: false,
+      contentDependent: false,
       description:
         'Return dashboard connection info: the browser URL of the live module-graph dashboard, the watched repository root, and current node/edge counts. Call this once per session to verify the server watches the tree you are working in, and to hand the user the dashboard link.',
       inputSchema: {
@@ -352,6 +349,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     get_module_graph: {
+      mutating: false,
+      contentDependent: false,
       description:
         'Return the full module dependency graph of the watched repository: file-level nodes with their test/typecheck status and the import edges between them.',
       inputSchema: {
@@ -378,6 +377,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     get_module_details: {
+      mutating: false,
+      contentDependent: true,
       description:
         'Return full details for ONE module: path, language, test state, coveredBy test files, type errors (line+code+message), last test run time, note, in/out edges, context stats (in/out degree, cycle membership, normalized centrality — derived fresh per call, never stale), and the full source code text. Every read briefly lights that module ball on the dashboard, so the user can see which file you are looking at.',
       inputSchema: {
@@ -441,6 +442,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     list_untested: {
+      mutating: false,
+      contentDependent: true,
       description:
         'List every module currently in the untested state (no coverage data and no test file by naming convention). Returns ids plus a summary count.',
       inputSchema: {
@@ -462,6 +465,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     report_note: {
+      mutating: true,
+      contentDependent: true,
       description:
         `Attach a free-form note to a module (max ${MAX_NOTE_LENGTH} chars). The note appears live in the dashboard detail panel for that node. Pass an empty text to clear the note.`,
       inputSchema: {
@@ -511,6 +516,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     begin_review: {
+      mutating: true,
+      contentDependent: true,
       description:
         'Mark a module as "AI reviewing". The dashboard ball gets an animated edge pulse and its detail panel shows a checking state until end_review lands for the same path. Call this right before you start reviewing/editing a file; while checking, push partial findings with update_review, and always pair the begin with an end_review.',
       inputSchema: {
@@ -542,6 +549,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     update_review: {
+      mutating: true,
+      contentDependent: true,
       description:
         'Push PARTIAL per-line verdicts while a review is still checking (after begin_review, before end_review): the dashboard paints the reported rows live, line by line. Verdicts merge into the pending review — on the same line the new entry wins. Optional, but recommended for long files so the user sees progress; end_review finishes the review.',
       inputSchema: {
@@ -590,6 +599,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     end_review: {
+      mutating: true,
+      contentDependent: true,
       description:
         `Finish the AI review of a module: store per-line verdicts (confident / unsure / error, max ${MAX_VERDICT_ENTRIES} entries, last entry per line wins) plus an optional one-line summary. The dashboard stops the checking pulse and renders green/amber/red row highlights live. Verdicts persist on disk (.module-graph/reviews.json): they survive restarts, so a re-review is only needed when the code changed.`,
       inputSchema: {
@@ -645,6 +656,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     report_test_run: {
+      mutating: true,
+      contentDependent: false,
       description:
         'Report the outcome of the test run you just executed. failed=true marks the run as failing: files present in the coverage report turn red on the dashboard; failed=false turns them back green. Call this after every test run so the map reflects the real last run.',
       inputSchema: {
@@ -677,6 +690,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     // -----------------------------------------------------------------------
 
     declare_edit_scope: {
+      mutating: true,
+      contentDependent: false,
       description:
         'Declare your edit scope BEFORE you start editing: the functional modules (ids from get_dashboard_info.modules) and/or explicit files you plan to touch. The server checks every later report_edits against this boundary — a file outside it is an out-of-scope edit (red on the dashboard), and the watcher record catches files you changed but never reported. Each successful declaration stamps a baseline moment: watcher evidence changed before it (leftovers from earlier sessions) is reported as preexisting instead of being judged against you. A new declaration replaces the old one; the scope is session-level and cleared on restart. Pass an empty object to clear the scope.',
       inputSchema: {
@@ -725,6 +740,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     report_edits: {
+      mutating: true,
+      contentDependent: false,
       description:
         'Report the files you actually edited after the work is done. The server checks every file against the declared edit scope (declare_edit_scope) and cross-checks the watcher record: a file the watcher saw changed but you did not report is unreported (漏报), and any change outside the scope is an out-of-scope edit. Watcher evidence is scoped by the declaration baseline (scope epoch): records changed BEFORE the current scope was declared — e.g. leftovers from an earlier session — are listed in preexisting (informational, never affects ok). Anything you report yourself is always judged. Returns all lists and an ok flag (ok = no out-of-scope and no unreported).',
       inputSchema: {
@@ -774,6 +791,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     get_health_report: {
+      mutating: false,
+      contentDependent: true,
       description:
         'Return the deterministic health report for the watched graph: every module scored by a fixed integer weight table (high centrality=3, untested=2, type errors=2, on a dependency cycle=1, review error verdict=2; ties break by id). Items come risk-descending, plus a Chinese brief (top 5 + remaining count) and the weight table itself — same input always yields the same ranking.',
       inputSchema: {
@@ -787,6 +806,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     get_impact: {
+      mutating: false,
+      contentDependent: true,
       description:
         'BEFORE editing a file, see its blast radius: every module upstream (who imports it) and/or downstream (what it imports), grouped by BFS depth, each entry carrying the node test state and type-error count. Scope your change with it; nodes sitting on a dependency cycle or in the high-centrality top-20% deserve extra care (get_change_impact scores that per change after you edit). direction defaults to "both"; maxDepth defaults to 3 (hard cap 10, illegal values fall back to 3).',
       inputSchema: {
@@ -830,6 +851,8 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     },
 
     get_change_impact: {
+      mutating: false,
+      contentDependent: true,
       description:
         'AFTER editing, replay the change evidence chain: every file the watcher recorded as changed recently (id, changedAt, whether still in the graph), and per in-graph change the computed blast radius (both directions, depth 3) with a risk level. 风险级：波及在环上或高中心度节点 → high；受影响节点 > 10 → medium；否则 low。Call it right after saving files to double-check the scope of what you just touched — before running tests or reporting a review. Records persist to .module-graph/recent-changes.json and survive a restart (bounded to the newest 100).',
       inputSchema: {
@@ -857,43 +880,34 @@ export function buildTools(graph: GraphSnapshotSource, deps: McpToolDeps = {}): 
     }
   };
 
-  if (deps.readOnly === true) {
-    // Read-only mode: the mutation tools are NOT registered, so tools/list
-    // hides them naturally (the list is generated from this record); the
-    // transport still answers their tools/call with a dedicated audit error.
-    const visible = { ...tools };
-    for (const name of READ_ONLY_BLOCKED_TOOLS) delete visible[name];
-    return visible;
-  }
+  if (deps.readOnly === true) return hideMutatingTools(tools);
   return tools;
 }
 
+/**
+ * The read-only visibility layer: mutation-class tools (flag `mutating`) are
+ * dropped, so tools/list hides them naturally (the list is generated from
+ * this record); the transport still answers their tools/call with a dedicated
+ * audit error. Inspection tools stay visible: a read-only session can still
+ * explore, it just cannot write anything back.
+ */
+export function hideMutatingTools(tools: Record<string, ToolDef>): Record<string, ToolDef> {
+  const visible: Record<string, ToolDef> = {};
+  for (const [name, def] of Object.entries(tools)) {
+    if (!def.mutating) visible[name] = def;
+  }
+  return visible;
+}
+
 export class McpStdioServer {
-  /**
-   * Tools whose answers depend on graph CONTENT (code-review 2026-08-29).
-   * Plugin mode serves before the baseline scan finishes, and an agent's
-   * first begin_review would otherwise hit "module not found" through no
-   * fault of its own — these wait (bounded) for the baseline instead.
-   * Self-describing tools (get_dashboard_info, get_module_graph) answer
-   * immediately with their scanning annotation, and report_test_run is
-   * content-independent.
-   */
-  private static readonly BASELINE_GATED = new Set([
-    'get_module_details',
-    'list_untested',
-    'report_note',
-    'begin_review',
-    'update_review',
-    'end_review',
-    'get_health_report',
-    'get_impact',
-    'get_change_impact'
-  ]);
-
-  /** Mutation tools get a dedicated error (not "Unknown tool") in read-only mode. */
-  private static readonly READ_ONLY_BLOCKED = new Set(READ_ONLY_BLOCKED_TOOLS);
-
   private buffer = '';
+  /**
+   * Full registry — the policy flags (`mutating` / `contentDependent`) live on
+   * the ToolDefs, so the baseline gate and the read-only audit error are
+   * derived, never hand-copied (架构评审第二轮 #7).
+   */
+  private readonly allTools: Record<string, ToolDef>;
+  /** What this session may see and call: the full record minus hidden mutation tools. */
   private readonly tools: Record<string, ToolDef>;
   private readonly deps: McpToolDeps;
 
@@ -904,8 +918,12 @@ export class McpStdioServer {
     graph: GraphSnapshotSource,
     deps: McpToolDeps = {}
   ) {
-    this.tools = buildTools(graph, deps);
     this.deps = deps;
+    // buildTools is called exactly ONCE — it owns per-session state (the
+    // edit-scope store, review bookkeeping); visibility is a projection on
+    // top, never a second registry.
+    this.allTools = buildTools(graph, { ...deps, readOnly: false });
+    this.tools = deps.readOnly === true ? hideMutatingTools(this.allTools) : this.allTools;
   }
 
   /** Start consuming stdin; resolves when stdin closes. */
@@ -1031,7 +1049,13 @@ export class McpStdioServer {
           // into an Internal error.
           const tool = typeof name === 'string' && Object.hasOwn(this.tools, name) ? this.tools[name] : undefined;
           if (!tool) {
-            if (this.deps.readOnly === true && McpStdioServer.READ_ONLY_BLOCKED.has(String(name))) {
+            // Audit error, not "Unknown tool": the name IS a registered tool,
+            // it just carries the `mutating` flag this session must refuse.
+            const blocked =
+              typeof name === 'string' &&
+              Object.hasOwn(this.allTools, name) &&
+              this.allTools[name]!.mutating;
+            if (this.deps.readOnly === true && blocked) {
               // Audit-friendly: distinguishable from Unknown tool, names the
               // mode and the env var that caused it.
               this.errorReply(
@@ -1065,7 +1089,7 @@ export class McpStdioServer {
 
   private async callTool(id: string | number, name: string, tool: ToolDef, args: Record<string, unknown>): Promise<void> {
     try {
-      await this.awaitBaseline(name);
+      await this.awaitBaseline(tool);
       const result = tool.execute(args);
       this.reply(id, this.withinBudget(name, args, result));
     } catch (err) {
@@ -1104,13 +1128,14 @@ export class McpStdioServer {
   }
 
   /**
-   * Bounded wait for the startup baseline when `name` reads graph content.
-   * Past the cap the tool runs against the partial graph anyway — the
-   * self-explaining errors guide the agent to retry — so a slow scan can
-   * never wedge a request.
+   * Bounded wait for the startup baseline when the tool's `contentDependent`
+   * flag says its answer reads graph content (plugin mode serves before the
+   * baseline scan finishes — see the ToolDef doc). Past the cap the tool runs
+   * against the partial graph anyway — the self-explaining errors guide the
+   * agent to retry — so a slow scan can never wedge a request.
    */
-  private awaitBaseline(name: string): Promise<void> {
-    if (this.deps.isBaselineDone?.() !== false || !McpStdioServer.BASELINE_GATED.has(name)) {
+  private awaitBaseline(tool: ToolDef): Promise<void> {
+    if (this.deps.isBaselineDone?.() !== false || !tool.contentDependent) {
       return Promise.resolve();
     }
     const WAIT_CAP_MS = 20_000;

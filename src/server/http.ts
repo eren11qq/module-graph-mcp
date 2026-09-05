@@ -379,12 +379,30 @@ function serveSource(
 }
 
 /**
- * Code-review 2026-08-29: events a same-root secondary instance may relay to
- * the primary's dashboards. snapshot/graph_delta are excluded on purpose —
- * every instance watches the tree itself, so relaying deltas would double
- * flash every page; only tool-driven state needs the relay.
+ * Code-review 2026-08-29 + 架构评审第二轮 #7: events a same-root secondary
+ * instance may relay to the primary's dashboards. EXHAUSTIVE by construction —
+ * every GraphEvent variant must state 'fwd' or 'hold', so a new event type
+ * that skips triage is a compile error, not a silently unforwarded frame.
+ * snapshot/graph_delta are 'hold' on purpose: every instance watches the tree
+ * itself, so relaying deltas would double-flash every page; only tool-driven
+ * state needs the relay.
  */
-const FORWARDABLE_TYPES: ReadonlySet<string> = new Set(['node_update', 'module_activity', 'review_timeout', 'scan_error', 'edit_scope', 'edit_verification']);
+export const FORWARDABILITY = {
+  snapshot: 'hold',
+  graph_delta: 'hold',
+  node_update: 'fwd',
+  scan_error: 'fwd',
+  review_timeout: 'fwd',
+  module_activity: 'fwd',
+  edit_scope: 'fwd',
+  edit_verification: 'fwd'
+} as const satisfies Record<GraphEvent['type'], 'fwd' | 'hold'>;
+
+const FORWARDABLE_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(FORWARDABILITY)
+    .filter(([, verdict]) => verdict === 'fwd')
+    .map(([type]) => type)
+);
 
 /** Light shape check — full client-side guards (frame-guards) still run on the page. */
 export function isForwardableEvent(value: unknown): value is GraphEvent {
@@ -419,7 +437,8 @@ export function isForwardableEvent(value: unknown): value is GraphEvent {
         Array.isArray((ev.verification as { unreported?: unknown }).unreported)
       );
     default:
-      // FORWARDABLE_TYPES already filtered `type`, but TS sees a plain string.
+      // Unreachable: FORWARDABLE_TYPES is derived from the exhaustive map.
+      // TS still sees a plain string here, so the runtime backstop stays.
       return false;
   }
 }

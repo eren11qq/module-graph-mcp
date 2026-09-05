@@ -2,15 +2,15 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { runServerCli } from './helpers/mcp-cli.js';
 import { applyTokenBudget, estimateTokens } from '../src/server/response-budget.js';
-import { buildTools, McpStdioServer, READ_ONLY_BLOCKED_TOOLS, type GraphSnapshotSource, type McpToolDeps } from '../src/server/mcp.js';
+import { buildTools, McpStdioServer, type GraphSnapshotSource, type McpToolDeps } from '../src/server/mcp.js';
 import type { ModuleNode } from '../src/shared/types.js';
 
 /**
  * GitNexus port step 5 guardrails, three layers:
  *  ① applyTokenBudget direct — the 4-bytes/token estimate, UTF-8-safe
  *    cutting (Chinese + emoji boundaries), the marker contract, tiny budgets.
- * ② Tool registration — read-only mode hides exactly the five mutation
- *    tools; analysis tools stay visible.
+ * ② Tool registration — read-only mode hides exactly the mutation-class
+ *    tools (seven, per the `mutating` flag); analysis tools stay visible.
  * ③ Transport — a read-only server answers a mutation tools/call with the
  *    dedicated audit error (NOT "Unknown tool"), and the _maxTokens /
  *    defaultMaxTokens budget wraps real replies. Env-failure paths spawn the
@@ -80,6 +80,12 @@ function fakeGraph(): GraphSnapshotSource {
   };
 }
 
+// #7(2026-09-05):手抄名单 READ_ONLY_BLOCKED_TOOLS 已删——变更类从注册表的
+// `mutating` 标志派生(tool-policy.test.ts 另钉与历史七名单的恒等快照)。
+const MUTATING_NAMES = Object.entries(buildTools(fakeGraph(), {}))
+  .filter(([, def]) => def.mutating)
+  .map(([name]) => name);
+
 function startServer(deps: McpToolDeps = {}): {
   input: EventEmitter;
   replies: Array<Record<string, any>>;
@@ -119,7 +125,7 @@ describe('read-only mode (GitNexus port + ADR 0002)', () => {
   it('buildTools hides exactly the seven mutation tools; analysis stays visible', () => {
     const readOnly = buildTools(fakeGraph(), { readOnly: true });
     const names = Object.keys(readOnly);
-    for (const blocked of READ_ONLY_BLOCKED_TOOLS) expect(names).not.toContain(blocked);
+    for (const blocked of MUTATING_NAMES) expect(names).not.toContain(blocked);
     expect(names).toHaveLength(7); // 14 全量 − 7 变更类 = 7 分析类
     for (const visible of ['get_impact', 'get_change_impact', 'get_health_report', 'get_module_details', 'get_module_graph', 'list_untested', 'get_dashboard_info']) {
       expect(names).toContain(visible);
@@ -140,7 +146,7 @@ describe('read-only mode (GitNexus port + ADR 0002)', () => {
     await waitForReplies(replies, 6);
 
     const listed = (replies[0]!.result.tools as Array<{ name: string }>).map((t) => t.name);
-    for (const blocked of READ_ONLY_BLOCKED_TOOLS) expect(listed).not.toContain(blocked);
+    for (const blocked of MUTATING_NAMES) expect(listed).not.toContain(blocked);
 
     for (const [reply, tool] of [
       [replies[1], 'report_note'],

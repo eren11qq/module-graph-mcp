@@ -40,6 +40,13 @@
 * 误导性过期注释两处就地正法（导航的 agent 曾会被它们引向已不存在的 folds 行为）：`tests/graph-filters.test.ts` 文件头「Ticket 11 seam 1: collapse」与 pipeline fixture 注、`tests/graph-view.test.ts` view-controls describe 的 folds 注，均改写为实情
 * 死键形状由新钉锁死（`Object.keys(CY_PALETTE.edge)` 全等 + `THEME` 无 `collapse`），回潮即红；对外行为零变化，wire 字节与 evals 不动
 
+### 重构 —— 架构评审第二轮（候选 #7「工具元数据化：策略住在注册表」，2026-09-05）
+
+* 三张手抄名单全部改为派生品：`ToolDef` 新增必填两 bit `mutating` / `contentDependent`，14 个工具定义被编译器强制显式表态（新工具漏 bit = 编译红）；导出名单 `READ_ONLY_BLOCKED_TOOLS` 与私有 static `McpStdioServer.BASELINE_GATED` 双双退役——只读隐藏层 = `hideMutatingTools` 按标志过滤、基线闸门 `awaitBaseline` 改收 ToolDef 直读 `contentDependent`、只读审计错误改查全量注册表的 `mutating` 标志
+* relay 白名单从「手挑 6/8」变穷尽映射：`FORWARDABLE_TYPES` 派生自 `FORWARDABILITY = {…} as const satisfies Record<GraphEvent['type'], 'fwd' | 'hold'>`，新事件变体不表态 = 编译红；`http.ts` 原「TS sees a plain string」自供注释改写为现状注记（编译面穷尽有钉，运行时 `default` 分支留作 backstop）
+* `McpStdioServer` 构造只调 `buildTools` 一次（edit-scope store 等会话状态单例不被二次构造撕裂），可见集是全量注册表之上的投影；tools/list 投影仍只发 name/description/inputSchema——wire 字节零变化
+* 红先钉 `tests/tool-policy.test.ts`（7 枚）：派生集合与重构前三张历史名单逐名恒等（7 mutating / 9 gated / 6 fwd / 8 变体全表态）、只读隐藏集 === mutating 集、内容型∧变更类交叉位快照（begin/update/end_review 双真、report_test_run 变更免闸门）；`mcp-guardrails.test.ts` 同步改从标志派生。门：build ✓ / 557/557 ✓ / evals 16/16 ✓（`read-only-mode` 7082B/8000B 绿，visibility 投影零膨胀实证）
+
 ### 重构 —— 架构评审轮（候选 #1–#6，2026-09-03；wire 字节零变化，evals 16/16 绿）
 
 * mcp.ts 工具体仪式收编：`errorResult` 统一 10 处错误信封、`readStringArray` / `VERDICTS_ARRAY_ERROR` 去守卫重复、路径卫生 16 处抄本归 `path-conventions.normalizeFilePath` 单一事实源、展开截断并档 `EDIT_SCOPE_EXPAND_CAP`
