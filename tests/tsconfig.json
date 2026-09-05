@@ -1,0 +1,4 @@
+{
+  "//": "IDE 关联用:tests 下的文件最近的 tsconfig 就是这份,与 CI 门(npx tsc -p tsconfig.tests.json)同一组选项,单一真相。extends 的 include 按声明位置解析,已覆盖 tests/** 与 src/**。",
+  "extends": "../tsconfig.tests.json"
+}
